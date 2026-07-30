@@ -67,7 +67,8 @@ or runtime monkey patch.
 Install dependencies first:
 
 ```sh
-cd prewalk
+git clone https://github.com/javonmcgilberry/pi-prewalk.git
+cd pi-prewalk
 npm install
 ```
 
