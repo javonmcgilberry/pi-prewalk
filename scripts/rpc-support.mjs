@@ -17,6 +17,7 @@ export function buildRpcLaunchArgs({
 	model,
 	thinking = "off",
 	extraExtensions = [],
+	noBuiltinTools = false,
 }) {
 	parseModelRef(model);
 	if (!path.isAbsolute(extensionPath) || !path.isAbsolute(sessionPath)) {
@@ -31,6 +32,7 @@ export function buildRpcLaunchArgs({
 		model,
 		"--thinking",
 		thinking,
+		...(noBuiltinTools ? ["--no-builtin-tools"] : []),
 		"-e",
 		extensionPath,
 		...extraExtensions.flatMap((entry) => ["-e", entry]),
@@ -57,6 +59,7 @@ export class RpcProcess {
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
+		this.exited = new Promise((resolve) => this.child.once("exit", resolve));
 		this.child.stderr.on("data", (chunk) => {
 			this.stderr += chunk.toString();
 		});
@@ -134,12 +137,22 @@ export class RpcProcess {
 	}
 
 	async close() {
-		if (this.child.exitCode !== null) return;
+		if (this.child.exitCode !== null || this.child.signalCode !== null) return;
 		this.child.stdin.end();
-		const exited = new Promise((resolve) => this.child.once("exit", resolve));
-		const timer = setTimeout(() => this.child.kill("SIGTERM"), 2_000);
-		await exited;
-		clearTimeout(timer);
+		const waitForExit = (timeoutMs) =>
+			new Promise((resolve) => {
+				const timer = setTimeout(() => resolve(false), timeoutMs);
+				void this.exited.then(() => {
+					clearTimeout(timer);
+					resolve(true);
+				});
+			});
+		if (await waitForExit(2_000)) return;
+		this.child.kill("SIGTERM");
+		if (await waitForExit(2_000)) return;
+		this.child.kill("SIGKILL");
+		if (await waitForExit(2_000)) return;
+		throw new Error("Pi RPC process did not exit after SIGKILL.");
 	}
 }
 

@@ -1,9 +1,0 @@
-{
-  "packageName": "@earendil-works/pi-coding-agent",
-  "version": "0.82.1",
-  "platform": "darwin",
-  "arch": "arm64",
-  "manager": "npm",
-  "topology": "npm-global",
-  "executableTarget": "../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-}

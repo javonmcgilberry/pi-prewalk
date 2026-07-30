@@ -1,5 +1,11 @@
 # Prewalk Extension-Only Implementation Verification
 
+> Superseded on 2026-07-30. This document verifies the retired restart and patch
+> architecture. The current implementation is a stock-Pi provider overlay with
+> Sol selected and Luna routed inside the same live Agent loop. See the current
+> README and
+> `docs/plans/2026-07-30-002-feat-extension-only-sol-luna-prewalk-plan.md`.
+
 Date: 2026-07-29
 
 ## Result

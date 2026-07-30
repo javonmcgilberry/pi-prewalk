@@ -1,571 +1,827 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const mockedPaths = vi.hoisted(() => ({
-	agentDir: `/tmp/pi-prewalk-extension-tests-${process.pid}`,
-}));
-
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
-	getAgentDir: () => mockedPaths.agentDir,
-}));
-
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type Model,
+} from "@earendil-works/pi-ai";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ProviderConfig,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
-import { CHECKPOINT_TOOL, type PrewalkConfig } from "../src/core.js";
+import {
+	EXECUTOR_MODEL_ID,
+	PLANNER_MODEL_ID,
+	PREWALK_CHECKLIST_MESSAGE_TYPE,
+	PREWALK_CONTINUE_MESSAGE_TYPE,
+	PREWALK_PLAN_MESSAGE_TYPE,
+} from "../src/core.js";
 
-interface CapturedTool {
-	name: string;
-	executionMode?: string;
-	execute(toolCallId: string, params: { runId: string; items: string[] }): Promise<unknown>;
-}
+type Handler = (event: any, ctx: ExtensionContext) => unknown;
 
-interface CapturedCommand {
-	handler(args: string, ctx: TestContext): Promise<void> | void;
-}
-
-interface TestContext {
-	model: Model<Api>;
-	thinkingLevel: string;
-	modelRegistry: {
-		find(provider: string, id: string): Model<Api> | undefined;
-		hasConfiguredAuth(model: Model<Api>): boolean;
-		getProvider(provider: string): { id: string; name: string; baseUrl?: string } | undefined;
-		getRecipientDescriptor(selected: Model<Api>): {
-			provider: string;
-			providerBaseUrl?: string;
-			modelBaseUrl?: string;
-			api: string;
-			model: string;
-			streamImplementationId?: string;
-		};
-	};
-	isProjectTrusted(): boolean;
-	ui: {
-		notifications: Array<{ message: string; level: string }>;
-		statuses: Array<string | undefined>;
-		confirmResponses: boolean[];
-		notify(message: string, level: string): void;
-		setStatus(key: string, value: string | undefined): void;
-		setWidget(): never;
-		confirm(title: string, message: string): Promise<boolean>;
-	};
-}
-
-type EventHandler = (event: Record<string, unknown>, ctx: TestContext) => unknown;
-
-const CHECKPOINT_ITEMS = ["inspect", "test", "edit", "verify", "review"];
-const CONFIG_PATH = path.join(mockedPaths.agentDir, "prewalk.json");
-
-function model(
-	provider: string,
-	id: string,
-	baseUrl = `https://${provider}.example.test/v1`,
-): Model<Api> {
+function model(id: string): Model<"openai-codex-responses"> {
 	return {
-		provider,
 		id,
-		name: `${provider} ${id}`,
-		api: "openai-responses",
-		baseUrl,
+		name: id,
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://example.test",
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 128_000,
-		maxTokens: 16_000,
-	} as Model<Api>;
-}
-
-async function writeConfig(config: Partial<PrewalkConfig> = {}): Promise<void> {
-	await mkdir(mockedPaths.agentDir, { recursive: true });
-	await writeFile(
-		CONFIG_PATH,
-		`${JSON.stringify({
-			enabled: true,
-			target: "planner/target",
-			thinkingLevel: "low",
-			crossProviderPairs: [],
-			...config,
-		})}\n`,
-	);
-}
-
-async function readConfig(): Promise<PrewalkConfig> {
-	return JSON.parse(await readFile(CONFIG_PATH, "utf8")) as PrewalkConfig;
-}
-
-function createHarness(options: { target?: Model<Api>; planner?: Model<Api> } = {}) {
-	const planner = options.planner ?? model("planner", "planner");
-	let target = options.target ?? model("planner", "target");
-	let authConfigured = true;
-	let switchError: Error | undefined;
-	const handlers = new Map<string, EventHandler[]>();
-	let checkpointTool: CapturedTool | undefined;
-	let command: CapturedCommand | undefined;
-	const switchCalls: Array<{ target: Model<Api>; thinkingLevel: string }> = [];
-	let forbiddenRequests = 0;
-	const customToolNames = new Set<string>();
-	const streamImplementationIds = new Map<string, string | undefined>();
-
-	const ctx: TestContext = {
-		model: planner,
-		thinkingLevel: "medium",
-		modelRegistry: {
-			find(provider, id) {
-				return target.provider === provider && target.id === id ? target : undefined;
-			},
-			hasConfiguredAuth() {
-				return authConfigured;
-			},
-			getProvider(provider) {
-				if (provider === planner.provider) {
-					return { id: provider, name: provider, baseUrl: planner.baseUrl };
-				}
-				if (provider === target.provider) {
-					return { id: provider, name: provider, baseUrl: target.baseUrl };
-				}
-				return undefined;
-			},
-			getRecipientDescriptor(selected) {
-				return {
-					provider: selected.provider,
-					providerBaseUrl: selected.baseUrl,
-					modelBaseUrl: selected.baseUrl,
-					api: selected.api,
-					model: selected.id,
-					streamImplementationId: streamImplementationIds.has(selected.provider)
-						? streamImplementationIds.get(selected.provider)
-						: `test-stream:${selected.provider}`,
-				};
-			},
-		},
-		isProjectTrusted: () => true,
-		ui: {
-			notifications: [],
-			statuses: [],
-			confirmResponses: [],
-			notify(message, level) {
-				this.notifications.push({ message, level });
-			},
-			setStatus(_key, value) {
-				this.statuses.push(value);
-			},
-			setWidget() {
-				throw new Error("Prewalk must not install a handoff widget");
-			},
-			async confirm() {
-				return this.confirmResponses.shift() ?? false;
-			},
-		},
+		contextWindow: 200_000,
+		maxTokens: 128_000,
 	};
+}
 
-	const fakePi = {
-		registerFlag() {
-			throw new Error("Prewalk must not register custom process flags");
+function assistant(selected: Model<"openai-codex-responses">): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: selected.api,
+		provider: selected.provider,
+		model: selected.id,
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
 		},
-		registerTool(tool: CapturedTool) {
-			if (tool.name === CHECKPOINT_TOOL) checkpointTool = tool;
+		stopReason: "stop",
+		timestamp: 1,
+	};
+}
+
+function doneStream(selected: Model<"openai-codex-responses">) {
+	const stream = createAssistantMessageEventStream();
+	const message = assistant(selected);
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end();
+	});
+	return stream;
+}
+
+function failedStream(selected: Model<"openai-codex-responses">) {
+	const stream = createAssistantMessageEventStream();
+	const message = {
+		...assistant(selected),
+		stopReason: "error" as const,
+		errorMessage: "provider failure",
+	};
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "error", reason: "error", error: message });
+		stream.end();
+	});
+	return stream;
+}
+
+function oauthConfig(streamSimple: NonNullable<ProviderConfig["streamSimple"]>): ProviderConfig {
+	return {
+		api: "openai-codex-responses",
+		oauth: {
+			name: "OpenAI Codex",
+			login: async () => ({ access: "token", refresh: "refresh", expires: 1 }),
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
 		},
-		registerCommand(_name: string, registered: CapturedCommand) {
-			command = registered;
-		},
-		on(event: string, handler: EventHandler) {
-			const existing = handlers.get(event) ?? [];
-			existing.push(handler);
-			handlers.set(event, existing);
-		},
-		getActiveTools: () => [CHECKPOINT_TOOL, "read", "grep", "find", "ls", "edit", "write"],
-		getAllTools: () => [
-			...["read", "grep", "find", "ls", "edit", "write"].map((name) => ({
-				name,
-				description: name,
+		streamSimple,
+	};
+}
+
+function createHarness(options: { foreignTodo?: ToolDefinition } = {}) {
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
+	const tools = new Map<string, ToolDefinition>();
+	if (options.foreignTodo) tools.set("todo", options.foreignTodo);
+	const messages: Array<{
+		customType: string;
+		content: unknown;
+		display: boolean;
+		details?: unknown;
+	}> = [];
+	const messageOptions: Array<{
+		triggerTurn?: boolean;
+		deliverAs?: "steer" | "followUp" | "nextTurn";
+	}> = [];
+	const entries: Array<{ customType: string; data: unknown }> = [];
+	const statuses: Array<string | undefined> = [];
+	const notifications: string[] = [];
+	const delegated: Model<"openai-codex-responses">[] = [];
+	const delegatedContexts: Array<{ messages: unknown[] }> = [];
+	const planner = model(PLANNER_MODEL_ID);
+	const executor = model(EXECUTOR_MODEL_ID);
+	let streamImpl: NonNullable<ProviderConfig["streamSimple"]> = (selected) =>
+		doneStream(selected as Model<"openai-codex-responses">);
+	const baseStream: NonNullable<ProviderConfig["streamSimple"]> = (
+		selected,
+		streamContext,
+		options,
+	) => {
+		delegated.push(selected as Model<"openai-codex-responses">);
+		delegatedContexts.push(streamContext);
+		return streamImpl(selected, streamContext, options);
+	};
+	let providerConfig: ProviderConfig | undefined = oauthConfig(baseStream);
+	let branch: unknown[] = [];
+
+	const pi = {
+		on: vi.fn((name: string, handler: Handler) => {
+			const registered = handlers.get(name) ?? [];
+			registered.push(handler);
+			handlers.set(name, registered);
+		}),
+		registerTool: vi.fn((tool: ToolDefinition) => {
+			if (!tools.has(tool.name)) tools.set(tool.name, tool);
+		}),
+		registerCommand: vi.fn(
+			(
+				name: string,
+				options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+			) => {
+				commands.set(name, options.handler);
+			},
+		),
+		getAllTools: vi.fn(() => [
+			{
+				name: "todo",
+				description: "todo",
 				parameters: {},
-				sourceInfo: { source: customToolNames.has(name) ? "extension" : "builtin" },
-			})),
-		],
-		getThinkingLevel: () => ctx.thinkingLevel,
-		sendMessage() {
-			forbiddenRequests += 1;
-			throw new Error("Prewalk must not enqueue model requests");
-		},
-		async setSessionModelAndThinkingLevel(nextTarget: Model<Api>, thinkingLevel: string) {
-			switchCalls.push({ target: nextTarget, thinkingLevel });
-			if (switchError) throw switchError;
-		},
-		setModel() {
-			throw new Error("persistent model setter must not be used");
-		},
-		setThinkingLevel() {
-			throw new Error("persistent thinking setter must not be used");
-		},
+				sourceInfo: {
+					path: options.foreignTodo
+						? "/package/extensions/foreign.ts"
+						: "/package/extensions/prewalk.ts",
+					source: "extension",
+					scope: "user",
+					origin: "top-level",
+				},
+			},
+		]),
+		getActiveTools: vi.fn(() => ["todo", "edit", "write", "bash"]),
+		registerProvider: vi.fn((_name: string, config: ProviderConfig) => {
+			providerConfig = config;
+		}),
+		unregisterProvider: vi.fn(() => {
+			providerConfig = undefined;
+		}),
+		sendMessage: vi.fn((message, options) => {
+			messages.push(message);
+			messageOptions.push(options ?? {});
+		}),
+		appendEntry: vi.fn((customType: string, data: unknown) => {
+			entries.push({ customType, data });
+		}),
 	} as unknown as ExtensionAPI;
 
-	prewalkExtension(fakePi);
+	const modelRegistry = {
+		find: (_provider: string, id: string) => {
+			if (id === planner.id) return planner;
+			if (id === executor.id) return executor;
+			return undefined;
+		},
+		getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
+		getRegisteredProviderConfig: vi.fn(() => providerConfig),
+	};
+	const context = {
+		model: planner,
+		modelRegistry,
+		ui: {
+			setStatus: (_key: string, value: string | undefined) => {
+				statuses.push(value);
+			},
+			notify: (message: string) => {
+				notifications.push(message);
+			},
+		},
+		sessionManager: {
+			getBranch: () => branch,
+			buildContextEntries: () => [],
+		},
+	} as unknown as ExtensionContext;
 
-	async function emit(event: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-		let result: unknown;
-		for (const handler of handlers.get(event) ?? []) {
-			const next = await handler(payload, ctx);
-			if (next !== undefined) result = next;
+	const emit = async (name: string, event: unknown) => {
+		const results = [];
+		for (const handler of handlers.get(name) ?? []) {
+			results.push(await handler(event, context));
 		}
-		return result;
-	}
-
-	async function runCommand(args: string): Promise<void> {
-		if (!command) throw new Error("Prewalk command was not registered");
-		await command.handler(args, ctx);
-	}
-
-	function planningMessage(result: unknown): string | undefined {
-		const messages = (result as { messages?: AgentMessage[] } | undefined)?.messages;
-		const message = messages?.at(-1);
-		const content = message && "content" in message ? message.content : undefined;
-		return typeof content === "string" ? content : undefined;
-	}
-
-	async function activateAndCheckpoint(): Promise<void> {
-		await emit("tool_result", {
-			toolName: "read",
-			toolCallId: "read-1",
-			input: {},
-			isError: false,
-		});
-		const projected = await emit("context", { messages: [] });
-		const prompt = planningMessage(projected);
-		const runId = prompt?.match(/runId\s+"([^"]+)"/)?.[1];
-		if (!runId || !checkpointTool) throw new Error("Planning run was not projected");
-		await checkpointTool.execute("checkpoint-1", {
-			runId,
-			items: CHECKPOINT_ITEMS,
-		});
-		await emit("tool_result", {
-			toolName: CHECKPOINT_TOOL,
-			toolCallId: "checkpoint-1",
-			input: { runId, items: CHECKPOINT_ITEMS },
-			isError: false,
-		});
-	}
+		return results;
+	};
 
 	return {
-		ctx,
+		pi,
+		context,
+		planner,
+		executor,
+		baseStream,
+		handlers,
+		commands,
+		tools,
+		messages,
+		messageOptions,
+		entries,
+		statuses,
+		notifications,
+		delegated,
+		delegatedContexts,
 		emit,
-		runCommand,
-		activateAndCheckpoint,
-		get checkpointTool() {
-			return checkpointTool;
+		providerConfig: () => providerConfig,
+		setProviderConfig: (value: ProviderConfig | undefined) => {
+			providerConfig = value;
 		},
-		setCustomTool(name: string, custom = true) {
-			if (custom) customToolNames.add(name);
-			else customToolNames.delete(name);
+		setStream: (value: NonNullable<ProviderConfig["streamSimple"]>) => {
+			streamImpl = value;
 		},
-		setStreamImplementationId(provider: string, value: string | undefined) {
-			streamImplementationIds.set(provider, value);
-		},
-		get switchCalls() {
-			return switchCalls;
-		},
-		get forbiddenRequests() {
-			return forbiddenRequests;
-		},
-		setAuthConfigured(value: boolean) {
-			authConfigured = value;
-		},
-		setTarget(value: Model<Api>) {
-			target = value;
-		},
-		setSwitchError(error: Error | undefined) {
-			switchError = error;
+		setBranch: (value: unknown[]) => {
+			branch = value;
 		},
 	};
 }
 
+async function reachHandoff(harness: ReturnType<typeof createHarness>) {
+	await harness.emit("session_start", { type: "session_start", reason: "startup" });
+	await harness.emit("turn_end", {
+		type: "turn_end",
+		turnIndex: 0,
+		message: { role: "assistant", content: [] },
+		toolResults: [],
+	});
+	await harness.emit("tool_result", {
+		type: "tool_result",
+		toolCallId: "todo-1",
+		toolName: "todo",
+		input: { op: "init" },
+		content: [],
+		isError: false,
+		details: { phases: [] },
+	});
+	await harness.emit("tool_result", {
+		type: "tool_result",
+		toolCallId: "edit-1",
+		toolName: "edit",
+		input: {},
+		content: [],
+		isError: false,
+		details: {},
+	});
+	await harness.emit("turn_end", {
+		type: "turn_end",
+		turnIndex: 1,
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+				{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
+			],
+		},
+		toolResults: [],
+	});
+}
+
+function auditBranch(harness: ReturnType<typeof createHarness>) {
+	return harness.entries.map((entry, index) => ({
+		type: "custom",
+		id: `audit-${index}`,
+		parentId: index === 0 ? null : `audit-${index - 1}`,
+		timestamp: new Date().toISOString(),
+		customType: entry.customType,
+		data: entry.data,
+	}));
+}
+
+let agentDir: string;
+
 beforeEach(async () => {
-	await rm(mockedPaths.agentDir, { recursive: true, force: true });
-	await mkdir(mockedPaths.agentDir, { recursive: true });
+	agentDir = await mkdtemp(path.join(tmpdir(), "prewalk-extension-"));
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	await writeFile(path.join(agentDir, "prewalk.json"), `${JSON.stringify({ enabled: true })}\n`);
 });
 
-describe("extension adapter", () => {
-	it("throws for a rejected checkpoint so Pi records an error result", async () => {
+afterEach(async () => {
+	delete process.env.PI_CODING_AGENT_DIR;
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+describe("Prewalk extension harness", () => {
+	it("registers the OMP-compatible todo tool and public lifecycle handlers", () => {
 		const harness = createHarness();
-		const checkpointTool = harness.checkpointTool;
-		expect(checkpointTool).toBeDefined();
-		if (!checkpointTool) throw new Error("Checkpoint tool was not registered");
-		await expect(
-			checkpointTool.execute("checkpoint-1", {
-				runId: "stale-run",
-				items: CHECKPOINT_ITEMS,
-			}),
-		).rejects.toThrow("Prewalk checkpoint rejected");
+		prewalkExtension(harness.pi);
+
+		expect(harness.tools.has("todo")).toBe(true);
+		expect(harness.commands.has("prewalk")).toBe(true);
+		expect(harness.commands.has("todos")).toBe(true);
+		expect(harness.tools.get("todo")?.promptSnippet).toContain("`init` replaces the list");
+		expect(harness.handlers.has("session_start")).toBe(true);
+		expect(harness.handlers.has("context")).toBe(true);
+		expect(harness.handlers.has("session_before_compact")).toBe(true);
+		expect("setModel" in harness.pi).toBe(false);
 	});
 
-	it("ordinary automatic settlement adds no request and leaves no projection", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
-		await harness.emit("agent_settled");
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
-		expect(harness.forbiddenRequests).toBe(0);
+	it("preserves a foreign todo owner and fails before arming", async () => {
+		const foreignTodo = {
+			name: "todo",
+			label: "Foreign todo",
+			description: "Foreign todo",
+			parameters: {},
+			execute: vi.fn(),
+		} as unknown as ToolDefinition;
+		const harness = createHarness({ foreignTodo });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(harness.tools.get("todo")).toBe(foreignTodo);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: todo-conflict.");
+		expect(harness.delegated).toEqual([]);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			reasonCode: "todo-conflict",
+		});
 	});
 
-	it("manual run arms planning without queueing a model request", async () => {
-		await writeConfig();
+	it("arms without a request, plans after Sol's first turn, then routes Luna", async () => {
 		const harness = createHarness();
-		await harness.runCommand("run");
-		const projected = await harness.emit("context", { messages: [] });
-		expect(harness.forbiddenRequests).toBe(0);
-		expect((projected as { messages: AgentMessage[] }).messages).toHaveLength(1);
-	});
+		prewalkExtension(harness.pi);
 
-	it("activates context-only guidance on a successful exploration result", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		const original: AgentMessage[] = [{ role: "user", content: "keep", timestamp: 1 }];
-		expect(await harness.emit("context", { messages: original })).toBeUndefined();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.delegated).toEqual([]);
+		expect(harness.statuses.at(-1)).toBe("prewalk: [5.6 Sol] / Luna");
+
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+
 		await harness.emit("tool_result", {
-			toolName: "read",
-			toolCallId: "read-1",
-			input: {},
+			type: "tool_result",
+			toolCallId: "todo-1",
+			toolName: "todo",
+			input: { op: "init" },
+			content: [],
 			isError: false,
+			details: { phases: [] },
 		});
-		const projected = (await harness.emit("context", {
-			messages: original,
-		})) as { messages: AgentMessage[] };
-		expect(original).toHaveLength(1);
-		expect(projected.messages).toHaveLength(2);
-		expect(projected.messages[0]).toBe(original[0]);
-		const guidance = projected.messages[1];
-		expect(guidance).toBeDefined();
-		const guidanceText = guidance && "content" in guidance ? String(guidance.content) : "";
-		expect(guidanceText).toContain("Prewalk planning mode");
-		expect(guidanceText).toContain("If the user's task is read-only or no mutation is needed");
-		expect(guidanceText).not.toContain(
-			"This is not a request to stop at the plan: proceed to that first mutation",
-		);
-	});
-
-	it("ignores custom tools that collide with built-in planning and mutation names", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		harness.setCustomTool("read");
 		await harness.emit("tool_result", {
-			toolName: "read",
-			toolCallId: "custom-read",
-			isError: false,
-		});
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
-
-		harness.setCustomTool("read", false);
-		await harness.activateAndCheckpoint();
-		harness.setCustomTool("edit");
-		expect(
-			await harness.emit("tool_call", {
-				toolName: "edit",
-				toolCallId: "custom-edit",
-			}),
-		).toBeUndefined();
-		await harness.emit("tool_result", {
-			toolName: "edit",
-			toolCallId: "custom-edit",
-			isError: false,
-		});
-		await harness.emit("turn_end");
-		expect(harness.switchCalls).toHaveLength(0);
-	});
-
-	it("blocks a direct mutation before checkpoint and activates recovery guidance", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		const result = await harness.emit("tool_call", {
-			toolName: "edit",
-			toolCallId: "edit-0",
-			input: {},
-		});
-		expect(result).toMatchObject({ block: true });
-		expect(await harness.emit("context", { messages: [] })).toMatchObject({
-			messages: expect.any(Array),
-		});
-	});
-
-	it("keeps checkpoint and edit sequential in the same assistant tool batch", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		expect(harness.checkpointTool?.executionMode).toBe("sequential");
-		await harness.activateAndCheckpoint();
-		expect(
-			await harness.emit("tool_call", {
-				toolName: "edit",
-				toolCallId: "edit-1",
-				input: {},
-			}),
-		).toBeUndefined();
-	});
-
-	it("releases a failed mutation reservation and switches once after the later success", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		await harness.activateAndCheckpoint();
-		await harness.emit("tool_call", {
-			toolName: "edit",
+			type: "tool_result",
 			toolCallId: "edit-1",
-			input: {},
-		});
-		await harness.emit("tool_result", {
 			toolName: "edit",
-			toolCallId: "edit-1",
 			input: {},
-			isError: true,
-		});
-		expect(
-			await harness.emit("tool_call", {
-				toolName: "write",
-				toolCallId: "write-1",
-				input: {},
-			}),
-		).toBeUndefined();
-		await harness.emit("tool_result", {
-			toolName: "write",
-			toolCallId: "write-1",
-			input: {},
+			content: [],
 			isError: false,
+			details: {},
 		});
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
-		expect(harness.switchCalls).toHaveLength(0);
-		await harness.emit("turn_end");
-		await harness.emit("turn_end");
-		expect(harness.switchCalls).toHaveLength(1);
-		expect(harness.switchCalls[0]).toMatchObject({
-			thinkingLevel: "low",
-			target: { id: "target" },
-		});
-	});
-
-	it("removes hidden guidance before target context after a successful mutation", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		await harness.activateAndCheckpoint();
-		await harness.emit("tool_call", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
-		});
-		await harness.emit("tool_result", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
-			isError: false,
-		});
-		const persisted: AgentMessage[] = [
-			{
-				role: "user",
-				content: "checkpoint and mutation are persisted",
-				timestamp: 1,
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+					{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
+				],
 			},
-		];
-		expect(await harness.emit("context", { messages: persisted })).toBeUndefined();
-		expect(persisted).toHaveLength(1);
-	});
-
-	it("revalidates configured auth before reserving mutation", async () => {
-		await writeConfig();
-		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		await harness.activateAndCheckpoint();
-		harness.setAuthConfigured(false);
-		const result = await harness.emit("tool_call", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
+			toolResults: [],
 		});
-		expect(result).toMatchObject({ block: true });
-		expect(harness.switchCalls).toHaveLength(0);
-	});
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
 
-	it("binds cross-provider consent to the exact stable recipient fingerprints", async () => {
-		const initialTarget = model("other", "target", "https://first.example.test/v1/");
-		const harness = createHarness({ target: initialTarget });
-		harness.ctx.ui.confirmResponses.push(true);
-		await harness.runCommand("configure other/target low --allow-cross-provider");
-		const configured = await readConfig();
-		expect(configured.crossProviderPairs).toHaveLength(1);
-		expect(configured.crossProviderPairs[0]).toMatch(/^[a-f0-9]+->[a-f0-9]+$/);
-		await harness.runCommand("run");
-		await harness.activateAndCheckpoint();
-		harness.setStreamImplementationId("other", "test-stream:other@2");
-		const result = await harness.emit("tool_call", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		const [filtered] = await harness.emit("context", {
+			type: "context",
+			messages: [
+				{
+					role: "custom",
+					customType: PREWALK_PLAN_MESSAGE_TYPE,
+					content: "plan",
+					display: false,
+					details: { runId },
+					timestamp: 1,
+				},
+				{
+					role: "custom",
+					customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+					content: "continue",
+					display: false,
+					details: { runId },
+					timestamp: 1,
+				},
+				{
+					role: "custom",
+					customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+					content: "checklist",
+					display: false,
+					details: { runId },
+					timestamp: 1,
+				},
+			],
 		});
-		expect(result).toMatchObject({ block: true });
+		expect(
+			(filtered as { messages: Array<{ customType: string }> }).messages.map(
+				(message) => message.customType,
+			),
+		).toEqual([PREWALK_CHECKLIST_MESSAGE_TYPE]);
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const result = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, filtered as { messages: [] })
+			.result();
+
+		expect(harness.delegated).toEqual([harness.executor]);
+		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
+		expect(harness.context.model).toBe(harness.planner);
+		expect(harness.statuses.at(-1)).toBe("prewalk: 5.6 Sol / [Luna]");
 	});
 
-	it("fails closed when a custom cross-provider stream has no stable identity", async () => {
-		const harness = createHarness({ target: model("other", "target") });
-		harness.setStreamImplementationId("other", undefined);
-		harness.ctx.ui.confirmResponses.push(true);
-		await harness.runCommand("configure other/target low --allow-cross-provider");
-		expect(harness.ctx.ui.notifications.at(-1)?.message).toContain("streamImplementationId");
-		await expect(readFile(CONFIG_PATH, "utf8")).rejects.toThrow();
-	});
-
-	it("rejects unavailable targets, missing auth, and invalid thinking during configuration", async () => {
+	it("does not reactivate Luna when an in-flight stream finishes after cancellation", async () => {
 		const harness = createHarness();
-		await harness.runCommand("configure missing/model low");
-		expect(harness.ctx.ui.notifications.at(-1)?.message).toContain("unavailable");
-		harness.setAuthConfigured(false);
-		await harness.runCommand("configure planner/target low");
-		expect(harness.ctx.ui.notifications.at(-1)?.message).toContain("authentication");
-		await harness.runCommand("configure planner/target impossible");
-		expect(harness.ctx.ui.notifications.at(-1)?.message).toContain("Usage");
+		const delayed = createAssistantMessageEventStream();
+		harness.setStream(() => delayed);
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const pending = harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, { messages: [] })
+			.result();
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		const message = assistant(harness.executor);
+		delayed.push({ type: "start", partial: message });
+		delayed.push({ type: "done", reason: "stop", message });
+		delayed.end();
+		await pending;
+
+		expect(harness.statuses.at(-1)).toBe("prewalk: [5.6 Sol] / Luna (cancelled)");
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "cancelled",
+			phase: "cancelled",
+			effectiveRoute: "sol",
+		});
 	});
 
-	it("disarms on lifecycle boundaries and does not rearm from later tool results", async () => {
-		await writeConfig();
+	it("detects provider replacement before the next Agent-loop request", async () => {
 		const harness = createHarness();
-		await harness.runCommand("run");
-		await harness.emit("session_before_compact");
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		harness.setProviderConfig(oauthConfig(() => doneStream(harness.planner)));
+
+		await harness.emit("agent_start", { type: "agent_start" });
+
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: provider-drift.");
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			reasonCode: "provider-drift",
+		});
+	});
+
+	it("holds Luna routing after a delegated Luna failure", async () => {
+		const harness = createHarness();
+		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const failed = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, { messages: [] })
+			.result();
+
+		expect(failed?.stopReason).toBe("error");
+		expect(failed?.errorMessage).toBe("Prewalk Luna provider stream failed.");
+		expect(harness.statuses.at(-1)).toBe("prewalk: 5.6 Sol / [Luna] (failed)");
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			effectiveRoute: "luna",
+			reasonCode: "luna-stream-failed",
+		});
+
+		harness.setStream((selected) => doneStream(selected as Model<"openai-codex-responses">));
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		expect(harness.delegated.at(-1)).toBe(harness.executor);
+	});
+
+	it("can install the overlay on a manual retry after startup failure", async () => {
+		const harness = createHarness();
+		harness.setProviderConfig(undefined);
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: provider-unavailable.");
+
+		harness.setProviderConfig(oauthConfig(harness.baseStream));
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "plan-injected",
+			phase: "planning",
+		});
+	});
+
+	it("shows restored todo state and sends one bounded completion reminder", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		const todoResult = await harness.tools.get("todo")?.execute(
+			"todo-1",
+			{
+				op: "init",
+				list: [{ phase: "Implement", items: ["Finish verification"] }],
+			},
+			undefined,
+			undefined,
+			harness.context,
+		);
 		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-1",
+			toolName: "todo",
+			input: { op: "init" },
+			content: todoResult?.content ?? [],
+			isError: false,
+			details: todoResult?.details,
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+					{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
+				],
+			},
+			toolResults: [],
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness.commands.get("todos")?.("", harness.context);
+		expect(harness.notifications.at(-1)).toContain("Finish verification");
+
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		const firstReminderCount = harness.messages.filter(
+			(message) => message.customType === "prewalk-todo-reminder",
+		).length;
+		expect(firstReminderCount).toBe(1);
+		expect(harness.messageOptions.at(-1)).toEqual({
+			triggerTurn: true,
+			deliverAs: "followUp",
+		});
+
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(
+			harness.messages.filter((message) => message.customType === "prewalk-todo-reminder"),
+		).toHaveLength(1);
+	});
+
+	it("restores a completed Luna run on reload without adding an arm or request", async () => {
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await reachHandoff(first);
+		await first.emit("agent_start", { type: "agent_start" });
+		await first.providerConfig()?.streamSimple?.(first.planner, { messages: [] }).result();
+
+		const restored = createHarness();
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+
+		expect(restored.delegated).toEqual([]);
+		expect(restored.statuses.at(-1)).toBe("prewalk: 5.6 Sol / [Luna]");
+		await restored.emit("agent_start", { type: "agent_start" });
+		await restored.providerConfig()?.streamSimple?.(restored.planner, { messages: [] }).result();
+		expect(restored.delegated).toEqual([restored.executor]);
+		expect(restored.entries).toEqual([]);
+	});
+
+	it("restores planning and failed Luna runs without adding an arm", async () => {
+		const planning = createHarness();
+		prewalkExtension(planning.pi);
+		await planning.emit("session_start", { type: "session_start", reason: "startup" });
+		await planning.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+
+		const restoredPlanning = createHarness();
+		restoredPlanning.setBranch(auditBranch(planning));
+		prewalkExtension(restoredPlanning.pi);
+		await restoredPlanning.emit("session_start", {
+			type: "session_start",
+			reason: "reload",
+		});
+		expect(restoredPlanning.statuses.at(-1)).toBe("prewalk: [5.6 Sol] / Luna");
+		expect(restoredPlanning.entries).toEqual([]);
+		expect(restoredPlanning.delegated).toEqual([]);
+
+		const failed = createHarness();
+		failed.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
+		prewalkExtension(failed.pi);
+		await reachHandoff(failed);
+		await failed.emit("agent_start", { type: "agent_start" });
+		await failed.providerConfig()?.streamSimple?.(failed.planner, { messages: [] }).result();
+
+		const restoredFailure = createHarness();
+		restoredFailure.setBranch(auditBranch(failed));
+		prewalkExtension(restoredFailure.pi);
+		await restoredFailure.emit("session_start", {
+			type: "session_start",
+			reason: "reload",
+		});
+		expect(restoredFailure.statuses.at(-1)).toBe("prewalk: 5.6 Sol / [Luna] (failed)");
+		await restoredFailure.emit("agent_start", { type: "agent_start" });
+		await restoredFailure
+			.providerConfig()
+			?.streamSimple?.(restoredFailure.planner, { messages: [] })
+			.result();
+		expect(restoredFailure.delegated).toEqual([restoredFailure.executor]);
+		expect(restoredFailure.entries).toEqual([]);
+	});
+
+	it("restores a cancelled run without validating models or reinstalling the overlay", async () => {
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.commands.get("prewalk")?.("cancel", first.context);
+
+		const restored = createHarness();
+		(restored.context as { model: Model<"openai-codex-responses"> }).model = restored.executor;
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+
+		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
+		expect(restored.statuses.at(-1)).toBe(
+			"prewalk: 5.6 Sol / Luna (cancelled; Pi: openai-codex/gpt-5.6-luna)",
+		);
+		expect(restored.entries).toEqual([]);
+	});
+
+	it("persists a re-armed continuation across reload", async () => {
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		await first.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		await first.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "read-1",
 			toolName: "read",
-			toolCallId: "read-late",
 			input: {},
+			content: [],
 			isError: false,
+			details: {},
 		});
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
-		expect(harness.switchCalls).toHaveLength(0);
+		await first.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }],
+			},
+			toolResults: [],
+		});
+		expect(first.entries.at(-1)?.data).toMatchObject({
+			event: "progress",
+			continuePending: true,
+		});
+
+		const restored = createHarness();
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+		await restored.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 3,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+
+		expect(restored.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
 	});
 
-	it("cleans up a failed handoff and never retries it on a later turn", async () => {
-		await writeConfig();
+	it("restores the conversion provider when a live run is cancelled", async () => {
 		const harness = createHarness();
-		await harness.emit("session_start", { reason: "new" });
-		await harness.activateAndCheckpoint();
-		await harness.emit("tool_call", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+	});
+
+	it("cancels on an explicit model selection but ignores restore selection", async () => {
+		const restoredSelection = createHarness();
+		prewalkExtension(restoredSelection.pi);
+		await restoredSelection.emit("session_start", {
+			type: "session_start",
+			reason: "startup",
 		});
-		await harness.emit("tool_result", {
-			toolName: "edit",
-			toolCallId: "edit-1",
-			input: {},
-			isError: false,
+		await restoredSelection.emit("model_select", {
+			type: "model_select",
+			source: "restore",
+			model: restoredSelection.executor,
 		});
-		harness.setSwitchError(new Error("credential rejected"));
-		await harness.emit("turn_end");
-		await harness.emit("turn_end");
-		expect(harness.switchCalls).toHaveLength(1);
-		expect(harness.ctx.ui.notifications.at(-1)?.message).toContain("credential rejected");
-		expect(await harness.emit("context", { messages: [] })).toBeUndefined();
+		expect(restoredSelection.entries.at(-1)?.data).toMatchObject({ event: "armed" });
+
+		const explicitSelection = createHarness();
+		prewalkExtension(explicitSelection.pi);
+		await reachHandoff(explicitSelection);
+		await explicitSelection.emit("agent_start", { type: "agent_start" });
+		await explicitSelection
+			.providerConfig()
+			?.streamSimple?.(explicitSelection.planner, { messages: [] })
+			.result();
+		(explicitSelection.context as { model: Model<"openai-codex-responses"> }).model =
+			explicitSelection.executor;
+		await explicitSelection.emit("model_select", {
+			type: "model_select",
+			source: "user",
+			model: explicitSelection.executor,
+		});
+		expect(explicitSelection.statuses.at(-1)).toBe(
+			"prewalk: 5.6 Sol / Luna (cancelled; Pi: openai-codex/gpt-5.6-luna)",
+		);
+		expect(explicitSelection.entries.at(-1)?.data).toMatchObject({
+			event: "cancelled",
+			effectiveRoute: "selected",
+		});
+	});
+
+	it("scrubs hidden guidance after cancellation and from compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		const prompt = {
+			role: "custom",
+			customType: PREWALK_PLAN_MESSAGE_TYPE,
+			content: "hidden",
+			display: false,
+			details: { runId: harness.entries[0]?.data && (harness.entries[0].data as any).runId },
+			timestamp: 1,
+		};
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		const [contextResult] = await harness.emit("context", {
+			type: "context",
+			messages: [prompt, { role: "user", content: [], timestamp: 1 }],
+		});
+		expect((contextResult as { messages: unknown[] }).messages).toHaveLength(1);
+
+		const preparation = {
+			messagesToSummarize: [prompt, { role: "user", content: [], timestamp: 1 }],
+			turnPrefixMessages: [prompt],
+		};
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation,
+		});
+		expect(preparation.messagesToSummarize).toHaveLength(1);
+		expect(preparation.turnPrefixMessages).toEqual([]);
 	});
 });

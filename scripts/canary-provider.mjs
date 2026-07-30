@@ -1,457 +1,289 @@
-import { randomUUID } from "node:crypto";
-import {
-	access,
-	chmod,
-	copyFile,
-	mkdir,
-	mkdtemp,
-	readFile,
-	realpath,
-	rm,
-	writeFile,
-} from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { containsHiddenGuidance } from "../src/protocol.mjs";
 import {
 	buildEvidenceSummary,
 	parseCanaryArgs,
 	pruneEvidence,
+	stageOpenAICodexCredential,
 	validateCanaryOptions,
 	writeEvidence,
 } from "./canary-support.mjs";
 import { actionableStderr, buildRpcLaunchArgs, RpcProcess } from "./rpc-support.mjs";
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
-const prewalkExtensionPath = path.join(packageRoot, "extensions", "prewalk.ts");
-const canaryGuardPath = path.join(packageRoot, "scripts", "canary-guard.mjs");
-const defaultPi = path.resolve(
+const options = validateCanaryOptions(parseCanaryArgs(process.argv.slice(2)));
+const temporaryRoot = await mkdtemp(path.join(tmpdir(), "prewalk-canary-"));
+const agentDir = path.join(temporaryRoot, "agent");
+const workDir = path.join(temporaryRoot, "work");
+const fixturePath = path.join(workDir, "fixture.txt");
+const settingsPath = path.join(agentDir, "settings.json");
+const sessionPath = path.join(temporaryRoot, "session.jsonl");
+const scenarioPath = path.join(temporaryRoot, "scenario.json");
+const markerPath = path.join(temporaryRoot, "provider-payload-marker.json");
+const evidenceDir = options.evidenceDir ?? path.join(packageRoot, "benchmark", "results");
+const piExecutable =
+	options.piExecutable ??
+	path.join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+const conversionPath = path.join(
 	packageRoot,
-	"..",
-	"earendil-works-pi",
-	"packages",
-	"coding-agent",
+	"node_modules",
+	"@howaboua",
+	"pi-codex-conversion",
 	"dist",
-	"cli.js",
+	"index.js",
 );
+const prewalkPath = path.join(packageRoot, "extensions", "prewalk.ts");
+const guardPath = path.join(packageRoot, "scripts", "canary-guard.mjs");
+
+function digest(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+
 function assert(condition, message) {
 	if (!condition) throw new Error(message);
 }
 
-function modelKey(model) {
-	return `${model?.provider ?? "unknown"}/${model?.model ?? model?.id ?? "unknown"}`;
+const FAILURE_CODES = new Set([
+	"selected-model-changed",
+	"sol-not-observed",
+	"luna-not-observed",
+	"mutation-failed",
+	"handoff-incomplete",
+	"pi-actionable-stderr",
+	"settings-changed",
+	"hidden-guidance-observed",
+]);
+
+function failureCode(error) {
+	return error instanceof Error && FAILURE_CODES.has(error.message)
+		? error.message
+		: "canary-runtime-failed";
 }
 
-function assistantMessages(messages) {
-	return messages.filter((message) => message?.role === "assistant");
+function sumUsage(messages) {
+	const total = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: 0,
+	};
+	for (const message of messages) {
+		if (message?.role !== "assistant" || !message.usage) continue;
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]) {
+			total[key] += message.usage[key] ?? 0;
+		}
+		total.cost += message.usage.cost?.total ?? 0;
+	}
+	return total;
 }
 
-function toolCalls(messages) {
-	return assistantMessages(messages).flatMap((message) =>
-		Array.isArray(message.content)
-			? message.content.filter((content) => content?.type === "toolCall")
-			: [],
-	);
+let outcome = "failed";
+let requestModels = [];
+let usage = {};
+let status = "failed";
+let trigger;
+let settingsBefore = digest("");
+let settingsAfter = digest("");
+const assertions = [];
+let rpc;
+let cleanupPromise;
+let failureReason;
+let evidencePromise;
+let receivedSignal;
+
+function cleanup() {
+	cleanupPromise ??= (async () => {
+		try {
+			await rpc?.close();
+		} finally {
+			await rm(temporaryRoot, { recursive: true, force: true });
+		}
+	})();
+	return cleanupPromise;
 }
 
-function toolResults(messages) {
-	return messages.filter((message) => message?.role === "toolResult");
+function persistEvidence() {
+	evidencePromise ??= (async () => {
+		await pruneEvidence(evidenceDir);
+		return writeEvidence(
+			evidenceDir,
+			buildEvidenceSummary({
+				retentionMs: options.retentionMs,
+				outcome,
+				requestModels,
+				usage,
+				status,
+				trigger,
+				settingsBefore,
+				settingsAfter,
+				assertions,
+			}),
+		);
+	})();
+	return evidencePromise;
 }
 
-function selectionEntryCount(entries) {
-	return entries.filter(
-		(entry) => entry?.type === "model_change" || entry?.type === "thinking_level_change",
-	).length;
+const signalHandlers = new Map();
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+	const handler = () => {
+		if (receivedSignal) return;
+		receivedSignal = signal;
+		failureReason = `signal-${signal.toLowerCase()}`;
+		status = `failed:${failureReason}`;
+		rpc?.child.kill("SIGTERM");
+	};
+	signalHandlers.set(signal, handler);
+	process.on(signal, handler);
 }
 
-async function writeSession(filePath, cwd) {
-	const id = randomUUID();
-	await writeFile(
-		filePath,
-		`${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd })}\n`,
-		{ mode: 0o600 },
-	);
-	return id;
+function throwIfSignalled() {
+	if (receivedSignal) throw new Error(failureReason);
 }
 
-async function startScenario({ options, agentDir, kind, root }) {
-	const repoDir = path.join(root, "repo");
-	await mkdir(repoDir, { recursive: true, mode: 0o700 });
-	const fixturePath = path.join(repoDir, "fixture.txt");
+try {
+	await Promise.all([
+		mkdir(agentDir, { recursive: true, mode: 0o700 }),
+		mkdir(workDir, { recursive: true, mode: 0o700 }),
+	]);
+	throwIfSignalled();
+	await stageOpenAICodexCredential(options.authFile, path.join(agentDir, "auth.json"));
+	throwIfSignalled();
+	await writeFile(path.join(agentDir, "prewalk.json"), '{"enabled":true}\n', {
+		mode: 0o600,
+	});
 	await writeFile(fixturePath, "before\n", { mode: 0o600 });
-	const sessionPath = path.join(root, "session.jsonl");
-	const sessionId = await writeSession(sessionPath, repoDir);
-	const markerPath = path.join(root, "preflight.json");
-	const scenarioPath = path.join(root, "canary-scenario.json");
 	await writeFile(
-		scenarioPath,
+		settingsPath,
 		`${JSON.stringify({
-			kind,
-			cwd: repoDir,
-			fixturePath,
-			markerPath,
-			plannerProvider: options.planner.provider,
-			plannerId: options.planner.id,
-			targetProvider: options.target.provider,
-			targetId: options.target.id,
-			...(options.consent ? { consent: options.consent } : {}),
+			defaultProvider: "openai-codex",
+			defaultModel: "gpt-5.6-sol",
+			defaultThinkingLevel: "high",
+			packages: [],
 		})}\n`,
 		{ mode: 0o600 },
 	);
-	const args = buildRpcLaunchArgs({
-		extensionPath: prewalkExtensionPath,
-		sessionPath,
-		model: `${options.planner.provider}/${options.planner.id}`,
-		thinking: "off",
-		extraExtensions: [canaryGuardPath],
+	await writeFile(scenarioPath, `${JSON.stringify({ cwd: workDir, fixturePath, markerPath })}\n`, {
+		mode: 0o600,
 	});
-	let guardFailure;
-	const rpc = new RpcProcess({
-		executable: options.piExecutable,
-		args,
-		cwd: repoDir,
+	await writeFile(
+		sessionPath,
+		`${JSON.stringify({
+			type: "session",
+			version: 3,
+			id: randomUUID(),
+			timestamp: new Date().toISOString(),
+			cwd: workDir,
+		})}\n`,
+		{ mode: 0o600 },
+	);
+	throwIfSignalled();
+	const beforeBytes = await readFile(settingsPath);
+	settingsBefore = digest(beforeBytes);
+	rpc = new RpcProcess({
+		executable: piExecutable,
+		args: buildRpcLaunchArgs({
+			extensionPath: conversionPath,
+			extraExtensions: [guardPath, prewalkPath],
+			sessionPath,
+			model: "openai-codex/gpt-5.6-sol",
+			thinking: "high",
+		}),
+		cwd: workDir,
 		env: {
 			...process.env,
 			PI_CODING_AGENT_DIR: agentDir,
 			PREWALK_CANARY_SCENARIO: scenarioPath,
 		},
 		timeoutMs: options.timeoutMs,
-		onEvent: (event, process) => {
-			if (!JSON.stringify(event).includes("PREWALK_CANARY_GUARD")) return;
-			guardFailure = "Canary guard blocked an unexpected tool call.";
-			void process.send({ type: "abort" }).catch(() => undefined);
-		},
 	});
+	throwIfSignalled();
 	try {
-		const initial = (await rpc.send({ type: "get_state" })).data;
-		assert(initial.sessionId === sessionId, `${kind} opened a different session.`);
-		assert(
-			modelKey(initial.model) === `${options.planner.provider}/${options.planner.id}`,
-			`${kind} did not start on the planner.`,
-		);
-		await rpc.send({ type: "prompt", message: "/prewalk-canary-preflight" });
-		const preflight = JSON.parse(await readFile(markerPath, "utf8"));
-		assert(preflight.ready === true, `${kind} preflight did not complete.`);
-		if (options.planner.provider !== options.target.provider) {
-			assert(
-				preflight.pair === options.consent,
-				`${kind} consent did not match effective recipients.`,
-			);
-		}
-		const entriesBefore = (await rpc.send({ type: "get_entries" })).data.entries;
-		return {
-			rpc,
-			kind,
-			repoDir,
-			fixturePath,
-			markerPath,
-			sessionPath,
-			sessionId,
-			selectionEntriesBefore: selectionEntryCount(entriesBefore),
-			guardFailure: () => guardFailure,
-		};
-	} catch (error) {
-		await rpc.close();
-		throw error;
-	}
-}
-
-async function finishScenario(scenario, options, prompt) {
-	let messages;
-	let entries;
-	let state;
-	try {
-		const startIndex = scenario.rpc.events.length;
-		await scenario.rpc.send({ type: "prompt", message: prompt });
-		await scenario.rpc.waitFor(
-			(event) => event.type === "agent_settled",
-			options.timeoutMs,
-			startIndex,
-		);
-		if (scenario.guardFailure()) throw new Error(scenario.guardFailure());
-		messages = (await scenario.rpc.send({ type: "get_messages" })).data.messages;
-		entries = (await scenario.rpc.send({ type: "get_entries" })).data.entries;
-		state = (await scenario.rpc.send({ type: "get_state" })).data;
-		const guardEvidence = JSON.parse(await readFile(scenario.markerPath, "utf8"));
-		if (scenario.kind === "main") {
-			assert(
-				guardEvidence.finalTargetPayloadGuidanceFree === true &&
-					guardEvidence.targetPayloadCount > 0,
-				"Canary guard did not inspect the final target provider payload.",
-			);
-		} else {
-			assert(
-				(guardEvidence.targetPayloadCount ?? 0) === 0,
-				`${scenario.kind} unexpectedly sent a request to the target.`,
-			);
-		}
-	} finally {
-		await scenario.rpc.close();
-	}
-	const errors = actionableStderr(scenario.rpc.stderr);
-	assert(
-		errors.length === 0,
-		`${path.basename(scenario.repoDir)} wrote actionable stderr: ${errors.join(" | ")}`,
-	);
-	assert(
-		!containsHiddenGuidance(messages),
-		"Hidden planning guidance entered projected messages.",
-	);
-	assert(!containsHiddenGuidance(entries), "Hidden planning guidance entered session entries.");
-	return {
-		messages,
-		entries,
-		state,
-		finalTargetPayloadGuidanceFree: scenario.kind === "main",
-	};
-}
-
-function validateControl(kind, result, options) {
-	const assistants = assistantMessages(result.messages);
-	const calls = toolCalls(result.messages);
-	if (kind === "chat") {
-		assert(assistants.length === 1, "Ordinary chat used more than one provider request.");
-		assert(calls.length === 0, "Ordinary chat unexpectedly used a tool.");
-	} else {
-		assert(assistants.length === 2, "Read-only control used a speculative provider request.");
-		assert(
-			calls.length === 1 && calls[0].name === "read",
-			"Read-only control did not remain one-read-only loop.",
-		);
-		assert(
-			!toolResults(result.messages).some((message) => message.toolName === "prewalk_checkpoint"),
-			"Read-only control created a checkpoint.",
-		);
-	}
-	assert(
-		assistants.every(
-			(message) => modelKey(message) === `${options.planner.provider}/${options.planner.id}`,
-		),
-		`${kind} control switched away from the planner.`,
-	);
-	return assistants.map(modelKey);
-}
-
-function validateMain(result, scenario, options) {
-	const assistants = assistantMessages(result.messages);
-	const results = toolResults(result.messages);
-	const checkpointIndex = result.messages.findIndex(
-		(message) =>
-			message?.role === "toolResult" &&
-			message.toolName === "prewalk_checkpoint" &&
-			message.isError === false,
-	);
-	const mutationIndex = result.messages.findIndex(
-		(message) =>
-			message?.role === "toolResult" &&
-			(message.toolName === "edit" || message.toolName === "write") &&
-			message.isError === false,
-	);
-	assert(
-		checkpointIndex >= 0 && mutationIndex > checkpointIndex,
-		"Checkpoint and successful mutation were not persisted in order.",
-	);
-	const targetKey = `${options.target.provider}/${options.target.id}`;
-	const plannerKey = `${options.planner.provider}/${options.planner.id}`;
-	const afterMutation = result.messages
-		.slice(mutationIndex + 1)
-		.filter((message) => message?.role === "assistant");
-	assert(
-		afterMutation.length > 0 && modelKey(afterMutation[0]) === targetKey,
-		"Target did not own the natural request after mutation.",
-	);
-	const models = assistants.map(modelKey);
-	assert(models.includes(plannerKey), "Planner never handled a provider request.");
-	const firstTarget = models.indexOf(targetKey);
-	assert(firstTarget > 0, "Target transition was not observed after planner work.");
-	assert(!models.slice(firstTarget).includes(plannerKey), "Planner resumed after target handoff.");
-	assert(modelKey(result.state.model) === targetKey, "Target was not live after handoff.");
-	assert(result.state.sessionId === scenario.sessionId, "Handoff changed the live session.");
-	assert(
-		results.filter((message) => message.toolName === "prewalk_checkpoint" && !message.isError)
-			.length === 1,
-		"Canary did not persist exactly one checkpoint result.",
-	);
-	assert(
-		results.filter(
-			(message) =>
-				(message.toolName === "edit" || message.toolName === "write") && !message.isError,
-		).length === 1,
-		"Canary did not persist exactly one successful mutation result.",
-	);
-	return models;
-}
-
-export async function runCanary(rawOptions) {
-	const options = validateCanaryOptions(rawOptions);
-	options.piExecutable = path.resolve(options.piExecutable || defaultPi);
-	await access(options.piExecutable);
-	await access(prewalkExtensionPath);
-	await access(canaryGuardPath);
-	if (options.authFile) await access(options.authFile);
-	if (options.modelsFile) await access(options.modelsFile);
-	const evidenceDir = path.resolve(
-		options.evidenceDir || path.join(process.cwd(), ".prewalk-canary-evidence"),
-	);
-	await pruneEvidence(evidenceDir);
-	const root = await mkdtemp(path.join(tmpdir(), "prewalk-provider-canary-"));
-	const agentDir = path.join(root, "agent");
-	await mkdir(agentDir, { recursive: true, mode: 0o700 });
-	if (options.authFile) {
-		const isolatedAuth = path.join(agentDir, "auth.json");
-		await copyFile(options.authFile, isolatedAuth);
-		await chmod(isolatedAuth, 0o600);
-	}
-	if (options.modelsFile) {
-		const isolatedModels = path.join(agentDir, "models.json");
-		await copyFile(options.modelsFile, isolatedModels);
-		await chmod(isolatedModels, 0o600);
-	}
-	await writeFile(
-		path.join(agentDir, "settings.json"),
-		`${JSON.stringify({ defaultProvider: options.planner.provider, defaultModel: options.planner.id, defaultThinkingLevel: "off", packages: [] }, null, 2)}\n`,
-		{ mode: 0o600 },
-	);
-	await writeFile(
-		path.join(agentDir, "prewalk.json"),
-		`${JSON.stringify({ enabled: true, target: `${options.target.provider}/${options.target.id}`, thinkingLevel: options.thinking, crossProviderPairs: options.consent ? [options.consent] : [] }, null, 2)}\n`,
-		{ mode: 0o600 },
-	);
-	const settingsPath = path.join(agentDir, "settings.json");
-	const settingsBefore = await readFile(settingsPath);
-	const aggregate = {
-		requestModels: [],
-		checkpointCount: 0,
-		mutationCount: 0,
-		assertions: [],
-	};
-	let outcome = "failed";
-	let primaryError;
-	try {
-		const chatRoot = path.join(root, "chat");
-		const chat = await startScenario({
-			options,
-			agentDir,
-			kind: "chat",
-			root: chatRoot,
+		const startIndex = rpc.events.length;
+		await rpc.send({
+			type: "prompt",
+			message:
+				"Change fixture.txt from exactly `before` to exactly `after`. Use the todo tool for the plan, then one edit or write mutation, and finish the verification.",
 		});
-		const chatResult = await finishScenario(
-			chat,
-			options,
-			"Reply with exactly PREWALK_CANARY_CHAT_OK. Do not use tools.",
+		await rpc.waitFor((event) => event.type === "agent_settled", options.timeoutMs, startIndex);
+		const [messagesResponse, entriesResponse, stateResponse] = await Promise.all([
+			rpc.send({ type: "get_messages" }),
+			rpc.send({ type: "get_entries" }),
+			rpc.send({ type: "get_state" }),
+		]);
+		const messages = messagesResponse.data.messages;
+		const entries = entriesResponse.data.entries;
+		const state = stateResponse.data;
+		requestModels = messages
+			.filter((message) => message?.role === "assistant")
+			.map((message) => `${message.provider}/${message.model}`);
+		usage = sumUsage(messages);
+		const audits = entries.filter(
+			(entry) => entry?.type === "custom" && entry.customType === "prewalk-audit",
 		);
-		aggregate.requestModels.push(...validateControl("chat", chatResult, options));
-		aggregate.assertions.push("ordinary-chat-no-extra-request");
-
-		const readonlyRoot = path.join(root, "readonly");
-		const readonly = await startScenario({
-			options,
-			agentDir,
-			kind: "readonly",
-			root: readonlyRoot,
-		});
-		const readonlyResult = await finishScenario(
-			readonly,
-			options,
-			`This is strictly read-only. Use the read tool exactly once on ${readonly.fixturePath}, then report its single word. Do not checkpoint, edit, write, or use any other tool.`,
-		);
-		aggregate.requestModels.push(...validateControl("readonly", readonlyResult, options));
-		aggregate.assertions.push("readonly-no-speculative-request");
-
-		const mainRoot = path.join(root, "handoff");
-		const main = await startScenario({
-			options,
-			agentDir,
-			kind: "main",
-			root: mainRoot,
-		});
-		const mainResult = await finishScenario(
-			main,
-			options,
-			`Work only on ${main.fixturePath}. This task requires implementation. First use read on that exact file. Follow the active Prewalk checkpoint instruction, then use exactly one edit replacing the exact text before with after. After handoff, verify the mutation from the transcript and reply PREWALK_CANARY_TARGET_COMPLETE. Do not use bash or touch any other path.`,
-		);
-		const mainModels = validateMain(mainResult, main, options);
-		aggregate.requestModels.push(...mainModels);
-		const targetCompletion = assistantMessages(mainResult.messages)
-			.filter(
-				(message) => modelKey(message) === `${options.target.provider}/${options.target.id}`,
-			)
-			.flatMap((message) => (Array.isArray(message.content) ? message.content : []))
-			.filter((content) => content?.type === "text")
-			.map((content) => content.text)
-			.join("\n");
+		const latest = audits.at(-1)?.data;
+		status = latest?.phase ?? "failed";
+		trigger = latest?.trigger?.toolName;
 		assert(
-			targetCompletion.includes("PREWALK_CANARY_TARGET_COMPLETE"),
-			"Target did not confirm transcript-visible completion.",
+			`${state.model?.provider}/${state.model?.id}` === "openai-codex/gpt-5.6-sol",
+			"selected-model-changed",
 		);
-		aggregate.checkpointCount = 1;
-		aggregate.mutationCount = 1;
+		assert(requestModels.includes("openai-codex/gpt-5.6-sol"), "sol-not-observed");
+		assert(requestModels.includes("openai-codex/gpt-5.6-luna"), "luna-not-observed");
+		const payloadMarker = JSON.parse(await readFile(markerPath, "utf8"));
 		assert(
-			(await readFile(main.fixturePath, "utf8")) === "after\n",
-			"Bounded fixture did not contain the expected mutation.",
+			payloadMarker.targetPayloadCount >= 1 && payloadMarker.lunaPayloadGuidanceFree === true,
+			"hidden-guidance-observed",
 		);
-		assert(
-			selectionEntryCount(mainResult.entries) === main.selectionEntriesBefore,
-			"Handoff persisted model/thinking selection entries.",
-		);
-		assert(
-			(await readFile(settingsPath)).equals(settingsBefore),
-			"Provider canary changed settings.json.",
-		);
-		aggregate.assertions.push(
-			"same-session",
-			"checkpoint-before-mutation",
-			"target-natural-continuation",
-			"target-transcript-visible",
-			"hidden-guidance-absent",
-			"settings-byte-identical",
-			"selection-entries-unchanged",
-			"bounded-fixture-only",
+		assert((await readFile(fixturePath, "utf8")) === "after\n", "mutation-failed");
+		assert(status === "completed", "handoff-incomplete");
+		assertions.push(
+			"selected-sol",
+			"sol-observed",
+			"luna-observed",
+			"luna-payload-guidance-free",
+			"bounded-mutation",
+			"handoff-completed",
 		);
 		outcome = "passed";
-	} catch (error) {
-		primaryError = error;
 	} finally {
-		const summary = buildEvidenceSummary({
-			now: new Date(),
-			retentionMs: options.retentionMs,
-			outcome,
-			planner: options.planner,
-			target: options.target,
-			requestModels: aggregate.requestModels,
-			requestCount: aggregate.requestModels.length,
-			checkpointCount: aggregate.checkpointCount,
-			mutationCount: aggregate.mutationCount,
-			assertions: outcome === "passed" ? aggregate.assertions : ["canary-failed"],
-		});
-		let evidencePath;
-		try {
-			evidencePath = await writeEvidence(evidenceDir, summary);
-		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-		console.log(
-			`Canary evidence: ${path.basename(evidencePath)} (${outcome}, expires ${summary.expiresAt})`,
-		);
+		await rpc.close();
+		const errors = actionableStderr(rpc.stderr);
+		rpc = undefined;
+		assert(errors.length === 0, "pi-actionable-stderr");
 	}
-	if (primaryError) throw primaryError;
-	console.log(
-		"Provider canary passed: OMP-faithful live handoff, zero speculative controls, bounded fixture, byte-identical settings, redacted evidence.",
-	);
+	const afterBytes = await readFile(settingsPath);
+	settingsAfter = digest(afterBytes);
+	assert(settingsAfter === settingsBefore, "settings-changed");
+	assertions.push("settings-byte-identical");
+} catch (error) {
+	if (!failureReason?.startsWith("signal-")) {
+		failureReason = failureCode(error);
+		status = `failed:${failureReason}`;
+	}
+	try {
+		settingsAfter = digest(await readFile(settingsPath));
+	} catch {
+		settingsAfter = digest("");
+	}
+} finally {
+	for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+	await cleanup();
 }
 
-async function main() {
-	const options = parseCanaryArgs(process.argv.slice(2));
-	await runCanary(options);
-}
-
-const invokedPath = process.argv[1]
-	? await realpath(process.argv[1]).catch(() => undefined)
-	: undefined;
-if (invokedPath === fileURLToPath(import.meta.url)) {
-	main().catch((error) => {
-		console.error(error instanceof Error ? error.message : String(error));
-		process.exitCode = 1;
-	});
+const evidencePath = await persistEvidence();
+console.log(
+	JSON.stringify({
+		ok: outcome === "passed",
+		evidence: evidencePath,
+		...(failureReason ? { reasonCode: failureReason } : {}),
+	}),
+);
+if (receivedSignal) {
+	process.kill(process.pid, receivedSignal);
+} else if (failureReason) {
+	process.exitCode = 1;
 }

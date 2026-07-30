@@ -21,16 +21,12 @@ temp/
 credentials.json
 secrets.json
 
-# Local Prewalk evidence and updater state
+# Local Prewalk evidence
 .pi-subagents/
 canary-evidence/
 evidence/
-*.prewalk-journal*
-*.prewalk-attestation.json
-*.prewalk-backup/
-*.prewalk-patched-backup/
-*.prewalk-candidate/
-*.prewalk-staging/
+benchmark/results/
+benchmark/control/
 
 # Editor and OS files
 .DS_Store

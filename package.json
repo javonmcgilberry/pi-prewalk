@@ -1,7 +1,7 @@
 {
   "name": "@local/pi-prewalk",
   "version": "0.1.0",
-  "description": "OMP-faithful same-session planner-to-target handoff for Pi",
+  "description": "OMP-faithful same-session Sol-to-Luna handoff for stock Pi",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -10,16 +10,15 @@
     "agent-handoff",
     "prewalk"
   ],
-  "bin": {
-    "prewalk-update-pi": "./updater/cli.mjs"
-  },
   "files": [
     "extensions",
     "src",
     "scripts",
-    "updater",
+    "prompts",
+    "benchmark",
     "README.md",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "prewalk.example.json"
   ],
   "pi": {
@@ -28,19 +27,25 @@
     ]
   },
   "scripts": {
+    "lint": "biome check .",
     "smoke:rpc": "node scripts/smoke-rpc.mjs",
     "canary:provider": "node scripts/canary-provider.mjs",
+    "benchmark": "node scripts/benchmark-prewalk.mjs",
+    "benchmark:report": "node scripts/benchmark-report.mjs",
     "test": "vitest run",
+    "test:agent-loop": "vitest run test/agent-loop.test.ts test/codex-conversion.test.ts test/benchmark-agent-loop.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "tar": "^7.5.22",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.5",
     "@earendil-works/pi-agent-core": "0.82.1",
     "@earendil-works/pi-ai": "0.82.1",
     "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "@howaboua/pi-codex-conversion": "3.0.3",
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

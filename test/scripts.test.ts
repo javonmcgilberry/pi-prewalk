@@ -1,37 +1,78 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildEvidenceSummary,
 	CANARY_CONFIRMATION,
+	containsCanaryHiddenGuidance,
 	parseCanaryArgs,
 	pruneEvidence,
+	stageOpenAICodexCredential,
 	validateCanaryOptions,
 	writeEvidence,
 } from "../scripts/canary-support.mjs";
-import { buildRpcLaunchArgs, parseModelRef } from "../scripts/rpc-support.mjs";
-import {
-	containsHiddenGuidance,
-	HIDDEN_GUIDANCE_SENTINEL,
-	isThinkingLevel,
-	THINKING_LEVELS,
-} from "../src/protocol.mjs";
-import { normalizeBaseUrl, recipientFingerprint } from "../src/recipient-identity.mjs";
+import { buildRpcLaunchArgs, parseModelRef, RpcProcess } from "../scripts/rpc-support.mjs";
+
+const digest = "a".repeat(64);
+const canaryScript = path.resolve("scripts/canary-provider.mjs");
+
+function waitForExit(child: ReturnType<typeof spawn>) {
+	return new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string }>(
+		(resolve) => {
+			let stdout = "";
+			child.stdout?.on("data", (chunk) => {
+				stdout += chunk.toString();
+			});
+			child.once("exit", (code, signal) => resolve({ code, signal, stdout }));
+		},
+	);
+}
+
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!(await check())) {
+		if (Date.now() >= deadline) throw new Error("Timed out waiting for child-process state.");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+function evidence() {
+	return buildEvidenceSummary({
+		now: new Date("2026-07-30T00:00:00.000Z"),
+		retentionMs: 60_000,
+		outcome: "passed",
+		requestModels: ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-luna"],
+		usage: {
+			input: 10,
+			output: 5,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 15,
+			cost: 0.02,
+		},
+		status: "completed",
+		trigger: "edit",
+		settingsBefore: digest,
+		settingsAfter: digest,
+		assertions: ["selected-sol", "luna-observed"],
+	});
+}
 
 describe("RPC smoke support", () => {
-	it("parses explicit model references and builds only the supported live-session RPC launch", () => {
-		expect(parseModelRef("prewalk-smoke/planner")).toEqual({
-			provider: "prewalk-smoke",
-			id: "planner",
+	it("builds a conversion-first multi-extension launch", () => {
+		expect(parseModelRef("openai-codex/gpt-5.6-sol")).toEqual({
+			provider: "openai-codex",
+			id: "gpt-5.6-sol",
 		});
-		expect(() => parseModelRef("planner")).toThrow(/provider\/model/);
 		expect(
 			buildRpcLaunchArgs({
-				extensionPath: "/tmp/extension.mjs",
+				extensionPath: "/tmp/conversion.js",
+				extraExtensions: ["/tmp/prewalk.ts"],
 				sessionPath: "/tmp/session.jsonl",
-				model: "prewalk-smoke/planner",
-				thinking: "off",
+				model: "openai-codex/gpt-5.6-sol",
+				thinking: "high",
 			}),
 		).toEqual([
 			"--mode",
@@ -39,183 +80,298 @@ describe("RPC smoke support", () => {
 			"--session",
 			"/tmp/session.jsonl",
 			"--model",
-			"prewalk-smoke/planner",
+			"openai-codex/gpt-5.6-sol",
 			"--thinking",
-			"off",
+			"high",
 			"-e",
-			"/tmp/extension.mjs",
+			"/tmp/conversion.js",
+			"-e",
+			"/tmp/prewalk.ts",
 		]);
 	});
-});
 
-describe("shared handoff protocol", () => {
-	it("keeps thinking levels and effective recipient fingerprints byte-stable", () => {
-		expect(THINKING_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-		expect(THINKING_LEVELS.every(isThinkingLevel)).toBe(true);
-		expect(isThinkingLevel("extreme")).toBe(false);
-		expect(normalizeBaseUrl("https://user:secret@provider.example/v1///?z=2&a=1#x")).toBe(
-			"https://provider.example/v1?a=1&z=2",
-		);
-		const selected = {
-			provider: "provider-a",
-			id: "target",
-			api: "openai-completions",
-			baseUrl: "https://model.example/v1///?b=2&a=1#fragment",
-		};
-		const registry = (streamImplementationId: string | undefined) => ({
-			getRecipientDescriptor: () => ({
-				provider: selected.provider,
-				providerBaseUrl: "https://user:secret@provider.example/v1///?z=2&a=1#x",
-				modelBaseUrl: selected.baseUrl,
-				api: selected.api,
-				model: selected.id,
-				streamImplementationId,
-			}),
-		});
-		const first = recipientFingerprint(registry("stream@1"), selected);
-		const second = recipientFingerprint(registry("stream@2"), selected);
-		expect(first).toMatch(/^[a-f0-9]{64}$/);
-		expect(second).toMatch(/^[a-f0-9]{64}$/);
-		expect(second).not.toBe(first);
-		expect(
-			recipientFingerprint(registry(undefined), selected, {
-				requireStreamIdentity: true,
-			}),
-		).toBeUndefined();
-	});
-});
-
-describe("provider canary guards", () => {
-	it("allows the persisted checkpoint while rejecting the context-only sentinel", () => {
-		expect(
-			containsHiddenGuidance({
-				role: "toolResult",
-				content: "Prewalk checkpoint accepted. Handoff checklist: 1. implement",
-			}),
-		).toBe(false);
-		expect(
-			containsHiddenGuidance({
-				payload: [{ role: "user", content: `${HIDDEN_GUIDANCE_SENTINEL}\nplanning` }],
-			}),
-		).toBe(true);
-	});
-
-	it("rejects missing opt-in, target, and exact cross-provider consent before runtime", () => {
-		const base = parseCanaryArgs([
-			"--planner",
-			"provider-a/planner",
-			"--target",
-			"provider-b/target",
-		]);
-		expect(() => validateCanaryOptions(base)).toThrow(/explicit provider-cost opt-in/);
-		base.confirmation = CANARY_CONFIRMATION;
-		expect(() => validateCanaryOptions(base)).toThrow(/recipient consent/);
-		base.consent = `${"a".repeat(64)}->${"b".repeat(64)}`;
-		expect(validateCanaryOptions(base)).toMatchObject({
-			planner: { provider: "provider-a", id: "planner" },
-			target: { provider: "provider-b", id: "target" },
-		});
-	});
-
-	it("ships a static guard that consumes owner-only scenario data and shared identity", async () => {
-		const providerSource = await readFile(
-			new URL("../scripts/canary-provider.mjs", import.meta.url),
-			"utf8",
-		);
-		const guardSource = await readFile(
-			new URL("../scripts/canary-guard.mjs", import.meta.url),
-			"utf8",
-		);
-		expect(providerSource).not.toContain("guardExtensionSource");
-		expect(providerSource).toContain("PREWALK_CANARY_SCENARIO");
-		expect(providerSource).toContain("{ mode: 0o600 }");
-		expect(guardSource).toContain("recipientFingerprint");
-		expect(guardSource).toContain('pi.on("before_provider_request"');
-		expect(guardSource).toContain("finalTargetPayloadGuidanceFree");
-		expect(guardSource).toContain("scenario.targetProvider");
-		expect(guardSource).toContain("scenarioStat.mode & 0o077");
-	});
-
-	it("builds redacted evidence without transcript, settings, credentials, or host paths", () => {
-		const summary = buildEvidenceSummary({
-			now: new Date("2026-07-29T00:00:00.000Z"),
-			retentionMs: 60_000,
-			outcome: "passed",
-			planner: { provider: "provider-a", id: "planner" },
-			target: { provider: "provider-b", id: "target" },
-			requestModels: ["provider-a/planner", "provider-b/target"],
-			requestCount: 2,
-			checkpointCount: 1,
-			mutationCount: 1,
-			assertions: ["same-session", "hidden-guidance-absent"],
-		});
-		const serialized = JSON.stringify(summary);
-		expect(serialized).not.toContain("transcript");
-		expect(serialized).not.toContain("settings");
-		expect(serialized).not.toContain("credential");
-		expect(serialized).not.toContain("/Users/");
-		expect(summary.expiresAt).toBe("2026-07-29T00:01:00.000Z");
-	});
-
-	it("rejects symlinked evidence directories before cleanup or write", async () => {
-		const root = await mkdtemp(path.join(tmpdir(), "prewalk-evidence-link-test-"));
+	it("bounds shutdown when an RPC child ignores stdin and SIGTERM", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-rpc-close-"));
 		try {
-			const victim = path.join(root, "victim");
-			const evidence = path.join(root, "evidence");
-			await mkdir(victim);
+			const script = path.join(root, "ignore-term.mjs");
 			await writeFile(
-				path.join(victim, "prewalk-canary-victim.json"),
-				JSON.stringify({ schemaVersion: 1, expiresAt: "2000-01-01T00:00:00.000Z" }),
+				script,
+				'process.on("SIGTERM", () => {}); process.stdin.resume(); setInterval(() => {}, 1000);',
 			);
-			await symlink(victim, evidence);
-			await expect(pruneEvidence(evidence)).rejects.toThrow(/not a symlink/);
-			const summary = buildEvidenceSummary({
-				now: new Date("2026-07-29T00:00:00.000Z"),
-				retentionMs: 1_000,
-				outcome: "failed",
-				planner: { provider: "a", id: "p" },
-				target: { provider: "a", id: "t" },
-				requestModels: [],
-				requestCount: 0,
-				checkpointCount: 0,
-				mutationCount: 0,
-				assertions: [],
+			const rpc = new RpcProcess({
+				executable: script,
+				args: [],
+				cwd: root,
+				env: process.env,
 			});
-			await expect(writeEvidence(evidence, summary)).rejects.toThrow(/not a symlink/);
-			expect(await readFile(path.join(victim, "prewalk-canary-victim.json"), "utf8")).toContain(
-				"expiresAt",
+			const started = Date.now();
+			await rpc.close();
+			expect(Date.now() - started).toBeLessThan(6_000);
+			expect(rpc.child.signalCode).toBe("SIGKILL");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 10_000);
+});
+
+describe("provider canary contract", () => {
+	it("detects exact hidden planning and continuation guidance in provider payloads", () => {
+		const prompts = ["hidden plan prompt", "hidden continuation prompt"];
+		expect(
+			containsCanaryHiddenGuidance({ messages: [{ content: "hidden plan prompt" }] }, prompts),
+		).toBe(true);
+		expect(
+			containsCanaryHiddenGuidance(
+				{ messages: [{ content: "public task and executor checklist" }] },
+				prompts,
+			),
+		).toBe(false);
+	});
+
+	it("requires explicit cost consent and an absolute auth source", () => {
+		const options = parseCanaryArgs([]);
+		expect(() => validateCanaryOptions(options)).toThrow(/explicit provider-cost/);
+		options.confirmation = CANARY_CONFIRMATION;
+		expect(() => validateCanaryOptions(options)).toThrow(/absolute --auth-file/);
+		options.authFile = "/tmp/auth.json";
+		expect(validateCanaryOptions(options)).toBe(options);
+	});
+
+	it("stages only the openai-codex credential in an owner-only file", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-credential-"));
+		try {
+			const source = path.join(root, "source.json");
+			const target = path.join(root, "target.json");
+			await writeFile(
+				source,
+				JSON.stringify({
+					"openai-codex": {
+						type: "oauth",
+						access: "access",
+						refresh: "refresh",
+						expires: 1,
+					},
+					anthropic: { type: "api_key", key: "other-secret" },
+				}),
 			);
+			await stageOpenAICodexCredential(source, target);
+			const staged = JSON.parse(await readFile(target, "utf8"));
+			expect(Object.keys(staged)).toEqual(["openai-codex"]);
+			expect((await stat(target)).mode & 0o777).toBe(0o600);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("writes owner-only evidence and prunes only expired evidence", async () => {
-		const root = await mkdtemp(path.join(tmpdir(), "prewalk-evidence-test-"));
+	it("builds allowlisted redacted evidence", () => {
+		const summary = evidence();
+		expect(summary.expiresAt).toBe("2026-07-30T00:01:00.000Z");
+		expect(JSON.stringify(summary)).not.toMatch(
+			/(transcript|credential|authorization|\/Users\/)/i,
+		);
+		expect(Object.keys(summary).sort()).toEqual([
+			"assertions",
+			"createdAt",
+			"expiresAt",
+			"outcome",
+			"requestModels",
+			"schemaVersion",
+			"settingsAfter",
+			"settingsBefore",
+			"status",
+			"trigger",
+			"usage",
+		]);
+	});
+
+	it("rejects symlinked evidence directories", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-evidence-link-"));
 		try {
-			const summary = buildEvidenceSummary({
-				now: new Date("2026-07-29T00:00:00.000Z"),
-				retentionMs: 1_000,
-				outcome: "passed",
-				planner: { provider: "provider-a", id: "planner" },
-				target: { provider: "provider-a", id: "target" },
-				requestModels: ["provider-a/planner", "provider-a/target"],
-				requestCount: 2,
-				checkpointCount: 1,
-				mutationCount: 1,
-				assertions: ["same-session", "settings-byte-identical"],
-			});
-			const filePath = await writeEvidence(root, summary);
+			const victim = path.join(root, "victim");
+			const evidenceDir = path.join(root, "evidence");
+			await mkdir(victim);
+			await symlink(victim, evidenceDir);
+			await expect(writeEvidence(evidenceDir, evidence())).rejects.toThrow(/not a symlink/);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("writes owner-only evidence and prunes only expired records", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-evidence-"));
+		try {
+			const filePath = await writeEvidence(root, evidence());
 			expect((await stat(root)).mode & 0o777).toBe(0o700);
 			expect((await stat(filePath)).mode & 0o777).toBe(0o600);
-			expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual(summary);
 			const keepPath = path.join(root, "notes.txt");
 			await writeFile(keepPath, "keep");
-			const removed = await pruneEvidence(root, new Date("2026-07-29T00:00:02.000Z"));
-			expect(removed).toEqual([filePath]);
+			expect(await pruneEvidence(root, new Date("2026-07-30T00:02:00.000Z"))).toEqual([
+				filePath,
+			]);
 			expect(await readFile(keepPath, "utf8")).toBe("keep");
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+
+	it("writes redacted evidence for setup failures and exits nonzero", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-canary-failure-"));
+		try {
+			const authFile = path.join(root, "auth.json");
+			const evidenceDir = path.join(root, "evidence");
+			await writeFile(authFile, "{}\n");
+			const child = spawn(
+				process.execPath,
+				[
+					canaryScript,
+					"--confirm-provider-cost",
+					CANARY_CONFIRMATION,
+					"--auth-file",
+					authFile,
+					"--evidence-dir",
+					evidenceDir,
+				],
+				{ cwd: path.resolve("."), stdio: ["ignore", "pipe", "pipe"] },
+			);
+			const result = await waitForExit(child);
+			expect(result.code).toBe(1);
+			const output = JSON.parse(result.stdout.trim());
+			expect(output).toMatchObject({
+				ok: false,
+				reasonCode: "canary-runtime-failed",
+			});
+			const summary = JSON.parse(await readFile(output.evidence, "utf8"));
+			expect(summary).toMatchObject({
+				outcome: "failed",
+				status: "failed:canary-runtime-failed",
+			});
+			expect(JSON.stringify(summary)).not.toMatch(
+				/(credential|authorization|access[_-]?token|refresh[_-]?token|\/Users\/|\/tmp\/)/i,
+			);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("never prints raw provider stderr", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-canary-stderr-"));
+		try {
+			const authFile = path.join(root, "auth.json");
+			const evidenceDir = path.join(root, "evidence");
+			const failingPi = path.join(root, "failing-pi.mjs");
+			await writeFile(
+				authFile,
+				`${JSON.stringify({
+					"openai-codex": {
+						type: "oauth",
+						access: "test-access",
+						refresh: "test-refresh",
+						expires: Date.now() + 60_000,
+					},
+				})}\n`,
+			);
+			await writeFile(
+				failingPi,
+				'console.error("error access_token=super-secret"); process.exit(1);\n',
+			);
+			const child = spawn(
+				process.execPath,
+				[
+					canaryScript,
+					"--confirm-provider-cost",
+					CANARY_CONFIRMATION,
+					"--auth-file",
+					authFile,
+					"--evidence-dir",
+					evidenceDir,
+					"--pi",
+					failingPi,
+				],
+				{ cwd: path.resolve("."), stdio: ["ignore", "pipe", "pipe"] },
+			);
+			let stderr = "";
+			child.stderr?.on("data", (chunk) => {
+				stderr += chunk.toString();
+			});
+			const result = await waitForExit(child);
+			expect(result.code).toBe(1);
+			expect(`${result.stdout}\n${stderr}`).not.toContain("super-secret");
+			expect(JSON.parse(result.stdout.trim()).reasonCode).toBe("pi-actionable-stderr");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("removes staged credentials and writes failure evidence on SIGTERM", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-canary-signal-"));
+		const before = new Set(
+			(await readdir(tmpdir())).filter((entry) => entry.startsWith("prewalk-canary-")),
+		);
+		let child: ReturnType<typeof spawn> | undefined;
+		try {
+			const authFile = path.join(root, "auth.json");
+			const evidenceDir = path.join(root, "evidence");
+			const hangingPi = path.join(root, "hanging-pi.mjs");
+			await writeFile(
+				authFile,
+				`${JSON.stringify({
+					"openai-codex": {
+						type: "oauth",
+						access: "test-access",
+						refresh: "test-refresh",
+						expires: Date.now() + 60_000,
+					},
+				})}\n`,
+			);
+			await writeFile(hangingPi, "process.stdin.resume(); setInterval(() => {}, 1000);\n");
+			child = spawn(
+				process.execPath,
+				[
+					canaryScript,
+					"--confirm-provider-cost",
+					CANARY_CONFIRMATION,
+					"--auth-file",
+					authFile,
+					"--evidence-dir",
+					evidenceDir,
+					"--pi",
+					hangingPi,
+					"--timeout-ms",
+					"30000",
+				],
+				{ cwd: path.resolve("."), stdio: ["ignore", "pipe", "pipe"] },
+			);
+			const exit = waitForExit(child);
+			let temporaryName = "";
+			await waitUntil(async () => {
+				const candidates = (await readdir(tmpdir())).filter(
+					(entry) => entry.startsWith("prewalk-canary-") && !before.has(entry),
+				);
+				for (const candidate of candidates) {
+					try {
+						await stat(path.join(tmpdir(), candidate, "agent", "auth.json"));
+						temporaryName = candidate;
+						return true;
+					} catch {}
+				}
+				return false;
+			});
+			child.kill("SIGTERM");
+			const result = await exit;
+			expect(result.signal, JSON.stringify(result)).toBe("SIGTERM");
+			await expect(stat(path.join(tmpdir(), temporaryName))).rejects.toThrow();
+			const evidenceFiles = await readdir(evidenceDir);
+			expect(evidenceFiles).toHaveLength(1);
+			const summary = JSON.parse(
+				await readFile(path.join(evidenceDir, evidenceFiles[0] ?? ""), "utf8"),
+			);
+			expect(summary).toMatchObject({
+				outcome: "failed",
+				status: "failed:signal-sigterm",
+			});
+		} finally {
+			child?.kill("SIGKILL");
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
 });

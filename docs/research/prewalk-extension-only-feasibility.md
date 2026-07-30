@@ -1,5 +1,11 @@
 # Research: standalone Prewalk as a public Pi extension
 
+> Superseded on 2026-07-30. The current implementation uses Pi 0.82.1's public
+> provider registration seam to wrap the conversion-owned `openai-codex`
+> stream. It keeps Sol selected while routing primary post-gate requests to
+> Luna. See the current README and
+> `docs/plans/2026-07-30-002-feat-extension-only-sol-luna-prewalk-plan.md`.
+
 ## Summary
 
 **Verdict: B / feasible with a small manual handoff; D / not feasible for a seamless in-process handoff on Pi 0.82.1.** Packaging, installation, removal, transcript persistence, UI prompts, and custom commands are all supported publicly. The blocking host limitation is narrow but decisive: every public in-process model/thinking setter available to an extension also writes the global defaults, and neither 0.82.1 nor current `main` exposes a session-only equivalent.

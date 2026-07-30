@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "protocol": {
+    "piVersion": "0.82.1",
+    "conversionVersion": "3.0.3",
+    "promptDigests": {
+      "plan": "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78",
+      "continue": "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0",
+      "checklist": "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"
+    },
+    "activeTools": ["exec_command", "write_stdin", "apply_patch", "todo"],
+    "arms": {
+      "sol": {
+        "selectedModel": "openai-codex/gpt-5.6-sol",
+        "thinking": "high",
+        "prewalk": false
+      },
+      "luna": {
+        "selectedModel": "openai-codex/gpt-5.6-luna",
+        "thinking": "low",
+        "prewalk": false
+      },
+      "prewalk": {
+        "selectedModel": "openai-codex/gpt-5.6-sol",
+        "thinking": "high",
+        "executorThinking": "low",
+        "prewalk": true
+      }
+    },
+    "retryPolicy": { "autoRetry": false },
+    "cachePolicy": { "forceCachedWebSockets": false },
+    "sandbox": {
+      "network": "none",
+      "readOnlyRoot": true,
+      "user": "65532:65532",
+      "capabilities": [],
+      "pids": 256,
+      "memoryBytes": 4294967296,
+      "cpus": 2,
+      "workspaceBytes": 8589934592
+    },
+    "analysis": {
+      "unit": "task",
+      "method": "paired-task-cluster-bootstrap",
+      "confidenceLevel": 0.95,
+      "bootstrapSamples": 10000,
+      "bootstrapSeed": "prewalk-release-v1"
+    }
+  },
+  "analysisFrozen": true,
+  "corpusFrozen": false,
+  "repetitions": 5,
+  "arms": ["sol", "luna", "prewalk"],
+  "thresholds": {
+    "maxPassRateGapFromSolPoints": 5,
+    "minCostOrTimeImprovementPercent": 15,
+    "minPassRateLeadOverLunaPoints": 10,
+    "maxNonWinningMetricRegressionPercent": 5,
+    "maxLookupAttemptRateGapFromSolPoints": 0
+  },
+  "tasks": []
+}

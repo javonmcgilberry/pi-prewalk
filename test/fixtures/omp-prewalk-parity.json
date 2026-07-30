@@ -1,0 +1,79 @@
+{
+  "revision": "8db0228f4d38ff5d41b30038b6d227b01ea0fc8a",
+  "sourceSuites": [
+    "packages/coding-agent/test/agent-session-prewalk.test.ts",
+    "packages/coding-agent/test/prewalk-startup-degradation.test.ts"
+  ],
+  "scenarios": [
+    {
+      "upstream": "prewalks at the first edit/write after the todo gate opens; bash and todo don't trigger",
+      "classification": "pi-adapted",
+      "local": "test/agent-loop.test.ts"
+    },
+    {
+      "upstream": "an edit before any todo call does not switch while a todo tool exists; the next edit after todo does",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "keeps the todo gate closed after a failed todo call",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "forces a continuation when the plan nudge gets a text-only reply, instead of silently ending the run",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "bounds a completed bash-only task to a single continuation instead of looping",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "re-arms continuation after tool progress between prose turns",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "skips the todo gate when todo is registered but not active (subagent-style restricted slates)",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "armPrewalk (the /prewalk slash command) pre-arms the switch for the very next edit/write",
+      "classification": "pi-adapted",
+      "local": "test/extension.test.ts"
+    },
+    {
+      "upstream": "effort-only prewalk on the same model downgrades the thinking level instead of silently skipping",
+      "classification": "excluded",
+      "rationale": "Phase one always changes from the fixed Sol planner to the fixed Luna executor."
+    },
+    {
+      "upstream": "emits a notice and skips the checklist when the prewalk target is a genuine no-op",
+      "classification": "excluded",
+      "rationale": "The fixed planner and executor IDs cannot form a same-model no-op."
+    },
+    {
+      "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
+      "classification": "excluded",
+      "rationale": "Phase one fixes Luna reasoning to low and does not expose effort-only targets."
+    },
+    {
+      "upstream": "switches when a same-model target clears auto mode even though efforts both resolve to undefined",
+      "classification": "excluded",
+      "rationale": "Phase one has no same-model target or provider-agnostic effort routing."
+    },
+    {
+      "upstream": "leaves prewalk unarmed instead of crashing when the target has no configured auth",
+      "classification": "pi-adapted",
+      "local": "test/extension.test.ts"
+    },
+    {
+      "upstream": "arms prewalk when the target resolves and has configured auth",
+      "classification": "pi-adapted",
+      "local": "test/agent-loop.test.ts"
+    }
+  ]
+}

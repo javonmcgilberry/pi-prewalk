@@ -9,6 +9,7 @@ export function buildRpcLaunchArgs(options: {
 	model: string;
 	thinking?: string;
 	extraExtensions?: string[];
+	noBuiltinTools?: boolean;
 }): string[];
 export function resolvePiLaunch(
 	executable: string,

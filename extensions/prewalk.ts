@@ -1,587 +1,570 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { readFile as readFileAsync } from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type Api, clampThinkingLevel, type Model } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
-	type ExtensionCommandContext,
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-	CHECKPOINT_TOOL,
-	EXPLORATION_TOOLS,
-	MAX_CHECKPOINT_ITEM_LENGTH,
-	MAX_CHECKPOINT_ITEMS,
-	MIN_CHECKPOINT_ITEMS,
-	MUTATION_TOOLS,
+	type AuditEventKind,
+	createAuditRecord,
+	PREWALK_AUDIT_TYPE,
+	parseAuditRecord,
+	runFromAudit,
+} from "../src/audit.js";
+import {
+	EXECUTOR_MODEL_ID,
+	EXECUTOR_PROVIDER,
+	isPlannerSelected,
+	PLANNER_MODEL_ID,
+	PLANNER_PROVIDER,
+	PREWALK_CHECKLIST_MESSAGE_TYPE,
+	PREWALK_CONTINUE_MESSAGE_TYPE,
+	PREWALK_PLAN_MESSAGE_TYPE,
 	type PrewalkConfig,
 	PrewalkCoordinator,
 	type PrewalkRun,
 	parseConfig,
-	parseTarget,
-	parseThinkingLevel,
-	type RunMode,
-	type ThinkingLevel,
-	validateCheckpoint,
 } from "../src/core.js";
-import { HIDDEN_GUIDANCE_SENTINEL } from "../src/protocol.mjs";
-import { recipientFingerprint, recipientPair } from "../src/recipient-identity.mjs";
+import { isRecord } from "../src/guards.js";
+import { MutationTurnBuffer } from "../src/mutation.js";
+import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
+import { compactStatus, detailedStatus } from "../src/status.js";
+import {
+	applyTodoOperation,
+	latestTodoPhases,
+	type TodoInput,
+	type TodoPhase,
+	TodoReminder,
+} from "../src/todo.js";
 
 const STATUS_KEY = "prewalk";
+const PREWALK_TODO_REMINDER_MESSAGE_TYPE = "prewalk-todo-reminder";
+const PROMPT_TYPES = new Set([
+	PREWALK_PLAN_MESSAGE_TYPE,
+	PREWALK_CONTINUE_MESSAGE_TYPE,
+	PREWALK_CHECKLIST_MESSAGE_TYPE,
+	PREWALK_TODO_REMINDER_MESSAGE_TYPE,
+]);
 
-interface CheckpointDetails {
-	accepted: boolean;
-	runId?: string;
-	itemCount?: number;
-}
-
-const CheckpointParameters = Type.Object({
-	runId: Type.String({
-		description: "Opaque run ID from the active Prewalk instruction",
-	}),
-	items: Type.Array(Type.String({ minLength: 1, maxLength: MAX_CHECKPOINT_ITEM_LENGTH }), {
-		minItems: MIN_CHECKPOINT_ITEMS,
-		maxItems: MAX_CHECKPOINT_ITEMS,
-		description: "Implementation and verification checklist in execution order",
-	}),
+const TodoParameters = Type.Object({
+	op: Type.Union([
+		Type.Literal("init"),
+		Type.Literal("start"),
+		Type.Literal("done"),
+		Type.Literal("rm"),
+		Type.Literal("drop"),
+		Type.Literal("block"),
+		Type.Literal("unblock"),
+		Type.Literal("append"),
+		Type.Literal("view"),
+	]),
+	list: Type.Optional(
+		Type.Array(
+			Type.Object({
+				phase: Type.String(),
+				items: Type.Array(Type.String()),
+			}),
+		),
+	),
+	task: Type.Optional(Type.String()),
+	phase: Type.Optional(Type.String()),
+	items: Type.Optional(Type.Array(Type.String())),
+	reason: Type.Optional(Type.String()),
 });
 
+interface PromptSet {
+	plan: string;
+	continue: string;
+	checklist: string;
+	todo: string;
+}
+
+function promptFile(name: string): URL {
+	return new URL(`../prompts/${name}`, import.meta.url);
+}
+
+function loadPrompts(): PromptSet {
+	return {
+		plan: readFileSync(promptFile("prewalk-plan.md"), "utf8"),
+		continue: readFileSync(promptFile("prewalk-continue.md"), "utf8"),
+		checklist: readFileSync(promptFile("prewalk-checklist.md"), "utf8"),
+		todo: readFileSync(promptFile("todo.md"), "utf8"),
+	};
+}
+
+const prompts = loadPrompts();
+
 function configPath(): string {
-	// pi-lens-ignore: ts-path-traversal
 	return path.join(getAgentDir(), "prewalk.json");
 }
 
-function targetKey(target: { provider: string; id: string }): string {
-	return `${target.provider}/${target.id}`;
-}
-
-function isBuiltinTool(pi: ExtensionAPI, toolName: string): boolean {
-	return pi.getAllTools().find((tool) => tool.name === toolName)?.sourceInfo.source === "builtin";
-}
-
-function planningPrompt(run: PrewalkRun): string {
-	if (run.phase === "checkpointed" || run.phase === "mutation-pending") {
-		return [
-			HIDDEN_GUIDANCE_SENTINEL,
-			"Prewalk checkpoint accepted.",
-			"Make exactly one built-in edit or write call now.",
-			"Do not issue parallel mutations. Stop after that mutation result so the configured target can continue this live session.",
-		].join("\n");
-	}
-	return [
-		HIDDEN_GUIDANCE_SENTINEL,
-		"You are in Prewalk planning mode. Continue the user's task in this same response and preserve the user's requested scope.",
-		"Inspect enough of the repository to decide whether the task requires implementation and, when it does, produce a concrete implementation and verification checklist.",
-		"If the user's task is read-only or no mutation is needed, finish normally without a checkpoint or edit.",
-		`Only when implementation is required, call ${CHECKPOINT_TOOL} before any edit or write, exactly once with runId ${JSON.stringify(run.id)} and 5 to 9 trimmed, non-empty checklist items.`,
-		"The checklist must name the remaining work in execution order, including exact files, symbols, commands, and checks where known.",
-		"After that checkpoint succeeds, make exactly one built-in edit or write call. Do not issue parallel mutations.",
-	].join("\n");
+function isMissingFile(error: unknown): boolean {
+	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 async function readConfig(): Promise<PrewalkConfig> {
-	const filePath = configPath();
 	let raw: string;
 	try {
-		raw = await readFile(filePath, "utf8");
+		raw = await readFileAsync(configPath(), "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			throw new Error(
-				"Prewalk is not configured. Run /prewalk configure provider/model thinking.",
-			);
+		if (isMissingFile(error)) {
+			throw new Error("configuration-invalid");
 		}
 		throw error;
 	}
-	let value: unknown;
 	try {
-		value = JSON.parse(raw);
+		return parseConfig(JSON.parse(raw));
 	} catch {
-		throw new Error(`Prewalk config is not valid JSON: ${filePath}`);
+		throw new Error("configuration-invalid");
 	}
-	return parseConfig(value);
 }
 
-async function writeConfig(config: PrewalkConfig): Promise<void> {
-	const filePath = configPath();
-	await mkdir(path.dirname(filePath), { recursive: true });
-	const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
-	await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
-	await rename(temporaryPath, filePath);
+function isPrewalkPrompt(
+	message: AgentMessage,
+): message is Extract<AgentMessage, { role: "custom" }> {
+	return message.role === "custom" && PROMPT_TYPES.has(message.customType);
 }
 
-function resolveConfiguredModel(
-	ctx: ExtensionContext,
-	configuredTarget: string,
-): Model<Api> | undefined {
-	const parsed = parseTarget(configuredTarget);
-	return parsed ? ctx.modelRegistry.find(parsed.provider, parsed.id) : undefined;
+function runIdFromMessage(message: AgentMessage): string | undefined {
+	if (!isPrewalkPrompt(message) || !isRecord(message.details)) return undefined;
+	return typeof message.details.runId === "string" ? message.details.runId : undefined;
 }
 
-function effectiveThinkingLevel(target: Model<Api>, requested: ThinkingLevel): ThinkingLevel {
-	return clampThinkingLevel(target, requested) as ThinkingLevel;
-}
-
-function clearUi(ctx: ExtensionContext): void {
-	ctx.ui.setStatus(STATUS_KEY, undefined);
-}
-
-function disarm(coordinator: PrewalkCoordinator, ctx: ExtensionContext): void {
-	coordinator.disarm();
-	clearUi(ctx);
-}
-
-async function ensureRecipientConsent(
-	config: PrewalkConfig,
-	planner: Model<Api>,
-	target: Model<Api>,
-	mode: RunMode,
-	ctx: ExtensionContext,
-): Promise<boolean> {
-	const pair = recipientPair(ctx.modelRegistry, planner, target);
-	if (pair === undefined) return true;
-	if (pair === null) {
-		ctx.ui.notify(
-			"Prewalk cannot identify the exact registered stream implementation for this cross-provider handoff. Custom stream registrations must declare streamImplementationId.",
-			"error",
-		);
-		return false;
-	}
-	if (config.crossProviderPairs.includes(pair)) return true;
-	if (mode === "automatic") {
-		ctx.ui.notify(
-			`Prewalk needs explicit cross-provider acknowledgement for ${planner.provider} → ${target.provider}. Run /prewalk configure again or /prewalk run.`,
-			"warning",
-		);
-		return false;
-	}
-	const confirmed = await ctx.ui.confirm(
-		"Cross-provider handoff",
-		`Allow ${targetKey(target)} to receive the provider-visible conversation accumulated with ${targetKey(planner)}? Consent is limited to these exact recipient endpoints and target.`,
-	);
-	if (!confirmed) return false;
-	config.crossProviderPairs = [...new Set([...config.crossProviderPairs, pair])];
-	await writeConfig(config);
-	return true;
-}
-
-interface ReadinessResult {
-	ready: boolean;
-	target?: Model<Api>;
-	reason?: string;
-}
-
-async function validateRunReadiness(
-	run: PrewalkRun,
-	ctx: ExtensionContext,
-): Promise<ReadinessResult> {
-	let config: PrewalkConfig;
-	try {
-		config = await readConfig();
-	} catch (error) {
-		return {
-			ready: false,
-			reason: error instanceof Error ? error.message : String(error),
-		};
-	}
-	const target = resolveConfiguredModel(ctx, config.target);
-	if (!target || target.provider !== run.target.provider || target.id !== run.target.id) {
-		return {
-			ready: false,
-			reason: "Prewalk target changed or is unavailable; cancel and re-arm after configuration.",
-		};
-	}
-	if (effectiveThinkingLevel(target, config.thinkingLevel) !== run.thinkingLevel) {
-		return {
-			ready: false,
-			reason: "Prewalk target thinking changed; cancel and re-arm after configuration.",
-		};
-	}
-	if (!ctx.modelRegistry.hasConfiguredAuth(target)) {
-		return {
-			ready: false,
-			reason: `Prewalk has no complete configured authentication for ${targetKey(target)}.`,
-		};
-	}
-	const planner = ctx.model;
+function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined): boolean {
+	if (!isPrewalkPrompt(message)) return true;
+	const messageRunId = runIdFromMessage(message);
+	if (!messageRunId) return false;
+	if (!run || messageRunId !== run.id || run.phase === "cancelled") return false;
+	if (message.customType === PREWALK_TODO_REMINDER_MESSAGE_TYPE) return true;
 	if (
-		!planner ||
-		recipientFingerprint(ctx.modelRegistry, planner) !== run.plannerRecipientFingerprint ||
-		recipientFingerprint(ctx.modelRegistry, target) !== run.targetRecipientFingerprint ||
-		(run.crossProviderPair !== undefined &&
-			!config.crossProviderPairs.includes(run.crossProviderPair))
+		run.phase === "handoff-pending" ||
+		run.phase === "active" ||
+		run.phase === "completed" ||
+		(run.phase === "failed" && run.effectiveRoute === "luna")
 	) {
-		return {
-			ready: false,
-			reason:
-				"Prewalk recipient identity changed or lacks exact cross-provider consent; cancel and re-arm.",
-		};
+		return message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE;
 	}
-	return { ready: true, target };
+	return message.customType !== PREWALK_CHECKLIST_MESSAGE_TYPE;
 }
 
-interface ArmOptions {
-	pi: ExtensionAPI;
-	coordinator: PrewalkCoordinator;
-	config: PrewalkConfig;
-	mode: RunMode;
-	ctx: ExtensionContext;
+function acceptsMutationEvidence(run: PrewalkRun | undefined): boolean {
+	return run?.phase === "armed" || run?.phase === "planning" || run?.phase === "ready";
 }
 
-async function arm({ pi, coordinator, config, mode, ctx }: ArmOptions): Promise<boolean> {
-	if (coordinator.run) {
-		if (mode === "manual" && coordinator.run.phase === "armed") {
-			const run = coordinator.activateManual();
-			ctx.ui.setStatus(STATUS_KEY, `Prewalk → ${run.target.name}`);
-			ctx.ui.notify(
-				`Prewalk planning with ${targetKey(run.target)} (${run.thinkingLevel}).`,
-				"info",
-			);
-			return true;
+function latestAuditRecord(ctx: ExtensionContext) {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry?.type !== "custom" || entry.customType !== PREWALK_AUDIT_TYPE) {
+			continue;
 		}
-		ctx.ui.notify("Prewalk is already active. Use /prewalk cancel first.", "error");
-		return false;
+		const record = parseAuditRecord(entry.data);
+		if (record) return record;
 	}
-	if (!ctx.isProjectTrusted()) {
-		if (mode === "automatic") {
-			ctx.ui.notify("Prewalk did not arm because this project is not trusted.", "warning");
-			return false;
-		}
-		const confirmed = await ctx.ui.confirm(
-			"Untrusted project",
-			"Prewalk will allow one edit or write after its checkpoint. Arm it for this run?",
-		);
-		if (!confirmed) return false;
-	}
-	if (!pi.getActiveTools().includes(CHECKPOINT_TOOL)) {
-		ctx.ui.notify(`Prewalk requires the active ${CHECKPOINT_TOOL} tool.`, "error");
-		return false;
-	}
-	const target = resolveConfiguredModel(ctx, config.target);
-	if (!target) {
-		ctx.ui.notify(`Configured Prewalk target is unavailable: ${config.target}.`, "error");
-		return false;
-	}
-	if (!ctx.modelRegistry.hasConfiguredAuth(target)) {
-		ctx.ui.notify(`No complete configured authentication for ${targetKey(target)}.`, "error");
-		return false;
-	}
-	const planner = ctx.model;
-	if (!planner) {
-		ctx.ui.notify("Prewalk requires an active planner model.", "error");
-		return false;
-	}
-	if (!(await ensureRecipientConsent(config, planner, target, mode, ctx))) return false;
-	const plannerRecipientFingerprint = recipientFingerprint(ctx.modelRegistry, planner);
-	const targetRecipientFingerprint = recipientFingerprint(ctx.modelRegistry, target);
-	if (!plannerRecipientFingerprint || !targetRecipientFingerprint) {
-		ctx.ui.notify("Prewalk could not determine recipient identity.", "error");
-		return false;
-	}
-	const thinkingLevel = effectiveThinkingLevel(target, config.thinkingLevel);
-	if (
-		planner.provider === target.provider &&
-		planner.id === target.id &&
-		(pi.getThinkingLevel() as ThinkingLevel) === thinkingLevel
-	) {
-		ctx.ui.notify(
-			`Prewalk target ${targetKey(target)} (${thinkingLevel}) is already active.`,
-			"info",
-		);
-		return false;
-	}
-	const run = coordinator.arm({
-		id: randomUUID(),
-		mode,
-		target: {
-			provider: target.provider,
-			id: target.id,
-			name: target.name || target.id,
-		},
-		thinkingLevel,
-		plannerRecipientFingerprint,
-		targetRecipientFingerprint,
-		crossProviderPair: recipientPair(ctx.modelRegistry, planner, target) ?? undefined,
-	});
-	ctx.ui.setStatus(STATUS_KEY, `Prewalk → ${run.target.name}`);
-	ctx.ui.notify(
-		mode === "automatic"
-			? `Prewalk armed for ${targetKey(run.target)} (${thinkingLevel}); no model request was added.`
-			: `Prewalk planning with ${targetKey(run.target)} (${thinkingLevel}).`,
-		"info",
-	);
-	return true;
-}
-
-function configSummary(config: PrewalkConfig): string {
-	return `${config.enabled ? "enabled" : "disabled"}; target ${config.target} (${config.thinkingLevel})`;
-}
-
-async function configure(raw: string[], ctx: ExtensionCommandContext): Promise<void> {
-	const [targetName, rawThinking, optionalFlag, ...extra] = raw;
-	const requestedThinking = parseThinkingLevel(rawThinking);
-	const parsedTarget = targetName ? parseTarget(targetName) : undefined;
-	if (
-		!targetName ||
-		!parsedTarget ||
-		!requestedThinking ||
-		extra.length > 0 ||
-		(optionalFlag && optionalFlag !== "--allow-cross-provider")
-	) {
-		ctx.ui.notify(
-			"Usage: /prewalk configure provider/model thinking [--allow-cross-provider]",
-			"error",
-		);
-		return;
-	}
-	const target = ctx.modelRegistry.find(parsedTarget.provider, parsedTarget.id);
-	if (!target) {
-		ctx.ui.notify(`Configured Prewalk target is unavailable: ${targetName}.`, "error");
-		return;
-	}
-	if (!ctx.modelRegistry.hasConfiguredAuth(target)) {
-		ctx.ui.notify(`No complete configured authentication for ${targetKey(target)}.`, "error");
-		return;
-	}
-	const thinkingLevel = effectiveThinkingLevel(target, requestedThinking);
-	const config: PrewalkConfig = {
-		enabled: true,
-		target: targetName,
-		thinkingLevel,
-		crossProviderPairs: [],
-	};
-	const planner = ctx.model;
-	const pair = planner ? recipientPair(ctx.modelRegistry, planner, target) : undefined;
-	if (pair === null) {
-		ctx.ui.notify(
-			"Cross-provider configuration requires stable streamImplementationId values for custom stream registrations.",
-			"error",
-		);
-		return;
-	}
-	if (planner && pair) {
-		if (optionalFlag !== "--allow-cross-provider") {
-			ctx.ui.notify(
-				"Cross-provider configuration requires --allow-cross-provider and explicit confirmation.",
-				"error",
-			);
-			return;
-		}
-		if (!(await ensureRecipientConsent(config, planner, target, "manual", ctx))) return;
-	} else {
-		await writeConfig(config);
-	}
-	const clampNote =
-		thinkingLevel === requestedThinking
-			? ""
-			: `; ${requestedThinking} clamped to ${thinkingLevel}`;
-	ctx.ui.notify(
-		`Prewalk configured and enabled: ${targetName} (${thinkingLevel})${clampNote}.`,
-		"info",
-	);
-}
-
-async function handleCommand(
-	pi: ExtensionAPI,
-	coordinator: PrewalkCoordinator,
-	rawArgs: string,
-	ctx: ExtensionCommandContext,
-): Promise<void> {
-	const args = rawArgs.trim().split(/\s+/).filter(Boolean);
-	const action = args[0] ?? "run";
-	if (action === "status") {
-		try {
-			const config = await readConfig();
-			const live = coordinator.run
-				? `${coordinator.run.phase}; run ${coordinator.run.id}`
-				: "idle";
-			ctx.ui.notify(`Prewalk ${configSummary(config)}; ${live}.`, "info");
-		} catch (error) {
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-		}
-		return;
-	}
-	if (action === "cancel") {
-		disarm(coordinator, ctx);
-		ctx.ui.notify("Prewalk cancelled.", "info");
-		return;
-	}
-	if (action === "configure") {
-		await configure(args.slice(1), ctx);
-		return;
-	}
-	if (action === "enable" || action === "disable") {
-		try {
-			const config = await readConfig();
-			config.enabled = action === "enable";
-			await writeConfig(config);
-			ctx.ui.notify(
-				`Prewalk automatic mode ${config.enabled ? "enabled" : "disabled"}.`,
-				"info",
-			);
-		} catch (error) {
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-		}
-		return;
-	}
-	if (action !== "run" || args.length > (args[0] === "run" ? 1 : 0)) {
-		ctx.ui.notify("Usage: /prewalk [run|status|cancel|enable|disable|configure ...]", "error");
-		return;
-	}
-	try {
-		await arm({
-			pi,
-			coordinator,
-			config: await readConfig(),
-			mode: "manual",
-			ctx,
-		});
-	} catch (error) {
-		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-	}
+	return undefined;
 }
 
 export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
+	const mutations = new MutationTurnBuffer();
+	const todoReminder = new TodoReminder();
+	let overlay: ProviderOverlay | undefined;
+	let primaryAgentStream = false;
+	let todoPhases: TodoPhase[] = [];
+	let todoConflict = false;
+	let lastAuditKey: string | undefined;
+	let lastStatus: string | undefined;
 
-	pi.registerTool<typeof CheckpointParameters, CheckpointDetails>({
-		name: CHECKPOINT_TOOL,
-		label: "Prewalk checkpoint",
-		description:
-			"Record the current Prewalk run's 5-9 item implementation and verification checklist",
-		parameters: CheckpointParameters,
-		executionMode: "sequential",
-		async execute(_toolCallId, params) {
-			const run = coordinator.run;
-			const items = run ? validateCheckpoint(run, params) : undefined;
-			if (!run || run.phase !== "planning" || !items) {
-				throw new Error("Prewalk checkpoint rejected: no matching bounded planning run.");
+	const updateStatus = (ctx: ExtensionContext): void => {
+		const nextStatus = compactStatus(coordinator.run, ctx.model);
+		if (nextStatus === lastStatus) return;
+		ctx.ui.setStatus(STATUS_KEY, nextStatus);
+		lastStatus = nextStatus;
+	};
+
+	const audit = (event: AuditEventKind, ctx: ExtensionContext): void => {
+		const run = coordinator.run;
+		if (!run) return;
+		const record = createAuditRecord(run, event);
+		const key = JSON.stringify(record);
+		if (key === lastAuditKey) return;
+		pi.appendEntry(PREWALK_AUDIT_TYPE, record);
+		lastAuditKey = key;
+		updateStatus(ctx);
+	};
+
+	const fail = (reasonCode: string, holdLunaRoute: boolean, ctx: ExtensionContext): void => {
+		if (!coordinator.run) {
+			coordinator.arm(
+				randomUUID(),
+				randomUUID(),
+				"automatic",
+				pi.getActiveTools().includes("todo"),
+			);
+		}
+		coordinator.fail(reasonCode, holdLunaRoute);
+		mutations.resetForRun();
+		audit("failed", ctx);
+		ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
+	};
+
+	const cancel = (selectedModelIsSol: boolean, ctx: ExtensionContext): void => {
+		coordinator.cancel(selectedModelIsSol);
+		mutations.resetForRun();
+		audit("cancelled", ctx);
+		overlay?.restore();
+		overlay = undefined;
+	};
+
+	const ensureOverlay = (ctx: ExtensionContext): ProviderOverlay => {
+		if (overlay) return overlay;
+		const candidate = createProviderOverlay(pi, ctx.modelRegistry, {
+			shouldRouteToLuna: () =>
+				coordinator.run?.phase === "handoff-pending" ||
+				coordinator.run?.effectiveRoute === "luna",
+			isPrimaryAgentStream: () => primaryAgentStream,
+			currentRunId: () => coordinator.run?.id,
+			onLunaStreamStarted: (runId) => {
+				if (coordinator.run?.id !== runId || coordinator.run.phase !== "handoff-pending") {
+					return;
+				}
+				try {
+					coordinator.activateLuna();
+					audit("luna-active", ctx);
+				} catch {
+					fail("provider-drift", false, ctx);
+				}
+			},
+			onLunaStreamSucceeded: (runId) => {
+				if (coordinator.run?.id !== runId || coordinator.run.phase !== "active") return;
+				try {
+					coordinator.completeHandoff();
+					audit("handoff-completed", ctx);
+				} catch {
+					fail("provider-drift", true, ctx);
+				}
+			},
+			onLunaStreamFailed: (runId) => {
+				if (coordinator.run?.id !== runId) return;
+				if (coordinator.run.phase === "handoff-pending") {
+					fail("luna-stream-failed", false, ctx);
+				} else if (coordinator.run.phase === "active") {
+					fail("luna-stream-failed", true, ctx);
+				}
+			},
+			onProviderDrift: () =>
+				fail("provider-drift", coordinator.run?.effectiveRoute === "luna", ctx),
+		});
+		candidate.install();
+		overlay = candidate;
+		return candidate;
+	};
+
+	const verifyOverlayOwnership = (ctx: ExtensionContext): boolean => {
+		if (
+			!overlay ||
+			overlay.ownsRegistration() ||
+			coordinator.run?.phase === "cancelled" ||
+			coordinator.run?.phase === "failed"
+		) {
+			return true;
+		}
+		fail("provider-drift", coordinator.run?.effectiveRoute === "luna", ctx);
+		return false;
+	};
+
+	const validateModels = async (ctx: ExtensionContext): Promise<void> => {
+		const planner = ctx.modelRegistry.find(PLANNER_PROVIDER, PLANNER_MODEL_ID);
+		const executor = ctx.modelRegistry.find(EXECUTOR_PROVIDER, EXECUTOR_MODEL_ID);
+		if (!planner || !executor || !isPlannerSelected(ctx.model)) {
+			throw new Error("model-unavailable");
+		}
+		if (
+			planner.api !== executor.api ||
+			planner.contextWindow <= 0 ||
+			executor.contextWindow < planner.contextWindow ||
+			planner.maxTokens <= 0 ||
+			executor.maxTokens <= 0
+		) {
+			throw new Error("model-unavailable");
+		}
+		const [plannerAuth, executorAuth] = await Promise.all([
+			ctx.modelRegistry.getApiKeyAndHeaders(planner),
+			ctx.modelRegistry.getApiKeyAndHeaders(executor),
+		]);
+		if (!plannerAuth.ok || !executorAuth.ok) {
+			throw new Error("authorization-unavailable");
+		}
+	};
+
+	const sendPrompt = async (
+		type:
+			| typeof PREWALK_PLAN_MESSAGE_TYPE
+			| typeof PREWALK_CONTINUE_MESSAGE_TYPE
+			| typeof PREWALK_CHECKLIST_MESSAGE_TYPE,
+		ctx: ExtensionContext,
+	): Promise<void> => {
+		const run = coordinator.run;
+		if (!run) return;
+		let prompt: { content: string; event: AuditEventKind };
+		switch (type) {
+			case PREWALK_PLAN_MESSAGE_TYPE:
+				prompt = { content: prompts.plan, event: "plan-injected" };
+				break;
+			case PREWALK_CONTINUE_MESSAGE_TYPE:
+				prompt = { content: prompts.continue, event: "continuation" };
+				break;
+			case PREWALK_CHECKLIST_MESSAGE_TYPE:
+				prompt = { content: prompts.checklist, event: "handoff-triggered" };
+				break;
+		}
+		pi.sendMessage(
+			{
+				customType: type,
+				content: prompt.content,
+				display: false,
+				details: { runId: run.id },
+			},
+			{ deliverAs: "steer" },
+		);
+		audit(prompt.event, ctx);
+	};
+
+	const startRun = async (mode: "automatic" | "manual", ctx: ExtensionContext): Promise<void> => {
+		if (!isPlannerSelected(ctx.model)) return;
+		try {
+			const config = await readConfig();
+			if (mode === "automatic" && !config.enabled) return;
+			if (todoConflict) throw new Error("todo-conflict");
+			await validateModels(ctx);
+			ensureOverlay(ctx);
+			const todoActive = pi.getActiveTools().includes("todo");
+			const action = coordinator.arm(randomUUID(), randomUUID(), mode, todoActive);
+			mutations.resetForRun();
+			todoReminder.reset();
+			audit("armed", ctx);
+			if (action.type === "send-planning") {
+				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
 			}
+		} catch (error) {
+			const reason =
+				error instanceof Error &&
+				[
+					"configuration-invalid",
+					"model-unavailable",
+					"authorization-unavailable",
+					"provider-unavailable",
+					"provider-drift",
+					"todo-conflict",
+				].includes(error.message)
+					? error.message
+					: "provider-unavailable";
+			fail(reason, false, ctx);
+		}
+	};
+
+	pi.registerTool({
+		name: "todo",
+		label: "Todo",
+		description: "Create and maintain the phased implementation checklist required by Prewalk.",
+		promptSnippet: prompts.todo,
+		promptGuidelines: [
+			"Initialize the todo list before the first implementation mutation.",
+			"Keep todo state current as work advances.",
+		],
+		parameters: TodoParameters,
+		async execute(_toolCallId, params) {
+			const input: TodoInput = {
+				op: params.op,
+				...(params.list ? { list: params.list } : {}),
+				...(params.task ? { task: params.task } : {}),
+				...(params.phase ? { phase: params.phase } : {}),
+				...(params.items ? { items: params.items } : {}),
+				...(params.reason ? { reason: params.reason } : {}),
+			};
+			const result = applyTodoOperation(todoPhases, input);
+			if (result.isError) throw new Error(result.text);
+			todoPhases = result.details.phases;
+			if (params.op !== "view") todoReminder.reset();
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Prewalk checkpoint accepted. Handoff checklist:\n${items.map((item, index) => `${index + 1}. ${item}`).join("\n")}`,
-					},
-				],
-				details: { accepted: true, runId: run.id, itemCount: items.length },
+				content: [{ type: "text", text: result.text }],
+				details: result.details,
 			};
 		},
 	});
 
 	pi.registerCommand("prewalk", {
-		description:
-			"Plan with the current model, then continue this live session with the configured target",
-		handler: (args, ctx) => handleCommand(pi, coordinator, args, ctx),
-	});
-
-	pi.on("context", (event) => {
-		const run = coordinator.run;
-		if (!run?.projectionActive) return;
-		return {
-			messages: [
-				...event.messages,
-				{
-					role: "user",
-					content: planningPrompt(run),
-					timestamp: Date.now(),
-				} satisfies AgentMessage,
-			],
-		};
-	});
-
-	pi.on("tool_call", async (event, ctx) => {
-		if (!MUTATION_TOOLS.has(event.toolName) || !isBuiltinTool(pi, event.toolName)) return;
-		const needsReadiness = coordinator.run?.phase === "checkpointed";
-		const readiness =
-			needsReadiness && coordinator.run
-				? await validateRunReadiness(coordinator.run, ctx)
-				: { ready: false };
-		const action = coordinator.onToolCall(event.toolName, event.toolCallId, readiness.ready);
-		if (!action.block) return;
-		return {
-			block: true,
-			reason: needsReadiness && readiness.reason ? readiness.reason : action.reason,
-		};
-	});
-
-	pi.on("tool_result", (event, ctx) => {
-		if (event.toolName === CHECKPOINT_TOOL) {
-			if (coordinator.onCheckpointResult(event.input, event.isError)) {
-				ctx.ui.notify("Prewalk checkpoint accepted; one edit or write may proceed.", "info");
+		description: "Inspect, run, or cancel the current Prewalk handoff.",
+		async handler(args, ctx) {
+			const command = args.trim() || "status";
+			if (command === "status") {
+				ctx.ui.notify(detailedStatus(coordinator.run, ctx.model), "info");
+				return;
 			}
-			return;
-		}
-		if (
-			(EXPLORATION_TOOLS.has(event.toolName) || MUTATION_TOOLS.has(event.toolName)) &&
-			!isBuiltinTool(pi, event.toolName)
-		)
-			return;
-		const action = coordinator.onToolResult(
-			event.toolName,
-			event.toolCallId,
-			event.isError ? "error" : "success",
-		);
-		if (action.type === "activated") {
-			ctx.ui.setStatus(
-				STATUS_KEY,
-				`Prewalk planning → ${coordinator.run?.target.name ?? "target"}`,
-			);
-		} else if (action.type === "handoff-pending") {
-			ctx.ui.setStatus(STATUS_KEY, `Prewalk switching → ${action.run.target.name}`);
-		}
-	});
-
-	pi.on("turn_end", async (_event, ctx) => {
-		const action = coordinator.onTurnEnd();
-		if (action.type !== "handoff") return;
-		try {
-			const readiness = await validateRunReadiness(action.run, ctx);
-			if (!readiness.ready || !readiness.target) {
-				throw new Error(readiness.reason ?? "Prewalk target is no longer ready.");
+			if (command === "cancel") {
+				if (!coordinator.run) {
+					ctx.ui.notify("Prewalk is inactive.", "info");
+					return;
+				}
+				cancel(isPlannerSelected(ctx.model), ctx);
+				return;
 			}
-			await pi.setSessionModelAndThinkingLevel(readiness.target, action.run.thinkingLevel);
-			ctx.ui.notify(
-				`Prewalk handoff complete → ${targetKey(action.run.target)} (${action.run.thinkingLevel}).`,
-				"info",
-			);
-		} catch (error) {
-			ctx.ui.notify(
-				`Prewalk handoff failed after the mutation: ${error instanceof Error ? error.message : String(error)} Reconfigure credentials and run Prewalk again; this handoff will not retry.`,
-				"error",
-			);
-		} finally {
-			disarm(coordinator, ctx);
-		}
+			if (command === "run") {
+				if (
+					coordinator.run &&
+					coordinator.run.phase !== "cancelled" &&
+					coordinator.run.phase !== "failed"
+				) {
+					ctx.ui.notify("Prewalk is already active.", "error");
+					return;
+				}
+				await startRun("manual", ctx);
+				return;
+			}
+			ctx.ui.notify("Usage: /prewalk [status|run|cancel]", "error");
+		},
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
-		const action = coordinator.onAgentSettled();
-		if (action.type === "disarmed") {
-			clearUi(ctx);
-			ctx.ui.notify(action.reason, "info");
-		}
+	pi.registerCommand("todos", {
+		description: "Show the current Prewalk todo list.",
+		async handler(_args, ctx) {
+			ctx.ui.notify(applyTodoOperation(todoPhases, { op: "view" }).text, "info");
+		},
 	});
 
 	pi.on("session_start", async (event, ctx) => {
-		disarm(coordinator, ctx);
-		if (event.reason !== "startup" && event.reason !== "new") return;
-		try {
-			const config = await readConfig();
-			if (config.enabled) await arm({ pi, coordinator, config, mode: "automatic", ctx });
-		} catch (error) {
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		primaryAgentStream = false;
+		const todoTool = pi.getAllTools().find((tool) => tool.name === "todo");
+		todoConflict = !todoTool || !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
+		todoPhases = latestTodoPhases(
+			ctx.sessionManager
+				.buildContextEntries()
+				.flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
+		);
+		todoReminder.reset();
+		if (event.reason === "reload") {
+			const record = latestAuditRecord(ctx);
+			if (record) {
+				const restored = runFromAudit(record);
+				coordinator.restore(restored);
+				lastAuditKey = JSON.stringify(record);
+				if (restored.phase === "cancelled") {
+					updateStatus(ctx);
+					return;
+				}
+				try {
+					await validateModels(ctx);
+					ensureOverlay(ctx);
+				} catch {
+					fail("provider-unavailable", restored.effectiveRoute === "luna", ctx);
+				}
+				updateStatus(ctx);
+			}
+			return;
 		}
+		coordinator.reset();
+		mutations.resetForRun();
+		lastAuditKey = undefined;
+		await startRun("automatic", ctx);
 	});
 
-	pi.on("session_before_switch", (_event, ctx) => disarm(coordinator, ctx));
-	pi.on("session_before_fork", (_event, ctx) => disarm(coordinator, ctx));
-	pi.on("session_before_compact", (_event, ctx) => disarm(coordinator, ctx));
-	pi.on("session_tree", (_event, ctx) => disarm(coordinator, ctx));
-	pi.on("session_shutdown", (_event, ctx) => disarm(coordinator, ctx));
+	pi.on("session_shutdown", (_event, ctx) => {
+		primaryAgentStream = false;
+		overlay?.restore();
+		overlay = undefined;
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		lastStatus = undefined;
+	});
+
+	pi.on("agent_start", (_event, ctx) => {
+		if (!verifyOverlayOwnership(ctx)) return;
+		primaryAgentStream = true;
+	});
+
+	pi.on("agent_end", () => {
+		primaryAgentStream = false;
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		primaryAgentStream = false;
+		if (coordinator.run?.phase !== "completed") return;
+		const reminder = todoReminder.next(todoPhases);
+		if (!reminder) return;
+		pi.sendMessage(
+			{
+				customType: PREWALK_TODO_REMINDER_MESSAGE_TYPE,
+				content: reminder,
+				display: false,
+				details: { runId: coordinator.run.id },
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+		updateStatus(ctx);
+	});
+
+	pi.on("tool_execution_update", (event) => {
+		if (!acceptsMutationEvidence(coordinator.run)) return;
+		mutations.recordExecutionUpdate(event);
+	});
+
+	pi.on("tool_result", (event) => {
+		if (!acceptsMutationEvidence(coordinator.run)) return;
+		mutations.recordResult({
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			input: event.input,
+			isError: event.isError,
+			details: event.details,
+		});
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
+		if (!verifyOverlayOwnership(ctx)) return;
+		const run = coordinator.run;
+		if (!run || !acceptsMutationEvidence(run)) return;
+		const evidence = mutations.finishTurn(event.message, {
+			todoActive: run.todoActive,
+			todoSeen: run.todoSeen,
+		});
+		const wasTodoReady = run.todoSeen;
+		const wasContinuePending = run.continuePending;
+		const action = coordinator.onTurnEnd(evidence);
+		if (!wasTodoReady && coordinator.run?.todoSeen) audit("todo-ready", ctx);
+		if (!wasContinuePending && coordinator.run?.continuePending) audit("progress", ctx);
+		if (action.type === "send-planning") {
+			await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+		} else if (action.type === "send-continuation") {
+			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
+		} else if (action.type === "handoff") {
+			audit("handoff-triggered", ctx);
+			await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx);
+			mutations.resetForRun();
+		}
+		updateStatus(ctx);
+	});
+
+	pi.on("context", (event) => ({
+		messages: event.messages.filter((message) => shouldExposePrompt(message, coordinator.run)),
+	}));
+
+	pi.on("session_before_compact", (event) => {
+		event.preparation.messagesToSummarize = event.preparation.messagesToSummarize.filter(
+			(message) => !isPrewalkPrompt(message),
+		);
+		event.preparation.turnPrefixMessages = event.preparation.turnPrefixMessages.filter(
+			(message) => !isPrewalkPrompt(message),
+		);
+	});
+
+	pi.on("model_select", (event, ctx) => {
+		if (event.source === "restore" || !coordinator.run || coordinator.run.phase === "cancelled") {
+			return;
+		}
+		cancel(isPlannerSelected(event.model), ctx);
+	});
 }

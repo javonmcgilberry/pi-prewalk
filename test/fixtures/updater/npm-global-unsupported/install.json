@@ -1,8 +1,0 @@
-{
-  "packageName": "@earendil-works/pi-coding-agent",
-  "version": "0.83.0",
-  "platform": "linux",
-  "arch": "x64",
-  "manager": "bun",
-  "topology": "unknown"
-}

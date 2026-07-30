@@ -1,8 +1,0 @@
-{
-  "releaseCommit": "b4f293684bba718d59cc1157679bcf6157b3a7f5",
-  "requiredPaths": [
-    "packages/coding-agent/src/core/agent-session.ts",
-    "packages/coding-agent/src/core/extensions/types.ts",
-    "packages/coding-agent/test/suite/agent-session-model-extension.test.ts"
-  ]
-}
