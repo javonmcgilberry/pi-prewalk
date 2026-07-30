@@ -35,13 +35,13 @@ function task(index: number) {
 
 function manifest(): BenchmarkManifest {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		protocol: FROZEN_BENCHMARK_PROTOCOL,
 		analysisFrozen: true,
 		corpusFrozen: true,
-		repetitions: 5,
+		repetitions: 1,
 		arms: ARMS,
-		thresholds: {
+		targets: {
 			maxPassRateGapFromSolPoints: 5,
 			minCostOrTimeImprovementPercent: 15,
 			minPassRateLeadOverLunaPoints: 10,
@@ -62,7 +62,7 @@ function evidence() {
 	});
 	const rows = schedule.runs.map((run) => {
 		const arm = schedule.unblinding[run.blindArm];
-		const passed = arm !== "luna" || run.repetition <= 3;
+		const passed = arm !== "luna" || Number(run.taskId.slice(5)) % 2 === 1;
 		return {
 			schemaVersion: 1,
 			corpusDigest: schedule.corpusDigest,
@@ -88,7 +88,7 @@ describe("blinded benchmark reporting", () => {
 	it("freezes complete opaque metrics before applying the arm map", () => {
 		const { schedule, rows } = evidence();
 		const frozen = freezeBlindedMetrics(manifest(), schedule, rows);
-		expect(frozen.runCount).toBe(300);
+		expect(frozen.runCount).toBe(60);
 		expect(frozen.metrics).toHaveProperty("blind-a");
 		expect(JSON.stringify(frozen)).not.toMatch(/"sol"|"luna"|"prewalk"/);
 		expect(frozen.rawResultsDigest).toMatch(/^[a-f0-9]{64}$/);
@@ -96,7 +96,7 @@ describe("blinded benchmark reporting", () => {
 		expect(frozen.confidenceIntervals).toBeDefined();
 	});
 
-	it("unblinds only a locked matching metrics artifact and evaluates every gate", () => {
+	it("unblinds only a locked matching metrics artifact and reports every target", () => {
 		const { schedule, rows } = evidence();
 		const frozen = freezeBlindedMetrics(manifest(), schedule, rows);
 		const report = unblindFrozenMetrics(manifest(), frozen, {
@@ -108,10 +108,11 @@ describe("blinded benchmark reporting", () => {
 			mapping: schedule.unblinding,
 		});
 		expect(report.metrics).toHaveProperty("sol");
-		expect(Object.keys(report.gates).sort()).toEqual(
+		expect(Object.keys(report.targetsMet).sort()).toEqual(
 			["costOrTime", "lookup", "lunaQuality", "otherMetric", "solQuality"].sort(),
 		);
-		expect(report.releasePassed).toBe(true);
+		expect(report.allTargetsMet).toBe(true);
+		expect(report.directionalOnly).toBe(true);
 	});
 
 	it("rejects missing rows, premature labels, tampering, and relabeling", () => {
@@ -124,7 +125,7 @@ describe("blinded benchmark reporting", () => {
 		expect(() =>
 			unblindFrozenMetrics(
 				manifest(),
-				{ ...frozen, runCount: 299 },
+				{ ...frozen, runCount: 59 },
 				{
 					schemaVersion: 1,
 					corpusDigest: schedule.corpusDigest,

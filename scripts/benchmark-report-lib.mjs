@@ -5,7 +5,7 @@ import {
 	canonicalDigest,
 	canonicalJson,
 	corpusDigest,
-	evaluateReleaseMetrics,
+	evaluateStudyMetrics,
 	RESULT_OUTCOMES,
 	validateManifest,
 } from "./benchmark-contract.mjs";
@@ -244,9 +244,9 @@ export function unblindFrozenMetrics(manifest, frozen, unblinding) {
 			}),
 		),
 	};
-	const evaluation = evaluateReleaseMetrics(metrics);
+	const evaluation = evaluateStudyMetrics(metrics);
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		corpusDigest: frozen.corpusDigest,
 		scheduleDigest: frozen.scheduleDigest,
 		unblindingCommitment: frozen.unblindingCommitment,

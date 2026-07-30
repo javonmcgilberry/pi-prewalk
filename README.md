@@ -118,22 +118,46 @@ npm run canary:provider -- \
   --evidence-dir ./canary-evidence
 ```
 
-### Release benchmark
+### Why benchmark Prewalk
 
-Release requires a frozen, independently validated corpus of at least 20 tasks
-and five repetitions for each arm: Sol-only, Luna-only, and Prewalk. This is at
-least 300 provider runs and requires separate explicit cost consent.
+The expected saving comes from preserving one useful trajectory. A read-only
+planning handoff makes the expensive planner explore the repository, then makes
+the executor repeat much of that exploration from a summary. Prewalk keeps the
+same conversation, todo state, and first successful mutation, so Luna starts
+from work Sol already grounded in the code.
 
-Prewalk must stay within 5 percentage points of Sol's pass rate, improve median
-cost or elapsed time by at least 15 percent, exceed Luna's pass rate by at least
-10 percentage points, keep the other cost/time metric within 5 percent, and
-avoid increasing solution-source lookup attempts. See
-[`benchmark/README.md`](./benchmark/README.md). No release claim is permitted
-until every gate passes. The trusted controller, remote tool boundary,
-disposable worker contract, isolated evaluator, blinded metric lock, and final
-unblinding gate are implemented. The current corpus is intentionally unfrozen
-and empty, so no provider benchmark has run and the package is not ready for
-release yet.
+[Stencil's published experiment](https://stencil.so/blog/prewalk) reported that
+Sol-to-Luna Prewalk retained 97 percent of Sol's pass rate at 61 percent of its
+cost. Those numbers are useful comparison targets, not promises. The article
+does not publish its task IDs, sample size, repetitions, raw traces, or complete
+harness configuration. OpenAI has also
+[reported that roughly 30 percent of SWE-Bench Pro is broken](https://openai.com/index/separating-signal-from-noise-coding-evaluations/),
+so this project audits prompt and test alignment instead of accepting tasks
+because they belong to that dataset.
+
+### Directional benchmark
+
+The first paid study compares Sol-only, Luna-only, and Prewalk once across at
+least 20 frozen, independently validated tasks. This is 60 provider runs. It is
+designed to catch a large regression or a useful cost, time, and quality signal
+without pretending that one attempt measures run-to-run reliability.
+
+The report includes pass rate, median provider cost, median elapsed time, every
+failed or invalid run, and prohibited lookup attempts. Lookup attempts are a
+local offline-sandbox diagnostic, not a reproduction of Stencil's web-search
+metric. The report shows whether the prior comparison targets were met, but it
+is always marked directional and never emits a release verdict.
+
+Run three attempts per task and arm when the first result is close or noisy,
+when more than one run is invalid or times out, or before publishing any numeric
+performance or savings claim. Use five attempts only if three remain
+inconclusive. The shipped runner deliberately accepts only the one-attempt
+initial study; a repeated follow-up must be separately reviewed and frozen
+before provider work. See [`benchmark/README.md`](./benchmark/README.md).
+
+The extension may be shared as experimental before this study. Until provider
+runs exist, describe the package as a faithful OMP behavior reproduction and do
+not claim measured savings for this implementation.
 
 ## Attribution
 

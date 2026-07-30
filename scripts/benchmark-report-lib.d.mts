@@ -76,7 +76,21 @@ export function unblindFrozenMetrics(
 		mapping: Record<string, string>;
 	},
 ): {
+	schemaVersion: 2;
+	corpusDigest: string;
+	scheduleDigest: string;
+	unblindingCommitment: string;
+	rawResultsDigest: string;
+	metricsDigest: string;
+	runCount: number;
 	metrics: Record<string, unknown>;
-	gates: Record<string, boolean>;
-	releasePassed: boolean;
+	confidenceIntervals: Record<string, unknown>;
+	improvements: {
+		costImprovement: number;
+		timeImprovement: number;
+		otherRegression: number;
+	};
+	targetsMet: Record<string, boolean>;
+	allTargetsMet: boolean;
+	directionalOnly: true;
 };

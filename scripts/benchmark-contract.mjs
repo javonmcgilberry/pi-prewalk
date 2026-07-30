@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-export const BENCHMARK_CONFIRMATION = "I_UNDERSTAND_AT_LEAST_300_PROVIDER_RUNS";
+export const BENCHMARK_CONFIRMATION = "I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS";
 export const ARMS = ["sol", "luna", "prewalk"];
-export const RELEASE_THRESHOLDS = Object.freeze({
+export const STUDY_TARGETS = Object.freeze({
 	maxPassRateGapFromSolPoints: 5,
 	minCostOrTimeImprovementPercent: 15,
 	minPassRateLeadOverLunaPoints: 10,
@@ -47,7 +47,7 @@ export const FROZEN_BENCHMARK_PROTOCOL = Object.freeze({
 		method: "paired-task-cluster-bootstrap",
 		confidenceLevel: 0.95,
 		bootstrapSamples: 10_000,
-		bootstrapSeed: "prewalk-release-v1",
+		bootstrapSeed: "prewalk-study-v1",
 	},
 });
 const PINNED_IMAGE = /^[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$/;
@@ -151,25 +151,23 @@ export function taskEnvironmentDigest(task) {
 }
 
 export function validateManifest(manifest) {
-	const thresholdsMatch =
-		manifest?.thresholds &&
-		Object.keys(manifest.thresholds).length === Object.keys(RELEASE_THRESHOLDS).length &&
-		Object.entries(RELEASE_THRESHOLDS).every(
-			([key, value]) => manifest.thresholds[key] === value,
-		);
+	const targetsMatch =
+		manifest?.targets &&
+		Object.keys(manifest.targets).length === Object.keys(STUDY_TARGETS).length &&
+		Object.entries(STUDY_TARGETS).every(([key, value]) => manifest.targets[key] === value);
 	if (
-		manifest?.schemaVersion !== 1 ||
+		manifest?.schemaVersion !== 2 ||
 		canonicalJson(manifest.protocol) !== canonicalJson(FROZEN_BENCHMARK_PROTOCOL) ||
 		manifest.analysisFrozen !== true ||
 		manifest.corpusFrozen !== true ||
-		manifest.repetitions !== 5 ||
+		manifest.repetitions !== 1 ||
 		JSON.stringify(manifest.arms) !== JSON.stringify(ARMS) ||
-		!thresholdsMatch ||
+		!targetsMatch ||
 		!Array.isArray(manifest.tasks) ||
 		manifest.tasks.length < 20
 	) {
 		throw new Error(
-			"Benchmark corpus must be frozen with at least 20 tasks and five repetitions per arm.",
+			"Benchmark corpus must be frozen with at least 20 tasks and one repetition per arm.",
 		);
 	}
 	const ids = new Set();
@@ -245,8 +243,8 @@ function percentRegression(baseline, candidate) {
 	return ((candidate - baseline) / baseline) * 100;
 }
 
-export function evaluateReleaseMetrics(metrics) {
-	const thresholds = RELEASE_THRESHOLDS;
+export function evaluateStudyMetrics(metrics) {
+	const targets = STUDY_TARGETS;
 	const costImprovement = percentImprovement(metrics.sol.medianCost, metrics.prewalk.medianCost);
 	const timeImprovement = percentImprovement(
 		metrics.sol.medianElapsedMs,
@@ -257,23 +255,23 @@ export function evaluateReleaseMetrics(metrics) {
 		winningMetric === "cost"
 			? percentRegression(metrics.sol.medianElapsedMs, metrics.prewalk.medianElapsedMs)
 			: percentRegression(metrics.sol.medianCost, metrics.prewalk.medianCost);
-	const gates = {
+	const targetsMet = {
 		solQuality:
-			metrics.sol.passRate - metrics.prewalk.passRate <= thresholds.maxPassRateGapFromSolPoints,
+			metrics.sol.passRate - metrics.prewalk.passRate <= targets.maxPassRateGapFromSolPoints,
 		costOrTime:
-			Math.max(costImprovement, timeImprovement) >= thresholds.minCostOrTimeImprovementPercent,
+			Math.max(costImprovement, timeImprovement) >= targets.minCostOrTimeImprovementPercent,
 		lunaQuality:
-			metrics.prewalk.passRate - metrics.luna.passRate >=
-			thresholds.minPassRateLeadOverLunaPoints,
-		otherMetric: otherRegression <= thresholds.maxNonWinningMetricRegressionPercent,
+			metrics.prewalk.passRate - metrics.luna.passRate >= targets.minPassRateLeadOverLunaPoints,
+		otherMetric: otherRegression <= targets.maxNonWinningMetricRegressionPercent,
 		lookup:
 			metrics.prewalk.lookupAttemptRate - metrics.sol.lookupAttemptRate <=
-			thresholds.maxLookupAttemptRateGapFromSolPoints,
+			targets.maxLookupAttemptRateGapFromSolPoints,
 	};
 	return {
 		improvements: { costImprovement, timeImprovement, otherRegression },
-		gates,
-		releasePassed: Object.values(gates).every(Boolean),
+		targetsMet,
+		allTargetsMet: Object.values(targetsMet).every(Boolean),
+		directionalOnly: true,
 	};
 }
 
@@ -316,10 +314,10 @@ export function evaluateResults(manifest, results) {
 		metrics[arm] = benchmarkMetricsFor(results.filter((result) => result.arm === arm));
 	}
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		corpusDigest: corpusDigest(manifest),
 		runCount: results.length,
 		metrics,
-		...evaluateReleaseMetrics(metrics),
+		...evaluateStudyMetrics(metrics),
 	};
 }

@@ -55,4 +55,10 @@ await writeFile(options.output, `${JSON.stringify(report, null, 2)}\n`, {
 	mode: 0o400,
 	flag: "wx",
 });
-console.log(JSON.stringify({ releasePassed: report.releasePassed, outputPath: options.output }));
+console.log(
+	JSON.stringify({
+		directionalOnly: report.directionalOnly,
+		allTargetsMet: report.allTargetsMet,
+		outputPath: options.output,
+	}),
+);

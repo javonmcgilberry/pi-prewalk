@@ -35,13 +35,13 @@ function task(index: number) {
 
 function manifest(): BenchmarkManifest {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		protocol: FROZEN_BENCHMARK_PROTOCOL,
 		analysisFrozen: true,
 		corpusFrozen: true,
-		repetitions: 5,
+		repetitions: 1,
 		arms: ARMS,
-		thresholds: {
+		targets: {
 			maxPassRateGapFromSolPoints: 5,
 			minCostOrTimeImprovementPercent: 15,
 			minPassRateLeadOverLunaPoints: 10,
@@ -69,13 +69,13 @@ describe("trusted benchmark controller", () => {
 			commitmentNonce: () => "f".repeat(64),
 		});
 
-		expect(schedule.runs).toHaveLength(300);
-		expect(new Set(schedule.runs.map((entry) => entry.runId))).toHaveLength(300);
+		expect(schedule.runs).toHaveLength(60);
+		expect(new Set(schedule.runs.map((entry) => entry.runId))).toHaveLength(60);
 		expect(schedule.runs.every((entry) => !("arm" in entry))).toBe(true);
 		expect(JSON.stringify(schedule.runs)).not.toMatch(/"sol"|"luna"|"prewalk"/);
 		expect(Object.values(schedule.unblinding).sort()).toEqual([...ARMS].sort());
 		for (const entry of manifest().tasks) {
-			for (let repetition = 1; repetition <= 5; repetition += 1) {
+			for (let repetition = 1; repetition <= 1; repetition += 1) {
 				const group = schedule.runs.filter(
 					(runEntry) => runEntry.taskId === entry.id && runEntry.repetition === repetition,
 				);
@@ -174,15 +174,15 @@ describe("trusted benchmark controller", () => {
 			runId: () => `run-${runCounter++}`,
 		});
 
-		expect(runtime.run).toHaveBeenCalledTimes(300);
+		expect(runtime.run).toHaveBeenCalledTimes(60);
 		expect(runtime.preflight).toHaveBeenCalledOnce();
-		expect(runtime.cleanup).toHaveBeenCalledTimes(300);
-		expect(result.runCount).toBe(300);
+		expect(runtime.cleanup).toHaveBeenCalledTimes(60);
+		expect(result.runCount).toBe(60);
 		const rows = (await readFile(result.resultsPath, "utf8"))
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line));
-		expect(rows).toHaveLength(300);
+		expect(rows).toHaveLength(60);
 		expect(rows.every((row) => !("arm" in row))).toBe(true);
 		expect(JSON.stringify(rows)).not.toMatch(/"sol"|"luna"|"prewalk"/);
 		const files = await readdir(outputDirectory);
@@ -240,7 +240,7 @@ describe("trusted benchmark controller", () => {
 			failureCode: "runtime-failed",
 		});
 		expect(JSON.stringify(first)).not.toContain("provider-secret");
-		expect(runtime.cleanup).toHaveBeenCalledTimes(300);
+		expect(runtime.cleanup).toHaveBeenCalledTimes(60);
 	}, 15_000);
 
 	it("refuses an output directory containing prior evidence", async () => {

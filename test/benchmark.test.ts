@@ -3,8 +3,8 @@ import {
 	ARMS,
 	type BenchmarkManifest,
 	type BenchmarkResult,
-	evaluateReleaseMetrics,
 	evaluateResults,
+	evaluateStudyMetrics,
 	FROZEN_BENCHMARK_PROTOCOL,
 	parseBenchmarkArgs,
 	taskEnvironmentDigest,
@@ -35,13 +35,13 @@ function task(index: number) {
 
 function manifest(): BenchmarkManifest {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		protocol: FROZEN_BENCHMARK_PROTOCOL,
 		analysisFrozen: true,
 		corpusFrozen: true,
-		repetitions: 5,
+		repetitions: 1,
 		arms: ARMS,
-		thresholds: {
+		targets: {
 			maxPassRateGapFromSolPoints: 5,
 			minCostOrTimeImprovementPercent: 15,
 			minPassRateLeadOverLunaPoints: 10,
@@ -54,25 +54,19 @@ function manifest(): BenchmarkManifest {
 
 function results(): BenchmarkResult[] {
 	return manifest().tasks.flatMap((entry) =>
-		Array.from({ length: 5 }, (_, index) =>
-			ARMS.map((arm) => {
-				const outcome: BenchmarkResult["outcome"] =
-					arm !== "luna" || index < 3 ? "passed" : "failed";
-				return {
-					taskId: entry.id,
-					repetition: index + 1,
-					arm,
-					outcome,
-					cost: arm === "prewalk" ? 80 : 100,
-					elapsedMs: arm === "prewalk" ? 102 : 100,
-					lookupAttempts: 0,
-				};
-			}),
-		).flat(),
+		ARMS.map((arm) => ({
+			taskId: entry.id,
+			repetition: 1,
+			arm,
+			outcome: arm === "luna" && Number(entry.id.slice(5)) % 2 === 0 ? "failed" : "passed",
+			cost: arm === "prewalk" ? 80 : 100,
+			elapsedMs: arm === "prewalk" ? 102 : 100,
+			lookupAttempts: 0,
+		})),
 	);
 }
 
-describe("release benchmark contract", () => {
+describe("directional benchmark contract", () => {
 	it("freezes the exact shipped Prewalk prompt bytes", async () => {
 		for (const [name, expected] of Object.entries(FROZEN_BENCHMARK_PROTOCOL.promptDigests)) {
 			const content = await readFile(new URL(`../prompts/prewalk-${name}.md`, import.meta.url));
@@ -86,14 +80,14 @@ describe("release benchmark contract", () => {
 				"--manifest",
 				"benchmark/corpus.json",
 				"--repetitions",
-				"5",
+				"1",
 				"--confirm-provider-cost",
-				"I_UNDERSTAND_AT_LEAST_300_PROVIDER_RUNS",
+				"I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS",
 			]),
 		).toEqual({
-			confirmation: "I_UNDERSTAND_AT_LEAST_300_PROVIDER_RUNS",
+			confirmation: "I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS",
 			manifestPath: "benchmark/corpus.json",
-			repetitions: 5,
+			repetitions: 1,
 			authFile: undefined,
 			piExecutable: undefined,
 			outputDirectory: undefined,
@@ -105,7 +99,7 @@ describe("release benchmark contract", () => {
 	it("requires explicit absolute controller paths and a private control directory", () => {
 		const options = parseBenchmarkArgs([
 			"--confirm-provider-cost",
-			"I_UNDERSTAND_AT_LEAST_300_PROVIDER_RUNS",
+			"I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS",
 			"--auth-file",
 			"/tmp/auth.json",
 			"--pi",
@@ -124,12 +118,16 @@ describe("release benchmark contract", () => {
 	it("rejects an incomplete, mutable, or unvalidated corpus", () => {
 		expect(() => validateManifest({ ...manifest(), tasks: [] })).toThrow(/at least 20/);
 		expect(() => validateManifest({ ...manifest(), corpusFrozen: false })).toThrow(/frozen/);
+		expect(() => validateManifest({ ...manifest(), repetitions: 3 })).toThrow(/one repetition/);
+		expect(() =>
+			validateManifest({ ...manifest(), schemaVersion: 1 } as unknown as BenchmarkManifest),
+		).toThrow(/frozen/);
 		const invalid = manifest();
 		invalid.tasks[0].validation.goldPatchPassed = false;
 		expect(() => validateManifest(invalid)).toThrow(/unvalidated/);
-		const changedThreshold = manifest();
-		changedThreshold.thresholds.minCostOrTimeImprovementPercent = 1;
-		expect(() => validateManifest(changedThreshold)).toThrow(/frozen/);
+		const changedTarget = manifest();
+		changedTarget.targets.minCostOrTimeImprovementPercent = 1;
+		expect(() => validateManifest(changedTarget)).toThrow(/frozen/);
 		const mutableImage = manifest();
 		mutableImage.tasks[0].workerImage = "ghcr.io/example/prewalk-worker:latest";
 		expect(() => validateManifest(mutableImage)).toThrow(/unvalidated/);
@@ -148,8 +146,8 @@ describe("release benchmark contract", () => {
 		expect(() => validateManifest(changedProtocol)).toThrow(/frozen/);
 	});
 
-	it("fails a non-winning metric regression from a zero baseline", () => {
-		const evaluation = evaluateReleaseMetrics({
+	it("reports a missed non-winning metric target from a zero baseline", () => {
+		const evaluation = evaluateStudyMetrics({
 			sol: {
 				passRate: 100,
 				medianCost: 0,
@@ -169,40 +167,44 @@ describe("release benchmark contract", () => {
 				lookupAttemptRate: 0,
 			},
 		});
-		expect(evaluation.gates.costOrTime).toBe(true);
-		expect(evaluation.gates.otherMetric).toBe(false);
-		expect(evaluation.releasePassed).toBe(false);
+		expect(evaluation.targetsMet.costOrTime).toBe(true);
+		expect(evaluation.targetsMet.otherMetric).toBe(false);
+		expect(evaluation.allTargetsMet).toBe(false);
+		expect(evaluation.directionalOnly).toBe(true);
 	});
 
-	it("requires all 300 results and evaluates every frozen gate", () => {
+	it("requires all 60 results and reports every frozen comparison target", () => {
 		const allResults = results();
-		expect(allResults).toHaveLength(300);
+		expect(allResults).toHaveLength(60);
 		expect(() => evaluateResults(manifest(), allResults.slice(1))).toThrow(/every run/);
 		const report = evaluateResults(manifest(), allResults);
-		expect(report.runCount).toBe(300);
-		expect(report.gates).toEqual({
+		expect(report.runCount).toBe(60);
+		expect(report.targetsMet).toEqual({
 			solQuality: true,
 			costOrTime: true,
 			lunaQuality: true,
 			otherMetric: true,
 			lookup: true,
 		});
-		expect(report.releasePassed).toBe(true);
+		expect(report.allTargetsMet).toBe(true);
+		expect(report.directionalOnly).toBe(true);
+		expect(report).not.toHaveProperty("releasePassed");
 	});
 
-	it("fails release when Prewalk is not meaningfully better than Luna", () => {
+	it("reports when Prewalk is not meaningfully better than Luna", () => {
 		const allResults = results().map((result) =>
 			result.arm === "luna" ? { ...result, outcome: "passed" as const } : result,
 		);
 		const report = evaluateResults(manifest(), allResults);
-		expect(report.gates.lunaQuality).toBe(false);
-		expect(report.releasePassed).toBe(false);
+		expect(report.targetsMet.lunaQuality).toBe(false);
+		expect(report.allTargetsMet).toBe(false);
+		expect(report.directionalOnly).toBe(true);
 	});
 
 	it("rejects unrelated task IDs even when the run count and tuples look complete", () => {
 		const unrelated = results().map((result, index) => ({
 			...result,
-			taskId: `unrelated-${Math.floor(index / 15)}`,
+			taskId: `unrelated-${Math.floor(index / 3)}`,
 		}));
 		expect(() => evaluateResults(manifest(), unrelated)).toThrow(/Invalid or duplicate/);
 	});
@@ -214,7 +216,7 @@ describe("release benchmark contract", () => {
 		const report = evaluateResults(manifest(), allResults);
 		expect(report.metrics.sol.outcomes.timeout).toBe(1);
 		expect(report.metrics.luna.outcomes.invalid).toBe(1);
-		expect(report.runCount).toBe(300);
+		expect(report.runCount).toBe(60);
 	});
 });
 

@@ -1,6 +1,6 @@
 export const BENCHMARK_CONFIRMATION: string;
 export const ARMS: string[];
-export const RELEASE_THRESHOLDS: Readonly<BenchmarkManifest["thresholds"]>;
+export const STUDY_TARGETS: Readonly<BenchmarkManifest["targets"]>;
 export const RESULT_OUTCOMES: BenchmarkOutcome[];
 export const FROZEN_BENCHMARK_PROTOCOL: BenchmarkProtocol;
 export function canonicalJson(value: unknown): string;
@@ -25,13 +25,13 @@ export interface BenchmarkTask {
 	};
 }
 export interface BenchmarkManifest {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	protocol: BenchmarkProtocol;
 	analysisFrozen: boolean;
 	corpusFrozen: boolean;
 	repetitions: number;
 	arms: string[];
-	thresholds: {
+	targets: {
 		maxPassRateGapFromSolPoints: number;
 		minCostOrTimeImprovementPercent: number;
 		minPassRateLeadOverLunaPoints: number;
@@ -113,7 +113,7 @@ export function benchmarkMetricsFor(
 	lookupAttemptRate: number;
 };
 export function validateManifest(manifest: BenchmarkManifest): BenchmarkManifest;
-export function evaluateReleaseMetrics(
+export function evaluateStudyMetrics(
 	metrics: Record<
 		"sol" | "luna" | "prewalk",
 		{
@@ -129,20 +129,21 @@ export function evaluateReleaseMetrics(
 		timeImprovement: number;
 		otherRegression: number;
 	};
-	gates: {
+	targetsMet: {
 		solQuality: boolean;
 		costOrTime: boolean;
 		lunaQuality: boolean;
 		otherMetric: boolean;
 		lookup: boolean;
 	};
-	releasePassed: boolean;
+	allTargetsMet: boolean;
+	directionalOnly: true;
 };
 export function evaluateResults(
 	manifest: BenchmarkManifest,
 	results: BenchmarkResult[],
 ): {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	corpusDigest: string;
 	runCount: number;
 	metrics: Record<
@@ -160,12 +161,13 @@ export function evaluateResults(
 		timeImprovement: number;
 		otherRegression: number;
 	};
-	gates: {
+	targetsMet: {
 		solQuality: boolean;
 		costOrTime: boolean;
 		lunaQuality: boolean;
 		otherMetric: boolean;
 		lookup: boolean;
 	};
-	releasePassed: boolean;
+	allTargetsMet: boolean;
+	directionalOnly: true;
 };

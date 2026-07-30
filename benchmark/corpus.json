@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "protocol": {
     "piVersion": "0.82.1",
     "conversionVersion": "3.0.3",
@@ -44,14 +44,14 @@
       "method": "paired-task-cluster-bootstrap",
       "confidenceLevel": 0.95,
       "bootstrapSamples": 10000,
-      "bootstrapSeed": "prewalk-release-v1"
+      "bootstrapSeed": "prewalk-study-v1"
     }
   },
   "analysisFrozen": true,
   "corpusFrozen": false,
-  "repetitions": 5,
+  "repetitions": 1,
   "arms": ["sol", "luna", "prewalk"],
-  "thresholds": {
+  "targets": {
     "maxPassRateGapFromSolPoints": 5,
     "minCostOrTimeImprovementPercent": 15,
     "minPassRateLeadOverLunaPoints": 10,

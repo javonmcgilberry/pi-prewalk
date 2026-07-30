@@ -18,13 +18,13 @@ Deliver a faithful Sol-to-Luna reproduction of Oh My Pi's current Prewalk behavi
 
 This plan owns the polished Sol-to-Luna release only. Provider-agnostic pairs such as Opus-to-Sonnet remain follow-up work.
 
-There are no unresolved implementation blockers. This plan fixes the benchmark protocol, audit contract, bundled todo behavior, provider-overlay ownership, and reload semantics without broadening phase one.
+There are no unresolved implementation blockers. This plan fixes the directional benchmark protocol, audit contract, bundled todo behavior, provider-overlay ownership, and reload semantics without broadening phase one.
 
 ---
 
 ## Product Contract
 
-> **Product Contract preservation:** R1 through R28 retain their confirmed meaning. R1, R2, R7, R15 through R17, R19, R22, R27, and R28 are clarified by the user-confirmed OMP-faithful todo and reload behavior, the public-API limits around explicit user model changes and effective-context scrubbing, and the approved benchmark gate. The Deferred-to-Planning questions are resolved by KTD1 through KTD12.
+> **Product Contract preservation:** R1 through R26 retain their confirmed meaning. R27 and R28 reflect the later user-confirmed decision to ship experimentally and start with an OMP-shaped directional study instead of a 300-run release gate. The Deferred-to-Planning questions are resolved by KTD1 through KTD12.
 
 ### Summary
 
@@ -144,9 +144,9 @@ Pi 0.82.1 exposes public provider registration, model and credential lookup, lif
 
 - R26. Compatibility evidence must target the currently installed Pi 0.82.1 and `@howaboua/pi-codex-conversion` 3.0.3, including the real provider-registration order in the active Pi configuration.
 
-- R27. Benchmarks must compare Sol-only, Luna-only, and Sol-to-Luna Prewalk on one frozen corpus of at least 20 independently validated tasks, with five repetitions per arm. They must report pass rate, provider cost, elapsed duration, solution-source lookup attempts, and every failed or invalid run.
+- R27. The first paid benchmark must compare Sol-only, Luna-only, and Sol-to-Luna Prewalk once on one frozen corpus of at least 20 independently validated tasks. It must report pass rate, provider cost, elapsed duration, prohibited lookup attempts, and every failed or invalid run. Prohibited lookups are a local offline-sandbox diagnostic and must not be described as Stencil's web-search or cheating metric.
 
-- R28. Before any model run, the benchmark manifest and analysis policy must be frozen. Release requires Prewalk's pass rate to remain within 5 percentage points of Sol-only, median provider cost or elapsed duration to improve by at least 15 percent against Sol-only, and pass rate to exceed Luna-only by at least 10 percentage points. The non-winning cost or duration metric must not regress by more than 5 percent, and the solution-source lookup-attempt rate must not exceed Sol-only.
+- R28. Before any model run, the benchmark manifest and analysis policy must be frozen. The first report is directional and must not emit a release verdict. It reports whether Prewalk remains within 5 percentage points of Sol-only, improves median provider cost or elapsed duration by at least 15 percent against Sol-only, exceeds Luna-only by at least 10 percentage points, keeps the non-winning cost or duration metric within 5 percent, and does not exceed Sol-only's prohibited-lookup rate. The package may ship as experimental before provider results exist, but public numeric performance or savings claims require at least three attempts per task and arm. Three attempts are also required when the first result is close or noisy or more than one run is invalid or times out; five attempts are reserved for an inconclusive three-attempt follow-up. The shipped runner accepts only the one-attempt initial study, so any repeated study requires its own reviewed and frozen protocol change before provider work.
 
 ### Key Flows
 
@@ -267,9 +267,9 @@ stateDiagram-v2
   - **Covers:** R17, R18, R20, and R22.
 
 - AE11. **Measured claims**
-  - **Given:** A release candidate is ready for benchmarking.
+  - **Given:** An experimental release is ready for efficacy study.
   - **When:** Sol-only, Luna-only, and Sol-to-Luna runs execute the declared corpus.
-  - **Then:** Each arm runs five times on every frozen task, the report includes every R27 measure and failed run, and release claims do not exceed the thresholds actually satisfied.
+  - **Then:** Each arm runs once on every frozen task, the report includes every R27 measure and failed run, and the result is labeled directional. Numeric public claims are deferred until R28's repetition requirement is met.
   - **Covers:** R27 and R28.
 
 - AE12. **Faithful reload before handoff**
@@ -295,7 +295,7 @@ stateDiagram-v2
 - All directly applicable OMP parity scenarios and every documented Pi adaptation pass in both validation layers required by R23 through R25.
 - A real installed-Pi run demonstrates AE1, AE7, AE8, and AE9 on Pi 0.82.1 with `@howaboua/pi-codex-conversion` 3.0.3.
 - Every request, transcript entry, status state, audit record, and reopen path reports the effective model truthfully under R11 through R22.
-- The benchmark manifest contains at least 20 independently validated tasks and five repetitions per arm, freezes R28's thresholds before results are known, and publishes the full R27 comparison without omitting failed or invalid runs.
+- The initial benchmark manifest contains at least 20 independently validated tasks and one repetition per arm, freezes R28's targets before results are known, and publishes the full R27 comparison without omitting failed or invalid runs.
 - The runtime contains none of R18's prohibited patch, private-import, persistent-switch, synthetic-model, or updater paths.
 
 ### Scope Boundaries
@@ -353,7 +353,7 @@ This artifact owns the fixed Sol-to-Luna release. The surrounding work below is 
 
 No product or planning questions remain open.
 
-- Resolved by KTD8: the benchmark uses at least 20 independently validated tasks, five repetitions per arm, paired randomized execution, and the thresholds in R28.
+- Resolved by KTD8: the initial benchmark uses at least 20 independently validated tasks, one repetition per arm, paired randomized execution, and the directional claim boundary in R28.
 - Resolved by KTD6: audit entries are versioned state-transition records that omit prompts, transcript content, credentials, payloads, and responses.
 - Resolved by KTD3: Prewalk bundles the OMP-compatible normal todo capability and treats conflicting ownership as incompatible.
 - Resolved by KTD9: task-agent and same-model effort tests appear in the parity matrix as explicit phase-one exclusions.
@@ -378,7 +378,7 @@ No product or planning questions remain open.
 
 - KTD7. **Separate the visible phase from the effective route.** The footer renderer owns the route-specific compact strings in R12 through R17, while `/prewalk status` adds mode, run ID, todo requirement, trigger, selected Pi model, and failure reason. Luna routing begins when the wrapper accepts the first delegated request. Completion is recorded only when that first Luna stream succeeds. A thrown or streamed Luna failure changes the phase to failed but keeps the route and Luna marker active. `/prewalk cancel` and an explicit Pi model-selection event remove the route; a non-Sol selection renders as the explicit Pi model with neither Prewalk side active. Prewalk never changes the user's selected model itself. Governs R2 and R11 through R17.
 
-- KTD8. **Freeze a paired three-arm benchmark before model execution.** The corpus manifest contains at least 20 independently audited public coding tasks, with repository revision, prompt, test command, timeout, and validation evidence. Because recent audits found material defects in public SWE-bench Pro, inclusion requires gold-patch success plus prompt, test, and baseline review rather than dataset membership alone. A trusted controller owns provider credentials and model calls. It delegates repository tools to disposable credential-free workers with only the task checkout mounted, task-process networking denied, no host or agent-directory mounts, no credential helpers, and bounded CPU, memory, storage, and time. Evaluators with gold-patch access run separately from workers. Every task runs five times under each arm in randomized paired order with fixed prompts, tool slate, retry policy, cache policy, timeouts, and network controls. The task is the statistical unit; clustered paired analysis reports pass rate, median cost, median elapsed time, confidence intervals, and blocked solution-source lookup attempts. A pre-run power check may increase the frozen corpus but may not lower the confirmed minimums or change R28 after results exist. Governs R27 and R28.
+- KTD8. **Freeze a paired three-arm directional study before model execution.** The corpus manifest contains at least 20 independently audited public coding tasks, with repository revision, prompt, test command, timeout, and validation evidence. Because OpenAI's July 2026 audit estimates that roughly 30 percent of SWE-Bench Pro is broken, inclusion requires gold-patch success plus prompt, test, and baseline review rather than dataset membership alone. A trusted controller owns provider credentials and model calls. It delegates repository tools to disposable credential-free workers with only the task checkout mounted, task-process networking denied, no host or agent-directory mounts, no credential helpers, and bounded CPU, memory, storage, and time. Evaluators with gold-patch access run separately from workers. The first study runs every task once under each arm in randomized paired order with fixed prompts, tool slate, retry policy, cache policy, timeouts, and network controls. The task is the statistical unit; paired analysis reports pass rate, median cost, median elapsed time, uncertainty, and prohibited lookup attempts. The comparison targets remain frozen, but the report is explicitly directional and cannot issue a release verdict. A separate three-attempt study is required for close or noisy results, more than one invalid or timeout, or a public numeric claim; five attempts are used only when three remain inconclusive. Governs R27 and R28.
 
 - KTD9. **Make OMP parity classification executable evidence.** The canonical matrix lists every test in OMP's main coordinator and startup-degradation suites by upstream name and revision. The first eight coordinator scenarios and both startup scenarios are direct or Pi-adapted coverage. The four same-model effort/no-op scenarios and all task-agent Prewalk scenarios are explicit non-applicable cases because phase one is a fixed top-level Sol-to-Luna route. The matrix cannot silently drop a canonical case. Governs R23 and R24.
 
@@ -692,15 +692,15 @@ stateDiagram-v2
 
 **Execution after U7:**
 
-- Run Sol-only, Luna-only, and Prewalk five times per task with randomized paired ordering and identical non-model settings.
+- Run Sol-only, Luna-only, and Prewalk once per task with randomized paired ordering and identical non-model settings.
 - Rebuild each frozen base revision as a fresh single-commit repository with no upstream refs, reflogs, alternate object stores, gold patches, or solution-bearing objects. Run task tools without provider credentials, host or agent-directory mounts, network access, or repository credential helpers. Block access to task solutions and gold patches, record attempted prohibited lookups and sandbox violations, and retain failures and timeouts in the denominator.
-- Generate raw JSONL and keep arm identities blinded through evaluation and aggregate metric finalization. After evaluator outputs and metrics are frozen, unblind the three arm labels for the final report, threshold decisions, and explicit unsupported claims.
+- Generate raw JSONL and keep arm identities blinded through evaluation and aggregate metric finalization. After evaluator outputs and metrics are frozen, unblind the three arm labels for the directional report and explicit unsupported claims.
 
 **Behavior and verification:**
 
-- Benchmark contract tests reject a mutable or incomplete corpus, missing repetitions, changed arm settings, omitted failed runs, premature unblinding, post-result threshold changes, leaked secret-shaped values, permissive mounts or networks, inherited credentials, reachable solution history, sandbox escape, and reports that do not evaluate every R28 gate after the final unblind.
+- Benchmark contract tests reject a mutable or incomplete corpus, the wrong repetition count, changed arm settings, omitted failed runs, premature unblinding, post-result target changes, leaked secret-shaped values, permissive mounts or networks, inherited credentials, reachable solution history, sandbox escape, and reports that omit R28's directional comparison after the final unblind.
 - Package verification includes the frozen benchmark manifest, benchmark documentation, runner, and report generator while continuing to exclude generated results.
-- The report may claim only the benefits that pass the precommitted thresholds.
+- The first report may describe only its observed task-level result and must remain labeled directional.
 
 **Dependencies:** Preparation depends on U6 and may proceed alongside U7. Provider runs, final analysis, release reporting, and benchmark package verification depend on U7.
 
@@ -717,7 +717,7 @@ stateDiagram-v2
 | Real Agent loop | Pi message persistence, turn ordering, context projection, provider routing, reload, model identity | Actual `createAgentSession` turns prove Sol then Luna without changing selected Sol and satisfy AE9's loop-level portion. |
 | Installed RPC smoke | Package discovery and real configured extension order without provider cost | Isolated process proves conversion-first overlay, status, cancellation, reload, and settings stability. |
 | Authenticated canary | Real conversion transport and real Sol/Luna identities | Explicit opt-in evidence proves the live handoff and contains no credentials or transcript. |
-| Comparative benchmark | Quality, cost, duration, and evaluation integrity | At least 300 runs satisfy AE11 and either pass or reject each precommitted release threshold. |
+| Comparative benchmark | Quality, cost, duration, and evaluation integrity | At least 60 runs satisfy AE11, report every precommitted target, and remain labeled directional. |
 
 ### OMP Parity Classification
 
@@ -770,16 +770,16 @@ The canary must use a temporary project and owner-only agent directory, validate
 
 ### Comparative Benchmark
 
-After corpus freeze and a dry-run contract check, the benchmark requires separate consent for at least 300 task runs:
+After corpus freeze and a dry-run contract check, the benchmark requires separate consent for at least 60 task runs:
 
 ```sh
 npm run benchmark -- \
   --manifest benchmark/corpus.json \
-  --repetitions 5 \
-  --confirm-provider-cost I_UNDERSTAND_AT_LEAST_300_PROVIDER_RUNS
+  --repetitions 1 \
+  --confirm-provider-cost I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS
 ```
 
-The runner must refuse fewer than 20 tasks, fewer or more than five repetitions, changed thresholds, an unfrozen manifest, missing environment digests, or an output directory containing prior arm results. The report command consumes immutable raw evidence and never reruns or edits model outputs.
+The runner must refuse fewer than 20 tasks, any initial repetition count other than one, changed targets, an unfrozen manifest, missing environment digests, or an output directory containing prior arm results. The report command consumes immutable raw evidence and never reruns or edits model outputs.
 
 Provider calls run in the trusted controller. Repository tools run in disposable credential-free workers whose task checkout is rebuilt as a fresh single-commit repository, with only that checkout mounted, task-process networking denied, no host or agent-directory mounts, no credential helpers, and enforced resource limits. Evaluators with solution access run in separate workers after each task attempt is sealed.
 
@@ -809,7 +809,7 @@ Provider calls run in the trusted controller. Repository tools run in disposable
 - Compact status, detailed status, audit entries, reload, cancellation, explicit user selection, and both failure routes remain truthful.
 - The provider wrapper composes with conversion 3.0.3, restores only its own stream, and never falls back to Sol after a Luna failure.
 - Mocked and real Agent-loop suites, installed RPC smoke, packaging checks, and the authenticated canary all pass through the required verification workflow.
-- The frozen three-arm benchmark runs at least 20 tasks five times per arm and publishes every result. Release proceeds only if all R28 thresholds pass; otherwise the implementation may still ship only after claims and release criteria return to requirements review.
+- The frozen initial three-arm study runs at least 20 tasks once per arm and publishes every result as directional evidence. The implementation may ship experimentally before that study, but it cannot make numeric performance or savings claims until R28's follow-up repetition requirement is satisfied.
 - README and current research documentation describe the extension-only architecture as authoritative, while historical plans remain untouched.
 
 ---
@@ -825,7 +825,10 @@ Provider calls run in the trusted controller. Repository tools run in disposable
   - [`packages/coding-agent/test/prewalk-startup-degradation.test.ts`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/test/prewalk-startup-degradation.test.ts)
 - [ThewindMom/pi-prewalk secondary revision](https://github.com/ThewindMom/pi-prewalk/tree/5f0a80432679867ff04cbcee20620b4a7168070b), especially `src/index.ts`, `src/prompts.ts`, `test/index.test.ts`, and `test/harness.ts`.
 - [Stencil's Prewalk research](https://stencil.so/blog/prewalk), used for benchmark categories and external reference results.
+- [OMP's metaharness](https://github.com/can1357/oh-my-pi/tree/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/metaharness), used for the practical 20-task, one-attempt initial study shape and score, spend, and duration measures.
 - [OpenAI's SWE-bench Pro audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/), used to require independent task validation rather than trusting dataset membership.
+- [Anthropic's agent evaluation guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents), used to separate directional capability evidence from repeated reliability evidence and to prefer objective final-state grading.
+- [Anthropic's infrastructure-noise study](https://www.anthropic.com/engineering/infrastructure-noise), used to keep runtime resources, timeouts, and environments equal across arms.
 - [SWE-bench Pro open-source harness](https://github.com/scaleapi/SWE-bench_Pro-os), used as a source of candidate containerized coding tasks and evaluation mechanics, not as an automatically trusted corpus.
 - [Pi v0.82.1](https://github.com/badlogic/pi-mono/tree/v0.82.1), used to verify the supported extension surface.
 - [Pi's stock todo extension example at v0.82.1](https://github.com/badlogic/pi-mono/tree/v0.82.1/packages/coding-agent/examples/extensions/todo), used to ground public extension registration and normal tool-result persistence.
