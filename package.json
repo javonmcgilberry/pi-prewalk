@@ -1,0 +1,48 @@
+{
+  "name": "@local/pi-prewalk",
+  "version": "0.1.0",
+  "description": "OMP-faithful same-session planner-to-target handoff for Pi",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "agent-handoff",
+    "prewalk"
+  ],
+  "bin": {
+    "prewalk-update-pi": "./updater/cli.mjs"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "scripts",
+    "updater",
+    "README.md",
+    "LICENSE",
+    "prewalk.example.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/prewalk.ts"
+    ]
+  },
+  "scripts": {
+    "smoke:rpc": "node scripts/smoke-rpc.mjs",
+    "canary:provider": "node scripts/canary-provider.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tar": "^7.5.22",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.82.1",
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

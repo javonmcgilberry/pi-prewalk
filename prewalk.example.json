@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "target": "openai-codex/gpt-5.6-luna",
+  "thinkingLevel": "low",
+  "crossProviderPairs": []
+}

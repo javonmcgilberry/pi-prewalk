@@ -1,0 +1,37 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.5/schema.json",
+  "files": {
+    "includes": [
+      "**/*",
+      "!node_modules/**/*",
+      "!.pi-subagents/**/*",
+      "!!node_modules",
+      "!!.pi-subagents"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "tab",
+    "indentWidth": 3,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.json"],
+      "formatter": {
+        "indentStyle": "space",
+        "indentWidth": 2
+      }
+    }
+  ]
+}

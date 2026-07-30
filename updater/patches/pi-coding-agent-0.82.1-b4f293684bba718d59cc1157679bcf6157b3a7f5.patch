@@ -1,0 +1,1152 @@
+diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
+index aeb5e86..dc0bb00 100644
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -7,6 +7,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe
+ > **Placement for /reload:** Put extensions in `~/.pi/agent/extensions/` (global) or `.pi/extensions/` (project-local) for auto-discovery. Use `pi -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
+ 
+ **Key capabilities:**
++
+ - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
+ - **Event interception** - Block or modify tool calls, inject context, customize compaction
+ - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
+@@ -16,6 +17,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe
+ - **Custom rendering** - Control how tool calls/results and messages appear in TUI
+ 
+ **Example use cases:**
++
+ - Permission gates (confirm before `rm -rf`, `sudo`, etc.)
+ - Git checkpointing (stash at each turn, restore on branch)
+ - Path protection (block writes to `.env`, `node_modules/`)
+@@ -113,7 +115,7 @@ pi -e ./my-extension.ts
+ Extensions are auto-discovered from trusted locations. Project-local `.pi/extensions` entries load only after the project is trusted.
+ 
+ | Location | Scope |
+-|----------|-------|
++| ---------- | ------- |
+ | `~/.pi/agent/extensions/*.ts` | Global (all projects) |
+ | `~/.pi/agent/extensions/*/index.ts` | Global (subdirectory) |
+ | `.pi/extensions/*.ts` | Project-local |
+@@ -139,7 +141,7 @@ To share extensions via npm or git as pi packages, see [packages.md](packages.md
+ ## Available Imports
+ 
+ | Package | Purpose |
+-|---------|---------|
++| --------- | --------- |
+ | `@earendil-works/pi-coding-agent` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
+ | `typebox` | Schema definitions for tool parameters |
+ | `@earendil-works/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
+@@ -626,6 +628,7 @@ pi.on("message_end", async (event, ctx) => {
+ Fired for tool execution lifecycle updates.
+ 
+ In parallel tool mode:
++
+ - `tool_execution_start` is emitted in assistant source order during the preflight phase
+ - `tool_execution_update` events may interleave across tools
+ - `tool_execution_end` is emitted in tool completion order after each tool is finalized
+@@ -712,13 +715,13 @@ Header availability depends on provider and transport. Providers that abstract H
+ 
+ #### model_select
+ 
+-Fired when the model changes via `/model` command, model cycling (`Ctrl+P`), or session restore.
++Fired when the model changes via `/model` command, model cycling (`Ctrl+P`), session restore, or a session-only model-and-thinking switch.
+ 
+ ```typescript
+ pi.on("model_select", async (event, ctx) => {
+   // event.model - newly selected model
+   // event.previousModel - previous model (undefined if first selection)
+-  // event.source - "set" | "cycle" | "restore"
++  // event.source - "set" | "cycle" | "restore" | "session"
+ 
+   const prev = event.previousModel
+     ? `${event.previousModel.provider}/${event.previousModel.id}`
+@@ -759,6 +762,7 @@ In the default parallel tool execution mode, sibling tool calls from the same as
+ `event.input` is mutable. Mutate it in place to patch tool arguments before execution.
+ 
+ Behavior guarantees:
++
+ - Mutations to `event.input` affect the actual tool execution
+ - Later `tool_call` handlers see mutations made by earlier handlers
+ - No re-validation is performed after your mutation
+@@ -818,6 +822,7 @@ Fired after tool execution finishes and before `tool_execution_end` plus the fin
+ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in tool completion order, while final `toolResult` message events are still emitted later in assistant source order.
+ 
+ `tool_result` handlers chain like middleware:
++
+ - Handlers run in extension load order
+ - Each handler sees the latest result after previous handler changes
+ - Handlers can return partial patches (`content`, `details`, `isError`, or `usage`); omitted fields keep their current values
+@@ -885,6 +890,7 @@ pi.on("user_bash", (event, ctx) => {
+ Fired when user input is received, after extension commands are checked but before skill and template expansion. The event sees the raw input text, so `/skill:foo` and `/template` are not yet expanded.
+ 
+ **Processing order:**
++
+ 1. Extension commands (`/cmd`) checked first - if found, handler runs and input event is skipped
+ 2. `input` event fires - can intercept, transform, or handle
+ 3. If not handled: skill commands (`/skill:name`) expanded to skill content
+@@ -923,6 +929,7 @@ pi.on("input", async (event, ctx) => {
+ ```
+ 
+ **Results:**
++
+ - `continue` - pass through unchanged (default if handler returns nothing)
+ - `transform` - modify text/images, then continue to expansion
+ - `handled` - skip agent entirely (first handler to return this wins)
+@@ -984,13 +991,14 @@ ctx.sessionManager.getLeafId()              // Current leaf entry ID
+ 
+ ### ctx.modelRegistry / ctx.model / ctx.thinkingLevel
+ 
+-Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
++Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `getRecipientDescriptor(model)` returns stable public recipient metadata, including `streamImplementationId`, without exposing the registered stream function. Built-in stream IDs are deterministic for the Pi package version and API; a custom `streamSimple` registration has no stream ID unless it explicitly supplies one. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
+ 
+ ### ctx.signal
+ 
+ The current agent abort signal, or `undefined` when no agent turn is active.
+ 
+ Use this for abort-aware nested work started by extension handlers, for example:
++
+ - `fetch(..., { signal: ctx.signal })`
+ - model calls that accept `signal`
+ - file or process helpers that accept `AbortSignal`
+@@ -1135,6 +1143,7 @@ if (result.cancelled) {
+ ```
+ 
+ Options:
++
+ - `parentSession`: parent session file to record in the new session header
+ - `setup`: mutate the new session's `SessionManager` before `withSession` runs
+ - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
+@@ -1161,6 +1170,7 @@ if (cloneResult.cancelled) {
+ ```
+ 
+ Options:
++
+ - `position`: `"before"` (default) forks before the selected user message, restoring that prompt into the editor
+ - `position`: `"at"` duplicates the active path through the selected entry without restoring editor text
+ - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
+@@ -1179,6 +1189,7 @@ const result = await ctx.navigateTree("entry-id-456", {
+ ```
+ 
+ Options:
++
+ - `summarize`: Whether to generate a summary of the abandoned branch
+ - `customInstructions`: Custom instructions for the summarizer
+ - `replaceInstructions`: If true, `customInstructions` replaces the default prompt instead of being appended
+@@ -1200,6 +1211,7 @@ if (result.cancelled) {
+ ```
+ 
+ Options:
++
+ - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
+ 
+ To discover available sessions, use the static `SessionManager.list()` or `SessionManager.listAll()` methods:
+@@ -1232,6 +1244,7 @@ pi.registerCommand("switch", {
+ `withSession` receives a fresh `ReplacedSessionContext`, which extends `ExtensionCommandContext` with async `sendMessage()` and `sendUserMessage()` helpers bound to the replacement session.
+ 
+ Lifecycle and footguns:
++
+ - `withSession` runs only after the old session has emitted `session_shutdown`, the old runtime has been torn down, the replacement session has been rebound, and the new extension instance has already received `session_start`.
+ - The callback still executes in the original closure, not inside the new extension instance. That means your old extension instance may already have run its shutdown cleanup before `withSession` starts.
+ - Captured old `pi` / old command `ctx` session-bound objects are stale after replacement and will throw if used. Use only the `ctx` passed to `withSession` for session-bound work.
+@@ -1285,6 +1298,7 @@ pi.registerCommand("reload-runtime", {
+ ```
+ 
+ Important behavior:
++
+ - `await ctx.reload()` emits `session_shutdown` for the current extension runtime
+ - It then reloads resources and emits `session_start` with `reason: "reload"` and `resources_discover` with reason `"reload"`
+ - The currently running command handler still continues in the old call frame
+@@ -1400,6 +1414,7 @@ pi.sendMessage({
+ ```
+ 
+ **Options:**
++
+ - `deliverAs` - Delivery mode:
+   - `"steer"` (default) - Queues the message while streaming. Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
+   - `"followUp"` - Waits for agent to finish. Delivered only when agent has no more tool calls.
+@@ -1426,6 +1441,7 @@ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
+ ```
+ 
+ **Options:**
++
+ - `deliverAs` - Required when agent is streaming:
+   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
+   - `"followUp"` - Waits for agent to finish all tools
+@@ -1642,6 +1658,7 @@ pi.setActiveTools(["read", "bash"]); // Switch to read-only
+ `pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
+ 
+ Typical `sourceInfo.source` values:
++
+ - `builtin` for built-in tools
+ - `sdk` for tools passed via `createAgentSession({ customTools })`
+ - extension source metadata for tools registered by extensions
+@@ -1660,6 +1677,21 @@ if (model) {
+ }
+ ```
+ 
++### pi.setSessionModelAndThinkingLevel(model, level)
++
++Set the model and thinking level together for the current live `AgentSession`. The operation validates configured auth, clamps the requested thinking level against the target model, and notifies model/thinking observers only after both values are active. It rejects with the same missing-key error as the host model setter.
++
++Unlike `pi.setModel()` and `pi.setThinkingLevel()`, this operation does not write model or thinking entries to session history and does not update saved defaults. The live selection survives extension reload because the `AgentSession` remains active, but it is not reconstructed in a fresh process or replacement session.
++
++```typescript
++const model = ctx.modelRegistry.find("anthropic", "claude-sonnet-4-5");
++if (model) {
++  await pi.setSessionModelAndThinkingLevel(model, "low");
++}
++```
++
++Successful model changes emit `model_select` with `event.source === "session"`. Thinking changes retain the existing `thinking_level_select` event shape.
++
+ ### pi.getThinkingLevel() / pi.setThinkingLevel(level)
+ 
+ Get or set the thinking level. Level is clamped to model capabilities (non-reasoning models always use "off"). Changes emit `thinking_level_select`.
+@@ -1785,9 +1817,10 @@ pi.registerProvider("corporate-ai", {
+ });
+ ```
+ 
+-The object form accepts a complete pi-ai `Provider`, including native `auth`, `getModels`, `refreshModels`, `filterModels`, `stream`, and `streamSimple` behavior.
++The object form accepts a complete pi-ai `Provider`, including native `auth`, `getModels`, `refreshModels`, `filterModels`, `stream`, and `streamSimple` behavior. Add a stable `streamImplementationId` when recipient-bound consumers must authorize that native stream implementation; without one, recipient identity is intentionally unavailable and those consumers fail closed.
+ 
+ **Legacy config options:**
++
+ - `name` - Display name for the provider in UI such as `/login`.
+ - `baseUrl` - API endpoint URL. Required when defining models.
+ - `apiKey` - API key literal, environment interpolation (`$ENV_VAR` or `${ENV_VAR}`), or leading `!command`. Required when defining models (unless `oauth` provided). `$$` escapes `$`, and `$!` escapes a literal `!` without triggering command execution.
+@@ -1797,7 +1830,8 @@ The object form accepts a complete pi-ai `Provider`, including native `auth`, `g
+ - `models` - Array of model definitions. If provided, replaces all existing models for this provider. Model definitions can set `baseUrl` to override the provider endpoint for that model.
+ - `refreshModels` - Async dynamic discovery callback. Its returned models replace extension-provided models. Use the scoped `context.store` only when results should persist.
+ - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
+-- `streamSimple` - Custom streaming implementation for non-standard APIs.
++- `streamSimple` - Custom streaming implementation for non-standard APIs. A registration that replaces it never inherits an earlier stream identity.
++- `streamImplementationId` - Stable public identity for `streamSimple`; change it when the implementation changes so recipient-bound consent is invalidated. Omitting it makes recipient identity unavailable and recipient-bound consumers fail closed.
+ 
+ See [custom-provider.md](custom-provider.md) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
+ 
+@@ -2027,6 +2061,7 @@ pi -e ./tool-override.ts
+ ```
+ 
+ Alternatively, use `--no-builtin-tools` to start without any built-in tools while keeping extension tools enabled:
++
+ ```bash
+ # No built-in tools, only extension tools
+ pi --no-builtin-tools -e ./my-extension.ts
+@@ -2041,6 +2076,7 @@ See [examples/extensions/tool-override.ts](../examples/extensions/tool-override.
+ **Your implementation must match the exact result shape**, including the `details` type. The UI and session logic depend on these shapes for rendering and state tracking.
+ 
+ Built-in tool implementations:
++
+ - [read.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
+ - [bash.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
+ - [edit.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)
+@@ -2109,6 +2145,7 @@ See [Bash tool session environment](environment-variables.md#bash-tool-session-e
+ ### Output Truncation
+ 
+ **Tools MUST truncate their output** to avoid overwhelming the LLM context. Large outputs can cause:
++
+ - Context overflow errors (prompt too long)
+ - Compaction failures
+ - Degraded model performance
+@@ -2151,6 +2188,7 @@ async execute(toolCallId, params, signal, onUpdate, ctx) {
+ ```
+ 
+ **Key points:**
++
+ - Use `truncateHead` for content where the beginning matters (search results, file reads)
+ - Use `truncateTail` for content where the end matters (logs, command output)
+ - Always inform the LLM when output is truncated and where to find the full version
+@@ -2201,6 +2239,7 @@ pi.registerTool({
+ ```
+ 
+ `renderCall` and `renderResult` each receive a `context` object with:
++
+ - `args` - the current tool call arguments
+ - `state` - shared row-local state across `renderCall` and `renderResult`
+ - `lastComponent` - the previously returned component for that slot, if any
+@@ -2271,11 +2310,13 @@ renderResult(result, { expanded }, theme, context) {
+ ```
+ 
+ Available functions:
++
+ - `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`
+ - `keyText(keybinding)` - Returns the raw configured key text for a keybinding id
+ - `rawKeyHint(key, description)` - Format a raw key string
+ 
+ Use namespaced keybinding ids:
++
+ - Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`
+ - Shared TUI ids use the `tui.*` namespace, for example `tui.select.confirm`, `tui.select.cancel`, `tui.input.tab`
+ 
+@@ -2298,6 +2339,7 @@ Custom editors and `ctx.ui.custom()` components receive `keybindings: Keybinding
+ #### Fallback
+ 
+ If a slot renderer is not defined or throws:
++
+ - `renderCall`: Shows the tool name
+ - `renderResult`: Shows raw text from `content`
+ 
+@@ -2443,6 +2485,7 @@ When `search_tools` adds a match, the model receives that definition on the imme
+ Extensions can interact with users via `ctx.ui` methods and customize how messages/tools render.
+ 
+ **For custom components, see [tui.md](tui.md)** which has copy-paste patterns for:
++
+ - Selection dialogs (SelectList)
+ - Async operations with cancel (BorderedLoader)
+ - Settings toggles (SettingsList)
+@@ -2491,6 +2534,7 @@ if (confirmed) {
+ ```
+ 
+ **Return values on timeout:**
++
+ - `select()` returns `undefined`
+ - `confirm()` returns `false`
+ - `input()` returns `undefined`
+@@ -2692,6 +2736,7 @@ if (result) {
+ ```
+ 
+ The callback receives:
++
+ - `tui` - TUI instance (for screen dimensions, focus management)
+ - `theme` - Current theme for styling
+ - `keybindings` - App keybinding manager (for checking shortcuts)
+@@ -2766,6 +2811,7 @@ export default function (pi: ExtensionAPI) {
+ ```
+ 
+ **Key points:**
++
+ - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
+ - Call `super.handleInput(data)` for keys you don't handle
+ - Factory receives `tui`, `theme`, and `keybindings` from the app
+@@ -2866,7 +2912,7 @@ const highlighted = highlightCode(code, lang, theme);
+ ## Mode Behavior
+ 
+ | Mode | `ctx.mode` | `ctx.hasUI` | Notes |
+-|------|------------|-------------|-------|
++| ------ | ------------ | ------------- | ------- |
+ | Interactive | `"tui"` | `true` | Full TUI with terminal rendering |
+ | RPC (`--mode rpc`) | `"rpc"` | `true` | Dialogs and notifications via JSON protocol; `custom()` returns `undefined`. See [rpc.md](rpc.md) |
+ | JSON (`--mode json`) | `"json"` | `false` | Event stream to stdout; UI methods are no-ops |
+@@ -2879,8 +2925,8 @@ Use `ctx.mode === "tui"` before TUI-specific features (`custom()`, component fac
+ All examples in [examples/extensions/](../examples/extensions/).
+ 
+ | Example | Description | Key APIs |
+-|---------|-------------|----------|
+-| **Tools** |||
++| --------- | ------------- | ---------- |
++| **Tools** | | |
+ | `hello.ts` | Minimal tool registration | `registerTool` |
+ | `question.ts` | Tool with user interaction | `registerTool`, `ui.select` |
+ | `questionnaire.ts` | Multi-step wizard tool | `registerTool`, `ui.custom` |
+@@ -2889,7 +2935,7 @@ All examples in [examples/extensions/](../examples/extensions/).
+ | `structured-output.ts` | Final structured-output tool with `terminate: true` | `registerTool`, terminating tool results |
+ | `truncated-tool.ts` | Output truncation example | `registerTool`, `truncateHead` |
+ | `tool-override.ts` | Override built-in read tool | `registerTool` (same name as built-in) |
+-| **Commands** |||
++| **Commands** | | |
+ | `pirate.ts` | Modify system prompt per-turn | `registerCommand`, `before_agent_start` |
+ | `summarize.ts` | Conversation summary command | `registerCommand`, `ui.custom` |
+ | `handoff.ts` | Cross-provider model handoff | `registerCommand`, `ui.editor`, `ui.custom` |
+@@ -2897,7 +2943,7 @@ All examples in [examples/extensions/](../examples/extensions/).
+ | `send-user-message.ts` | Inject user messages | `registerCommand`, `sendUserMessage` |
+ | `reload-runtime.ts` | Reload command and LLM tool handoff | `registerCommand`, `ctx.reload()`, `sendUserMessage` |
+ | `shutdown-command.ts` | Graceful shutdown command | `registerCommand`, `shutdown()` |
+-| **Events & Gates** |||
++| **Events & Gates** | | |
+ | `permission-gate.ts` | Block dangerous commands | `on("tool_call")`, `ui.confirm` |
+ | `project-trust.ts` | Decide or defer project trust from a user/global or CLI extension | `on("project_trust")`, trust UI, required trust result |
+ | `protected-paths.ts` | Block writes to specific paths | `on("tool_call")` |
+@@ -2911,13 +2957,13 @@ All examples in [examples/extensions/](../examples/extensions/).
+ | `claude-rules.ts` | Load rules from files | `on("session_start")`, `on("before_agent_start")` |
+ | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
+ | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
+-| **Compaction & Sessions** |||
++| **Compaction & Sessions** | | |
+ | `custom-compaction.ts` | Custom compaction summary | `on("session_before_compact")` |
+ | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
+ | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
+ | `git-merge-and-resolve.ts` | Fetch, merge, and resolve conflicts | `on("agent_end")`, `exec`, `sendUserMessage` |
+ | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |
+-| **UI Components** |||
++| **UI Components** | | |
+ | `status-line.ts` | Footer status indicator | `setStatus`, session events |
+ | `working-indicator.ts` | Customize the streaming working indicator | `setWorkingIndicator`, `registerCommand` |
+ | `github-issue-autocomplete.ts` | Add `#1234` issue completions on top of built-in autocomplete by preloading recent open issues from `gh issue list` | `addAutocompleteProvider`, `on("session_start")`, `exec` |
+@@ -2931,31 +2977,31 @@ All examples in [examples/extensions/](../examples/extensions/).
+ | `notify.ts` | Simple notifications | `ui.notify` |
+ | `timed-confirm.ts` | Dialogs with timeout | `ui.confirm` with timeout/signal |
+ | `mac-system-theme.ts` | Auto-switch theme | `setTheme`, `exec` |
+-| **Complex Extensions** |||
++| **Complex Extensions** | | |
+ | `plan-mode/` | Full plan mode implementation | All event types, `registerCommand`, `registerShortcut`, `registerFlag`, `setStatus`, `setWidget`, `sendMessage`, `setActiveTools` |
+ | `preset.ts` | Saveable presets (model, tools, thinking) | `registerCommand`, `registerShortcut`, `registerFlag`, `setModel`, `setActiveTools`, `setThinkingLevel`, `appendEntry` |
+ | `tools.ts` | Toggle tools on/off UI | `registerCommand`, `setActiveTools`, `SettingsList`, session events |
+-| **Remote & Sandbox** |||
++| **Remote & Sandbox** | | |
+ | `ssh.ts` | SSH remote execution | `registerFlag`, `on("user_bash")`, `on("before_agent_start")`, tool operations |
+ | `interactive-shell.ts` | Persistent shell session | `on("user_bash")` |
+ | `sandbox/` | Sandboxed tool execution | Tool operations |
+ | `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM | Tool operations, built-in tool overrides, `on("user_bash")` |
+ | `subagent/` | Spawn sub-agents | `registerTool`, `exec` |
+-| **Games** |||
++| **Games** | | |
+ | `snake.ts` | Snake game | `registerCommand`, `ui.custom`, keyboard handling |
+ | `space-invaders.ts` | Space Invaders game | `registerCommand`, `ui.custom` |
+ | `doom-overlay/` | Doom in overlay | `ui.custom` with overlay |
+-| **Providers** |||
++| **Providers** | | |
+ | `custom-provider-anthropic/` | Custom Anthropic proxy | `registerProvider` |
+ | `custom-provider-gitlab-duo/` | GitLab Duo integration | `registerProvider` with OAuth |
+-| **Messages & Communication** |||
++| **Messages & Communication** | | |
+ | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
+ | `entry-renderer.ts` | TUI-only custom entry rendering | `registerEntryRenderer`, `appendEntry` |
+ | `event-bus.ts` | Inter-extension events | `pi.events` |
+-| **Session Metadata** |||
++| **Session Metadata** | | |
+ | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
+ | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
+-| **Misc** |||
++| **Misc** | | |
+ | `inline-bash.ts` | Inline bash in tool calls | `on("tool_call")` |
+ | `bash-spawn-hook.ts` | Adjust bash command, cwd, and env before execution | `createBashTool`, `spawnHook` |
+ | `with-deps/` | Extension with npm dependencies | Package structure with `package.json` |
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index a688528..d195cfa 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -76,6 +76,7 @@ import {
+ 	type MessageEndEvent,
+ 	type MessageStartEvent,
+ 	type MessageUpdateEvent,
++	type ModelSelectSource,
+ 	type ReplacedSessionContext,
+ 	type SessionBeforeCompactResult,
+ 	type SessionBeforeTreeResult,
+@@ -1559,7 +1560,7 @@ export class AgentSession {
+ 	private async _emitModelSelect(
+ 		nextModel: Model<any>,
+ 		previousModel: Model<any> | undefined,
+-		source: "set" | "cycle" | "restore",
++		source: ModelSelectSource,
+ 	): Promise<void> {
+ 		if (modelsAreEqual(previousModel, nextModel)) return;
+ 		await this._extensionRunner.emit({
+@@ -1592,6 +1593,36 @@ export class AgentSession {
+ 		await this._emitModelSelect(model, previousModel, "set");
+ 	}
+ 
++	/**
++	 * Set model and thinking level for the current AgentSession only.
++	 * Validates configured auth but does not persist session selections or defaults.
++	 * @throws Error if no auth is configured for the model
++	 */
++	async setSessionModelAndThinkingLevel(model: Model<any>, level: ThinkingLevel): Promise<void> {
++		if (!(await this._modelRuntime.checkAuth(model.provider))) {
++			throw new Error(`No API key for ${model.provider}/${model.id}`);
++		}
++
++		const previousModel = this.model;
++		const previousLevel = this.thinkingLevel;
++		const effectiveLevel = clampThinkingLevel(model, level) as ThinkingLevel;
++
++		// Apply both values before notifying any session or extension observer.
++		this.agent.state.model = model;
++		this.agent.state.thinkingLevel = effectiveLevel;
++
++		if (effectiveLevel !== previousLevel) {
++			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
++			await this._extensionRunner.emit({
++				type: "thinking_level_select",
++				level: effectiveLevel,
++				previousLevel,
++			});
++		}
++
++		await this._emitModelSelect(model, previousModel, "session");
++	}
++
+ 	/**
+ 	 * Cycle to next/previous model.
+ 	 * Uses scoped models (from --models flag) if available, otherwise all available models.
+@@ -2400,6 +2431,7 @@ export class AgentSession {
+ 					await this.setModel(model);
+ 					return true;
+ 				},
++				setSessionModelAndThinkingLevel: (model, level) => this.setSessionModelAndThinkingLevel(model, level),
+ 				getThinkingLevel: () => this.thinkingLevel,
+ 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+ 			},
+diff --git a/packages/coding-agent/src/core/extensions/index.ts b/packages/coding-agent/src/core/extensions/index.ts
+index 29847b6..b23ef11 100644
+--- a/packages/coding-agent/src/core/extensions/index.ts
++++ b/packages/coding-agent/src/core/extensions/index.ts
+@@ -141,6 +141,7 @@ export type {
+ 	SetActiveToolsHandler,
+ 	SetLabelHandler,
+ 	SetModelHandler,
++	SetSessionModelAndThinkingLevelHandler,
+ 	SetThinkingLevelHandler,
+ 	TerminalInputHandler,
+ 	// Events - Tool
+diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
+index 89f59c0..cfc24ce 100644
+--- a/packages/coding-agent/src/core/extensions/loader.ts
++++ b/packages/coding-agent/src/core/extensions/loader.ts
+@@ -8,7 +8,6 @@ import { createRequire } from "node:module";
+ import * as path from "node:path";
+ import { fileURLToPath } from "node:url";
+ import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
+-import type { Provider } from "@earendil-works/pi-ai";
+ import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
+ import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
+ import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
+@@ -29,6 +28,7 @@ import { resolvePath } from "../../utils/paths.ts";
+ import { createEventBus, type EventBus } from "../event-bus.ts";
+ import type { ExecOptions } from "../exec.ts";
+ import { execCommand } from "../exec.ts";
++import type { RecipientIdentifiedProvider } from "../model-runtime.ts";
+ import { createSyntheticSourceInfo } from "../source-info.ts";
+ import { time } from "../timings.ts";
+ import type {
+@@ -192,6 +192,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+ 		refreshTools: () => {},
+ 		getCommands: notInitialized,
+ 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
++		setSessionModelAndThinkingLevel: () => Promise.reject(new Error("Extension runtime not initialized")),
+ 		getThinkingLevel: notInitialized,
+ 		setThinkingLevel: notInitialized,
+ 		flagValues: new Map(),
+@@ -361,6 +362,11 @@ function createExtensionAPI(
+ 			return runtime.setModel(model);
+ 		},
+ 
++		setSessionModelAndThinkingLevel(model, level) {
++			runtime.assertActive();
++			return runtime.setSessionModelAndThinkingLevel(model, level);
++		},
++
+ 		getThinkingLevel() {
+ 			runtime.assertActive();
+ 			return runtime.getThinkingLevel();
+@@ -371,7 +377,7 @@ function createExtensionAPI(
+ 			runtime.setThinkingLevel(level);
+ 		},
+ 
+-		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {
++		registerProvider(providerOrName: RecipientIdentifiedProvider | string, config?: ProviderConfig) {
+ 			runtime.assertActive();
+ 			if (typeof providerOrName === "string") {
+ 				if (!config) throw new Error("Provider config is required when registering by name");
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index e0119fe..6e968e7 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -3,12 +3,13 @@
+  */
+ 
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+-import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
++import type { ImageContent, Model, ProviderHeaders } from "@earendil-works/pi-ai";
+ import type { KeyId } from "@earendil-works/pi-tui";
+ import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+ import type { ResourceDiagnostic } from "../diagnostics.ts";
+ import type { KeybindingsConfig } from "../keybindings.ts";
+ import type { ModelRegistry } from "../model-registry.ts";
++import type { RecipientIdentifiedProvider } from "../model-runtime.ts";
+ import type { SessionManager } from "../session-manager.ts";
+ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+ import type {
+@@ -313,7 +314,7 @@ export class ExtensionRunner {
+ 		contextActions: ExtensionContextActions,
+ 		providerActions?: {
+ 			registerProvider?: (name: string, config: ProviderConfig) => void;
+-			registerNativeProvider?: (provider: Provider) => void;
++			registerNativeProvider?: (provider: RecipientIdentifiedProvider) => void;
+ 			unregisterProvider?: (name: string) => void;
+ 		},
+ 	): void {
+@@ -330,6 +331,7 @@ export class ExtensionRunner {
+ 		this.runtime.refreshTools = actions.refreshTools;
+ 		this.runtime.getCommands = actions.getCommands;
+ 		this.runtime.setModel = actions.setModel;
++		this.runtime.setSessionModelAndThinkingLevel = actions.setSessionModelAndThinkingLevel;
+ 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
+ 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+ 
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index c8989a5..2407749 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -25,7 +25,6 @@ import type {
+ 	Model,
+ 	OAuthCredentials,
+ 	OAuthLoginCallbacks,
+-	Provider,
+ 	ProviderHeaders,
+ 	RefreshModelsContext,
+ 	SimpleStreamOptions,
+@@ -54,6 +53,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
+ import type { KeybindingsManager } from "../keybindings.ts";
+ import type { CustomMessage } from "../messages.ts";
+ import type { ModelRegistry } from "../model-registry.ts";
++import type { RecipientIdentifiedProvider } from "../model-runtime.ts";
+ import type {
+ 	BranchSummaryEntry,
+ 	CompactionEntry,
+@@ -782,7 +782,7 @@ export interface ToolExecutionEndEvent {
+ // Model Events
+ // ============================================================================
+ 
+-export type ModelSelectSource = "set" | "cycle" | "restore";
++export type ModelSelectSource = "set" | "cycle" | "restore" | "session";
+ 
+ /** Fired when a new model is selected */
+ export interface ModelSelectEvent {
+@@ -1329,6 +1329,12 @@ export interface ExtensionAPI {
+ 	/** Set the current model. Returns false if no API key available. */
+ 	setModel(model: Model<any>): Promise<boolean>;
+ 
++	/**
++	 * Set the model and thinking level for the current live session only.
++	 * Rejects if no API key is configured. Does not persist session selections or defaults.
++	 */
++	setSessionModelAndThinkingLevel(model: Model<any>, level: ThinkingLevel): Promise<void>;
++
+ 	/** Get current thinking level. */
+ 	getThinkingLevel(): ThinkingLevel;
+ 
+@@ -1391,7 +1397,7 @@ export interface ExtensionAPI {
+ 	 *   }
+ 	 * });
+ 	 */
+-	registerProvider(provider: Provider): void;
++	registerProvider(provider: RecipientIdentifiedProvider): void;
+ 	registerProvider(name: string, config: ProviderConfig): void;
+ 
+ 	/**
+@@ -1429,6 +1435,11 @@ export interface ProviderConfig {
+ 	api?: Api;
+ 	/** Optional streamSimple handler for custom APIs. */
+ 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
++	/**
++	 * Stable public identity for the custom stream implementation. Consumers may
++	 * bind recipient consent to it; change it whenever streamSimple changes.
++	 */
++	streamImplementationId?: string;
+ 	/** Custom headers to include in requests. */
+ 	headers?: Record<string, string>;
+ 	/** If true, adds Authorization: Bearer header with the resolved API key. */
+@@ -1557,6 +1568,8 @@ export type RefreshToolsHandler = () => void;
+ 
+ export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
+ 
++export type SetSessionModelAndThinkingLevelHandler = (model: Model<any>, level: ThinkingLevel) => Promise<void>;
++
+ export type GetThinkingLevelHandler = () => ThinkingLevel;
+ 
+ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
+@@ -1572,7 +1585,10 @@ export interface ExtensionRuntimeState {
+ 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
+ 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+ 	/** Native pi-ai provider registrations queued during extension loading, processed when runner binds. */
+-	pendingNativeProviderRegistrations: Array<{ provider: Provider; extensionPath: string }>;
++	pendingNativeProviderRegistrations: Array<{
++		provider: RecipientIdentifiedProvider;
++		extensionPath: string;
++	}>;
+ 	/** Throws when this extension instance is stale after runtime replacement. */
+ 	assertActive: () => void;
+ 	/** Marks this extension instance as stale after runtime replacement or reload. */
+@@ -1584,7 +1600,7 @@ export interface ExtensionRuntimeState {
+ 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
+ 	 */
+ 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
+-	registerNativeProvider: (provider: Provider, extensionPath?: string) => void;
++	registerNativeProvider: (provider: RecipientIdentifiedProvider, extensionPath?: string) => void;
+ 	unregisterProvider: (name: string, extensionPath?: string) => void;
+ }
+ 
+@@ -1605,6 +1621,7 @@ export interface ExtensionActions {
+ 	refreshTools: RefreshToolsHandler;
+ 	getCommands: GetCommandsHandler;
+ 	setModel: SetModelHandler;
++	setSessionModelAndThinkingLevel: SetSessionModelAndThinkingLevelHandler;
+ 	getThinkingLevel: GetThinkingLevelHandler;
+ 	setThinkingLevel: SetThinkingLevelHandler;
+ }
+diff --git a/packages/coding-agent/src/core/model-registry.ts b/packages/coding-agent/src/core/model-registry.ts
+index 4d8d82f..d3fb524 100644
+--- a/packages/coding-agent/src/core/model-registry.ts
++++ b/packages/coding-agent/src/core/model-registry.ts
+@@ -1,5 +1,5 @@
+ import type { Api, AuthResult, Model, Provider } from "@earendil-works/pi-ai";
+-import type { ModelRuntime } from "./model-runtime.ts";
++import type { ModelRecipientDescriptor, ModelRuntime, RecipientIdentifiedProvider } from "./model-runtime.ts";
+ import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
+ 
+ export type { ProviderConfigInput } from "./provider-composer.ts";
+@@ -96,6 +96,11 @@ export class ModelRegistry {
+ 		return this.runtime.getProvider(provider);
+ 	}
+ 
++	/** Stable public recipient identity data; never exposes the stream function. */
++	getRecipientDescriptor(model: Model<Api>): ModelRecipientDescriptor {
++		return this.runtime.getRecipientDescriptor(model);
++	}
++
+ 	getProviderDisplayName(provider: string): string {
+ 		return this.runtime.getProvider(provider)?.name ?? provider;
+ 	}
+@@ -116,9 +121,9 @@ export class ModelRegistry {
+ 		return this.runtime.isUsingOAuth(model.provider);
+ 	}
+ 
+-	registerProvider(provider: Provider): void;
++	registerProvider(provider: RecipientIdentifiedProvider): void;
+ 	registerProvider(providerName: string, config: ProviderConfigInput): void;
+-	registerProvider(providerOrName: Provider | string, config?: ProviderConfigInput): void {
++	registerProvider(providerOrName: RecipientIdentifiedProvider | string, config?: ProviderConfigInput): void {
+ 		if (typeof providerOrName === "string") {
+ 			if (!config) throw new Error("Provider config is required when registering by name");
+ 			this.runtime.registerProvider(providerOrName, config);
+@@ -135,7 +140,7 @@ export class ModelRegistry {
+ 		return this.runtime.getRegisteredProviderConfig(providerName);
+ 	}
+ 
+-	getRegisteredNativeProvider(providerName: string): Provider | undefined {
++	getRegisteredNativeProvider(providerName: string): RecipientIdentifiedProvider | undefined {
+ 		return this.runtime.getRegisteredNativeProvider(providerName);
+ 	}
+ 
+diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
+index e4575b0..79f0e31 100644
+--- a/packages/coding-agent/src/core/model-runtime.ts
++++ b/packages/coding-agent/src/core/model-runtime.ts
+@@ -30,7 +30,7 @@ import {
+ 	type StreamOptions,
+ } from "@earendil-works/pi-ai";
+ import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+-import { getAgentDir } from "../config.ts";
++import { getAgentDir, VERSION } from "../config.ts";
+ import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+ import { ModelConfig } from "./model-config.ts";
+ import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+@@ -47,6 +47,21 @@ import {
+ import { withRemoteCatalog } from "./remote-catalog-provider.ts";
+ import { RuntimeCredentials } from "./runtime-credentials.ts";
+ 
++export type RecipientIdentifiedProvider = Provider & {
++	/** Stable public identity that changes with the native provider stream implementation. */
++	readonly streamImplementationId?: string;
++};
++
++export interface ModelRecipientDescriptor {
++	provider: string;
++	providerBaseUrl?: string;
++	modelBaseUrl?: string;
++	api: Api;
++	model: string;
++	/** Undefined when a custom stream registration did not declare a stable identity. */
++	streamImplementationId?: string;
++}
++
+ interface ModelRuntimeSnapshot {
+ 	all: readonly Model<Api>[];
+ 	available: readonly Model<Api>[];
+@@ -96,7 +111,7 @@ export class ModelRuntime implements Models {
+ 	private readonly credentials: RuntimeCredentials;
+ 	private readonly defaultBuiltins: ReadonlyMap<string, Provider>;
+ 	private readonly builtins = new Map<string, Provider>();
+-	private readonly nativeExtensionProviders = new Map<string, Provider>();
++	private readonly nativeExtensionProviders = new Map<string, RecipientIdentifiedProvider>();
+ 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
+ 	private readonly compositionErrors = new Map<string, string>();
+ 	private readonly modelsPath: string | undefined;
+@@ -298,6 +313,35 @@ export class ModelRuntime implements Models {
+ 		return this.models.getProvider(providerId);
+ 	}
+ 
++	/** Public, stable recipient data without exposing stream functions or private registry state. */
++	getRecipientDescriptor(model: Model<Api>): ModelRecipientDescriptor {
++		const provider = this.models.getProvider(model.provider);
++		const extension = this.extensionProviders.get(model.provider);
++		const base = this.builtins.get(model.provider);
++		let streamImplementationId: string | undefined;
++		const native = this.nativeExtensionProviders.get(model.provider);
++		if (native) {
++			streamImplementationId = native.streamImplementationId?.trim() || undefined;
++		} else if (extension?.streamSimple && model.api === extension.api) {
++			streamImplementationId = extension.streamImplementationId?.trim() || undefined;
++		} else if (base?.getModels().some((entry) => entry.api === model.api)) {
++			streamImplementationId = `@earendil-works/pi-ai@${VERSION}:provider:${model.provider}:api:${model.api}`;
++		} else {
++			// A model that falls through to the mutable compatibility API registry has
++			// no supported stable registration identity. Recipient-bound callers must
++			// fail closed rather than assume the API name identifies its stream.
++			streamImplementationId = undefined;
++		}
++		return {
++			provider: model.provider,
++			providerBaseUrl: provider?.baseUrl,
++			modelBaseUrl: model.baseUrl,
++			api: model.api,
++			model: model.id,
++			streamImplementationId,
++		};
++	}
++
+ 	getModels(providerId?: string): readonly Model<Api>[] {
+ 		return this.models.getModels(providerId);
+ 	}
+@@ -350,7 +394,7 @@ export class ModelRuntime implements Models {
+ 		return [...new Set([...this.extensionProviders.keys(), ...this.nativeExtensionProviders.keys()])];
+ 	}
+ 
+-	getRegisteredNativeProvider(providerId: string): Provider | undefined {
++	getRegisteredNativeProvider(providerId: string): RecipientIdentifiedProvider | undefined {
+ 		return this.nativeExtensionProviders.get(providerId);
+ 	}
+ 
+@@ -536,7 +580,7 @@ export class ModelRuntime implements Models {
+ 		return result;
+ 	}
+ 
+-	registerNativeProvider(provider: Provider): void {
++	registerNativeProvider(provider: RecipientIdentifiedProvider): void {
+ 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
+ 		this.extensionProviders.delete(provider.id);
+ 		this.nativeExtensionProviders.set(provider.id, provider);
+@@ -557,6 +601,12 @@ export class ModelRuntime implements Models {
+ 		for (const [key, value] of Object.entries(config)) {
+ 			if (value !== undefined) (effective as Record<string, unknown>)[key] = value;
+ 		}
++		// A new stream implementation must never inherit the previous stream's
++		// recipient identity. Missing or blank identity is represented as unknown,
++		// causing recipient-bound consumers to fail closed.
++		if (config.streamSimple && !config.streamImplementationId?.trim()) {
++			delete effective.streamImplementationId;
++		}
+ 		this.extensionProviders.set(providerId, effective);
+ 		this.recomposeProvider(providerId);
+ 		this.updateModelSnapshot();
+diff --git a/packages/coding-agent/src/core/provider-composer.ts b/packages/coding-agent/src/core/provider-composer.ts
+index a29c376..341f637 100644
+--- a/packages/coding-agent/src/core/provider-composer.ts
++++ b/packages/coding-agent/src/core/provider-composer.ts
+@@ -47,6 +47,8 @@ export interface ProviderConfigInput {
+ 	apiKey?: string;
+ 	api?: Api;
+ 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
++	/** Stable public identity that changes with the custom stream implementation. */
++	streamImplementationId?: string;
+ 	headers?: Record<string, string>;
+ 	authHeader?: boolean;
+ 	oauth?: ExtensionOAuthConfig;
+diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
+index e223d31..5164e2f 100644
+--- a/packages/coding-agent/src/index.ts
++++ b/packages/coding-agent/src/index.ts
+@@ -177,8 +177,10 @@ export {
+ } from "./core/model-resolver.ts";
+ export {
+ 	type CreateModelRuntimeOptions,
++	type ModelRecipientDescriptor,
+ 	ModelRuntime,
+ 	type ModelRuntimeAuthOverrides,
++	type RecipientIdentifiedProvider,
+ } from "./core/model-runtime.ts";
+ export type {
+ 	PackageManager,
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 69f20be..9b185c7 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -84,6 +84,7 @@ describe("ExtensionRunner", () => {
+ 		refreshTools: () => {},
+ 		getCommands: () => [],
+ 		setModel: async () => false,
++		setSessionModelAndThinkingLevel: async () => {},
+ 		getThinkingLevel: () => "off",
+ 		setThinkingLevel: () => {},
+ 	};
+diff --git a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+index b334b12..bf7d66a 100644
+--- a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+@@ -2,7 +2,7 @@ import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
+ import { Type } from "typebox";
+ import { afterEach, describe, expect, it } from "vitest";
+-import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";
++import type { BuildSystemPromptOptions, ExtensionAPI, ModelRegistry } from "../../src/index.ts";
+ import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
+ 
+ describe("AgentSession model and extension characterization", () => {
+@@ -44,6 +44,203 @@ describe("AgentSession model and extension characterization", () => {
+ 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
+ 	});
+ 
++	it("switches model and thinking for the live session without persisting defaults or selection entries", async () => {
++		let extensionApi: ExtensionAPI | undefined;
++		const observerSnapshots: string[] = [];
++		const harness = await createHarness({
++			models: [
++				{ id: "faux-1", name: "One", reasoning: true },
++				{ id: "faux-2", name: "Two", reasoning: false },
++			],
++			extensionFactories: [
++				(pi) => {
++					extensionApi = pi;
++					pi.on("thinking_level_select", async (event, ctx) => {
++						observerSnapshots.push(
++							`thinking:${ctx.model?.id}:${ctx.thinkingLevel}:${event.previousLevel}->${event.level}`,
++						);
++					});
++					pi.on("model_select", async (event, ctx) => {
++						observerSnapshots.push(
++							`model:${ctx.model?.id}:${ctx.thinkingLevel}:${event.previousModel?.id}->${event.model.id}:${event.source}`,
++						);
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++		harness.session.setThinkingLevel("high");
++		observerSnapshots.length = 0;
++		const selectionEntriesBefore = harness.sessionManager
++			.getEntries()
++			.filter((entry) => entry.type === "model_change" || entry.type === "thinking_level_change");
++		const defaultsBefore = {
++			provider: harness.settingsManager.getDefaultProvider(),
++			model: harness.settingsManager.getDefaultModel(),
++			thinking: harness.settingsManager.getDefaultThinkingLevel(),
++		};
++
++		await extensionApi?.setSessionModelAndThinkingLevel(harness.getModel("faux-2")!, "high");
++
++		expect(harness.session.model?.id).toBe("faux-2");
++		expect(harness.session.thinkingLevel).toBe("off");
++		expect(observerSnapshots).toEqual(["thinking:faux-2:off:high->off", "model:faux-2:off:faux-1->faux-2:session"]);
++		expect(
++			harness.sessionManager
++				.getEntries()
++				.filter((entry) => entry.type === "model_change" || entry.type === "thinking_level_change"),
++		).toEqual(selectionEntriesBefore);
++		expect({
++			provider: harness.settingsManager.getDefaultProvider(),
++			model: harness.settingsManager.getDefaultModel(),
++			thinking: harness.settingsManager.getDefaultThinkingLevel(),
++		}).toEqual(defaultsBefore);
++
++		await harness.session.reload();
++		expect(harness.session.model?.id).toBe("faux-2");
++		expect(harness.session.thinkingLevel).toBe("off");
++	});
++
++	it("exposes only stable public stream recipient identity and fails closed for unknown implementations", async () => {
++		let extensionApi: ExtensionAPI | undefined;
++		let registry: ModelRegistry | undefined;
++		const harness = await createHarness({
++			models: [
++				{ id: "faux-1", name: "One", reasoning: true },
++				{ id: "faux-2", name: "Two", reasoning: true },
++			],
++			extensionFactories: [
++				(pi) => {
++					extensionApi = pi;
++					pi.on("model_select", async (_event, ctx) => {
++						registry = ctx.modelRegistry;
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++		const model = harness.getModel("faux-2")!;
++		await harness.session.setModel(model);
++		const builtin = registry?.getAll().find((entry) => entry.provider === "anthropic");
++		expect(builtin).toBeDefined();
++		const builtinDescriptor = registry?.getRecipientDescriptor(builtin!);
++		expect(Object.keys(builtinDescriptor!).sort()).toEqual([
++			"api",
++			"model",
++			"modelBaseUrl",
++			"provider",
++			"providerBaseUrl",
++			"streamImplementationId",
++		]);
++		expect(Object.values(builtinDescriptor!).some((value) => typeof value === "function")).toBe(false);
++		expect(JSON.stringify(builtinDescriptor)).not.toContain("function");
++		expect(builtinDescriptor?.streamImplementationId).toContain("@earendil-works/pi-ai@");
++
++		extensionApi?.registerProvider(model.provider, {
++			api: model.api,
++			streamSimple: () => {
++				throw new Error("not called");
++			},
++			streamImplementationId: "custom-stream@1",
++		});
++		expect(registry?.getRecipientDescriptor(model).streamImplementationId).toBe("custom-stream@1");
++		extensionApi?.registerProvider(model.provider, {
++			api: model.api,
++			streamSimple: () => {
++				throw new Error("replacement not called");
++			},
++		});
++		expect(registry?.getRecipientDescriptor(model).streamImplementationId).toBeUndefined();
++		extensionApi?.registerProvider(model.provider, {
++			api: model.api,
++			streamSimple: () => {
++				throw new Error("second replacement not called");
++			},
++			streamImplementationId: "custom-stream@2",
++		});
++		expect(registry?.getRecipientDescriptor(model).streamImplementationId).toBe("custom-stream@2");
++
++		const baseProvider = registry?.getProvider(model.provider);
++		expect(baseProvider).toBeDefined();
++		registry?.registerProvider({
++			...baseProvider!,
++			id: "native-missing-identity",
++			getModels: () => [{ ...model, provider: "native-missing-identity" }],
++		});
++		const unidentifiedNativeModel = registry?.find("native-missing-identity", model.id);
++		expect(registry?.getRecipientDescriptor(unidentifiedNativeModel!).streamImplementationId).toBeUndefined();
++		registry?.registerProvider({
++			...baseProvider!,
++			id: "native-recipient",
++			streamImplementationId: "native-stream@1",
++			getModels: () => [{ ...model, provider: "native-recipient" }],
++		});
++		const nativeModel = registry?.find("native-recipient", model.id);
++		expect(registry?.getRecipientDescriptor(nativeModel!).streamImplementationId).toBe("native-stream@1");
++
++		extensionApi?.registerProvider("compat-recipient", {
++			apiKey: "configured",
++			models: [{ ...model }],
++		});
++		const compatibilityModel = registry?.find("compat-recipient", model.id);
++		expect(registry?.getRecipientDescriptor(compatibilityModel!).streamImplementationId).toBeUndefined();
++	});
++
++	it("rejects a session-only switch before changing live state when auth is missing", async () => {
++		let extensionApi: ExtensionAPI | undefined;
++		const modelEvents: string[] = [];
++		const harness = await createHarness({
++			models: [
++				{ id: "faux-1", name: "One", reasoning: true },
++				{ id: "faux-2", name: "Two", reasoning: false },
++			],
++			withConfiguredAuth: false,
++			extensionFactories: [
++				(pi) => {
++					extensionApi = pi;
++					pi.on("model_select", async (event) => {
++						modelEvents.push(event.model.id);
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++		const entriesBefore = harness.sessionManager.getEntries();
++
++		await expect(extensionApi?.setSessionModelAndThinkingLevel(harness.getModel("faux-2")!, "high")).rejects.toThrow(
++			`No API key for ${harness.getModel().provider}/faux-2`,
++		);
++
++		expect(harness.session.model?.id).toBe("faux-1");
++		expect(harness.session.thinkingLevel).toBe("off");
++		expect(modelEvents).toEqual([]);
++		expect(harness.sessionManager.getEntries()).toEqual(entriesBefore);
++	});
++
++	it("does not emit duplicate events for an authenticated session-only no-op", async () => {
++		let extensionApi: ExtensionAPI | undefined;
++		const selectionEvents: string[] = [];
++		const harness = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					extensionApi = pi;
++					pi.on("model_select", async () => {
++						selectionEvents.push("model");
++					});
++					pi.on("thinking_level_select", async () => {
++						selectionEvents.push("thinking");
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++
++		await extensionApi?.setSessionModelAndThinkingLevel(harness.getModel(), "off");
++
++		expect(selectionEvents).toEqual([]);
++		expect(harness.sessionManager.getEntries()).toEqual([]);
++	});
++
+ 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
+ 		const harness = await createHarness({
+ 			models: [
+@@ -225,6 +422,62 @@ describe("AgentSession model and extension characterization", () => {
+ 		expect(toolResult?.role === "toolResult" ? toolResult.usage : undefined).toEqual(patchedToolUsage);
+ 	});
+ 
++	it("switches after the tool result is persisted and before the natural next request", async () => {
++		let sawToolResult = false;
++		let resultPersistedBeforeSwitch = false;
++		let nextRequestModel = "";
++		let nextRequestSawToolResult = false;
++		const echoTool: AgentTool = {
++			name: "echo",
++			label: "Echo",
++			description: "Echo text back",
++			parameters: Type.Object({ text: Type.String() }),
++			execute: async (_toolCallId, params) => ({
++				content: [{ type: "text", text: String((params as { text: string }).text) }],
++				details: {},
++			}),
++		};
++		const harness = await createHarness({
++			models: [
++				{ id: "faux-1", name: "One", reasoning: true },
++				{ id: "faux-2", name: "Two", reasoning: true },
++			],
++			tools: [echoTool],
++			extensionFactories: [
++				(pi) => {
++					pi.on("tool_result", async () => {
++						sawToolResult = true;
++					});
++					pi.on("turn_end", async (_event, ctx) => {
++						if (!sawToolResult || ctx.model?.id !== "faux-1") return;
++						resultPersistedBeforeSwitch = ctx.sessionManager
++							.getEntries()
++							.some((entry) => entry.type === "message" && entry.message.role === "toolResult");
++						await pi.setSessionModelAndThinkingLevel(
++							ctx.modelRegistry.find(ctx.model.provider, "faux-2")!,
++							"low",
++						);
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++		harness.setResponses([
++			fauxAssistantMessage([fauxToolCall("echo", { text: "persist me" })], { stopReason: "toolUse" }),
++			(context) => {
++				nextRequestModel = harness.session.model?.id ?? "";
++				nextRequestSawToolResult = context.messages.some((message) => message.role === "toolResult");
++				return fauxAssistantMessage("done");
++			},
++		]);
++
++		await harness.session.prompt("hi");
++
++		expect(resultPersistedBeforeSwitch).toBe(true);
++		expect(nextRequestModel).toBe("faux-2");
++		expect(nextRequestSawToolResult).toBe(true);
++	});
++
+ 	it("allows extension context handlers to modify messages before the LLM call", async () => {
+ 		const harness = await createHarness({
+ 			extensionFactories: [

@@ -1,0 +1,8 @@
+[
+  { "path": "../../outside-source", "type": "file" },
+  {
+    "path": "package/link",
+    "type": "symlink",
+    "linkPath": "../outside-after-strip"
+  }
+]

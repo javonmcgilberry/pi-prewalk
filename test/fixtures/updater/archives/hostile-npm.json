@@ -1,0 +1,8 @@
+[
+  { "path": "/absolute-npm", "type": "file" },
+  {
+    "path": "package/hardlink",
+    "type": "hardlink",
+    "linkPath": "../outside-hardlink"
+  }
+]

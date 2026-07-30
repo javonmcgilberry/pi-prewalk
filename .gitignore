@@ -1,0 +1,42 @@
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+.tmp/
+tmp/
+temp/
+*.log
+*.tgz
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.credentials.*
+credentials.json
+secrets.json
+
+# Local Prewalk evidence and updater state
+.pi-subagents/
+canary-evidence/
+evidence/
+*.prewalk-journal*
+*.prewalk-attestation.json
+*.prewalk-backup/
+*.prewalk-patched-backup/
+*.prewalk-candidate/
+*.prewalk-staging/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
