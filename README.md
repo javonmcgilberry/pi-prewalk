@@ -85,9 +85,11 @@ profiles default to the active epoch's executor, and broader overrides are
 blocked before the tool executes. The accepted versioned policy is inherited by
 child processes, where the child Prewalk instance applies the same ceiling to
 nested launches without starting another automatic Prewalk epoch. Upstream
-pi-subagents remains unchanged. Without active Prewalk, pi-subagents keeps its
-normal model behavior. Without pi-subagents, Prewalk keeps its normal standalone
-lifecycle.
+pi-subagents remains unchanged. Resume, steer, and appended chain steps must
+retain the original run policy. A delayed scheduled launch is rejected while a
+policy is active because its future process cannot inherit the transient
+snapshot safely. Without active Prewalk, pi-subagents keeps its normal model
+behavior. Without pi-subagents, Prewalk keeps its normal standalone lifecycle.
 
 Shift+Tab follows the active Prewalk role. Before handoff it remains Pi's native
 Sol reasoning control. After handoff Prewalk consumes it and cycles Luna's live
@@ -135,7 +137,9 @@ calculation detail; `export <path>` for JSONL; and `reset` after confirmation to
 rotate to an empty generation. Export uses exclusive creation: an existing
 filename is never changed and the command tells you to choose a new filename.
 A reset during a run excludes that prior-generation run; collection resumes on
-the next run. `/prewalk configure` controls collection and catalog fallback.
+the next run. If retired files cannot be removed, reset reports incomplete
+cleanup and `/prewalk stats cleanup` retries deletion without rotating the new
+ledger. `/prewalk configure` controls collection and catalog fallback.
 
 Catalog fallback is opt-in and honest: stock Pi exposes the active model's
 public `Model.cost`, but does not expose independent catalog provenance or an

@@ -95,10 +95,10 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 **Execution-profile policy**
 
 - R16. Prewalk must define a strict versioned execution-profile snapshot and apply it only when an active epoch or inherited snapshot exists. Upstream pi-subagents remains unchanged.
-- R17. Prewalk must mutate the public `subagent` tool input before execution, defaulting every single, parallel, chain, and dynamic child to the configured executor model and reasoning.
+- R17. Prewalk must mutate the public `subagent` tool input before execution, defaulting every single, parallel, chain, dynamic, and appended child to the configured executor model and reasoning. A delayed schedule must be rejected while a policy is active because the future process cannot inherit the transient snapshot safely.
 - R18. Explicit overrides may use only the configured executor model at the default or lower allowed reasoning. The exact planner tuple and every broader or different model must be blocked.
 - R19. Policy resolution must finish in `tool_call` before pi-subagents creates an artifact, session, child process, or provider request. Unavailable policy fails with an actionable error and never chooses an arbitrary model.
-- R20. The accepted snapshot must be inherited by child processes so their independently loaded Prewalk extension applies the same rule to nested launches. Child sessions must not start another automatic Prewalk.
+- R20. The accepted snapshot must be inherited by child processes so their independently loaded Prewalk extension applies the same rule to nested launches. Resume and steer must restore the original run snapshot, appended steps must use it, and child sessions must not start another automatic Prewalk.
 - R21. Prewalk-only and pi-subagents-only operation retain existing behavior. Reload cannot revive a stale root epoch, while a live inherited child snapshot remains immutable for nested launches.
 
 **Reliability and scope**
@@ -145,8 +145,8 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 - AE2. Given the executor is not active, when the user presses Shift+Tab, then Pi changes planner reasoning normally. Given the executor is active, the same input changes only executor reasoning.
 - AE3. Given stock Pi has no Codex Conversion registration, when Prewalk arms and hands off, then the executor request succeeds through the stock provider.
 - AE4. Given a continuation and executor checklist exist, when handoff and later compaction occur, then only the planning nudge is excluded.
-- AE5. Given a foreground child is still running, when a consumer subscribes, then it receives a start event before any terminal event. After reload, it receives the current replayed state.
-- AE6. Given a nested child's parent differs from the root invocation parent, when its authenticated event arrives, then Prewalk accepts its lineage without a direct analytics-store write.
+- AE5. Given an asynchronous launch returns before its child finishes, when Prewalk observes the public result, then the task tree stays pending until a later public terminal result is available and never fabricates completion during reload.
+- AE6. Given a standard result identifies a nested run but omits nested child usage or session identity, when Prewalk projects it, then the nested run is recorded as incomplete without a package event or direct child-session read.
 - AE7. Given a partial reset deletion failure, when reset returns, then new-generation reports exclude old data and the command says cleanup is incomplete with retry guidance.
 - AE8. Given Sol/high is the planner and an ordinary child omits overrides, when pi-subagents resolves the launch, then it selects Luna/low or rejects before any provider request.
 - AE9. Given an explicit child override exceeds the ceiling, when the launch is requested, then it fails before artifacts or processes exist. A permitted lower reasoning override succeeds.
@@ -321,15 +321,15 @@ stateDiagram-v2
   1. Update Plan 003's implementation description to match the completed public projection and runtime planner snapshot.
   2. Report and retry incomplete retired-generation cleanup while keeping the new generation isolated.
   3. Model task-tree actual and estimate coverage with explicit pending, fallback, unresolved-overlap, unsupported, and incomplete states.
-  4. Replace one-parent invocation matching with a bounded per-invocation registry and authenticated tree continuity, including out-of-order replay, and remove direct test writes that bypass the event listener.
+  4. Use a bounded per-invocation registry to join each standard tool result to the locally observed parent invocation. Keep asynchronous or nested detail that the result cannot prove pending or incomplete.
   5. Correct report rendering and keep every analytics callback isolated from routing.
 - **Execution note:** Drive each correction through the public command, event, and result surfaces rather than private store helpers.
 - **Patterns to follow:** Strict content-free parsers in `src/analytics-subagents.ts`; atomic generation rotation in `src/analytics-store.ts`.
 - **Test scenarios:**
   1. A partial cleanup failure reports incomplete, persists retry state, and becomes complete after a successful retry.
-  2. Matching evidence keys replace fallback slices exactly once across replay.
+  2. Matching evidence keys replace fallback slices exactly once across repeated public lifecycle delivery.
   3. Partial aggregate overlap is excluded and labeled overlap-unresolved.
-  4. Nested public events reach the store through the real extension listener.
+  4. Direct public result usage reaches the store through the real extension listener, while nested identity or usage absent from the result stays incomplete.
   5. Unsupported or malformed projection versions leave root-session analytics usable and mark task-tree coverage incomplete.
   6. Task-tree reports contain real line breaks and stable labels.
   7. Storage and reporting failures do not change selected model, reasoning, route, or provider-request count.
@@ -344,7 +344,7 @@ stateDiagram-v2
 - **Files:** `src/execution-profile-policy.ts`, `src/subagent-policy.ts`, `extensions/prewalk.ts`, `test/execution-profile-policy.test.ts`, `test/subagent-policy.test.ts`, `test/extension.test.ts`, `test/agent-loop.test.ts`, `README.md`
 - **Approach:**
   1. Define a strict versioned Prewalk execution-profile snapshot and reject invalid inherited data.
-  2. Observe Pi's mutable public `tool_call` event and atomically default or validate single, parallel, chain, dynamic, delegation, and resume arguments before tool execution.
+  2. Observe Pi's mutable public `tool_call` event and atomically default or validate single, parallel, chain, dynamic, appended-step, delegation, resume, and steer arguments before tool execution. Reject delayed schedules while an active snapshot cannot be propagated to their future process.
   3. Block a forbidden or unavailable profile before pi-subagents can create artifacts, sessions, processes, or provider requests.
   4. Publish the accepted snapshot in the child process environment only for the duration of the tool execution. A child Prewalk instance enforces that inherited ceiling on nested launches and does not start a second automatic epoch.
   5. Keep upstream pi-subagents untouched and preserve its behavior when no Prewalk epoch or inherited snapshot exists.
@@ -355,8 +355,8 @@ stateDiagram-v2
   2. Active Prewalk defaults an override-free child to the configured executor profile.
   3. An allowed lower-reasoning override succeeds, while a forbidden model or reasoning fails before launch.
   4. No authenticated supported allowed profile produces an actionable pre-launch failure with zero provider requests.
-  5. Foreground, async, parallel, chain, dynamic-fanout, and delegation-shaped inputs resolve the same effective policy before tool execution.
-  6. Resume executes with the inherited ceiling still present.
+  5. Foreground, async, parallel, chain, dynamic-fanout, appended-step, and delegation-shaped inputs resolve the same effective policy before tool execution, while delayed schedules fail closed.
+  6. Resume and steer execute with the original ceiling still present.
   7. Nested children inherit and may narrow but never broaden the root ceiling.
   8. Reload clears stale root epochs and preserves only a valid inherited child snapshot.
   9. Prewalk-only operation and pi-subagents-only operation remain unchanged.
@@ -405,7 +405,7 @@ All test invocations must use the repository's `run-tests-on-request` skill.
 - Shift+Tab retains the agreed before-handoff and after-handoff meanings.
 - OMP prompt, continuation, todo, mutation, and narrow filtering behavior is preserved.
 - Stock Pi works without Codex Conversion, and optional composition stays public and capability-based.
-- Plan 003 reset, task-tree coverage, nested ingestion, foreground timing, and reload requirements are complete.
+- Plan 003 reset, task-tree coverage, public-result ingestion, and honest asynchronous and nested coverage requirements are complete.
 - Analytics remains observation-only and separate from launch control.
 - Every pi-subagents launch path enforces and propagates the active execution-profile ceiling before launch.
 - The forbidden planner tuple never reaches a provider in composition tests.

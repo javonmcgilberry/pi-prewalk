@@ -124,6 +124,55 @@ describe("Prewalk-owned pi-subagents policy", () => {
 		expect(input).toEqual(original);
 	});
 
+	it("allows an explicit no-reasoning override below the executor default", () => {
+		const input: Record<string, unknown> = {
+			agent: "reviewer",
+			task: "Review",
+			thinking: false,
+		};
+		const offPolicy: ExecutionProfilePolicy = {
+			...policy,
+			allowedProfiles: [
+				{
+					provider: "openai-codex",
+					model: "gpt-5.6-luna",
+					reasoning: "off",
+				},
+				...policy.allowedProfiles,
+			],
+		};
+
+		expect(applyExecutionProfilePolicy(input, offPolicy)).toEqual({ ok: true });
+		expect(input).toMatchObject({
+			model: "openai-codex/gpt-5.6-luna",
+			thinking: "off",
+		});
+	});
+
+	it("constrains appended chain steps and leaves read-only control actions unchanged", () => {
+		const append: Record<string, unknown> = {
+			action: "append-step",
+			id: "run",
+			chain: [{ agent: "reviewer", task: "Review the result" }],
+		};
+		const status: Record<string, unknown> = { action: "status", id: "run" };
+
+		expect(applyExecutionProfilePolicy(append, policy)).toEqual({ ok: true });
+		expect(append).toEqual({
+			action: "append-step",
+			id: "run",
+			chain: [
+				{
+					agent: "reviewer",
+					task: "Review the result",
+					model: "openai-codex/gpt-5.6-luna:low",
+				},
+			],
+		});
+		expect(applyExecutionProfilePolicy(status, policy)).toEqual({ ok: true });
+		expect(status).toEqual({ action: "status", id: "run" });
+	});
+
 	it("round-trips a strict inherited snapshot for nested child sessions", () => {
 		const encoded = encodeExecutionProfilePolicy(policy);
 		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] = encoded;
@@ -137,6 +186,32 @@ describe("Prewalk-owned pi-subagents policy", () => {
 				JSON.stringify({
 					...policy,
 					unexpected: true,
+				}),
+			),
+		).toBeUndefined();
+		expect(
+			decodeExecutionProfilePolicy(
+				JSON.stringify({
+					...policy,
+					allowedProfiles: [
+						{
+							provider: "openai-codex",
+							model: "gpt-5.6-sol",
+							reasoning: "high",
+						},
+					],
+				}),
+			),
+		).toBeUndefined();
+		expect(
+			decodeExecutionProfilePolicy(
+				JSON.stringify({
+					...policy,
+					defaultProfile: {
+						provider: "openai-codex",
+						model: "gpt-5.6-luna",
+						reasoning: "high",
+					},
 				}),
 			),
 		).toBeUndefined();

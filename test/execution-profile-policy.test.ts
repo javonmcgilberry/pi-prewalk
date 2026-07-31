@@ -44,12 +44,12 @@ describe("Prewalk execution-profile policy", () => {
 				{
 					provider: "openai-codex",
 					model: "gpt-5.6-luna",
-					reasoning: "minimal",
+					reasoning: "off",
 				},
 				{
 					provider: "openai-codex",
 					model: "gpt-5.6-luna",
-					reasoning: "low",
+					reasoning: "minimal",
 				},
 			],
 		});

@@ -48,12 +48,14 @@ function profile(value: unknown): value is ExecutionProfile {
 }
 
 function policy(value: unknown): value is ExecutionProfilePolicy {
+	if (!isRecord(value)) return false;
+	const planner = value.planner;
 	if (
-		!isRecord(value) ||
 		value.version !== 1 ||
 		!nonEmpty(value.policyId) ||
 		!nonEmpty(value.epoch) ||
-		!profile(value.planner) ||
+		value.policyId !== value.epoch ||
+		!profile(planner) ||
 		(value.status !== "available" && value.status !== "unavailable")
 	) {
 		return false;
@@ -65,11 +67,33 @@ function policy(value: unknown): value is ExecutionProfilePolicy {
 				value.reason === "executor-reasoning-not-lower-than-planner")
 		);
 	}
+	const defaultProfile = value.defaultProfile;
+	const allowedProfiles = value.allowedProfiles;
+	if (
+		!hasExactFields(value, AVAILABLE_POLICY_FIELDS) ||
+		!profile(defaultProfile) ||
+		!Array.isArray(allowedProfiles) ||
+		!allowedProfiles.every(profile)
+	) {
+		return false;
+	}
+	const plannerRank = REASONING_LEVELS.indexOf(planner.reasoning);
+	const defaultRank = REASONING_LEVELS.indexOf(defaultProfile.reasoning);
+	const allowedReasoning = new Set<string>();
 	return (
-		hasExactFields(value, AVAILABLE_POLICY_FIELDS) &&
-		profile(value.defaultProfile) &&
-		Array.isArray(value.allowedProfiles) &&
-		value.allowedProfiles.every(profile)
+		defaultRank < plannerRank &&
+		allowedProfiles.every((candidate) => {
+			if (
+				candidate.provider !== defaultProfile.provider ||
+				candidate.model !== defaultProfile.model ||
+				REASONING_LEVELS.indexOf(candidate.reasoning) >= defaultRank ||
+				allowedReasoning.has(candidate.reasoning)
+			) {
+				return false;
+			}
+			allowedReasoning.add(candidate.reasoning);
+			return true;
+		})
 	);
 }
 
@@ -183,7 +207,7 @@ export function applyExecutionProfilePolicy(
 			reason: `Prewalk cannot launch a cheaper subagent profile: ${value.reason}.`,
 		};
 	}
-	if (typeof input.action === "string") return { ok: true };
+	if (typeof input.action === "string" && input.action !== "append-step") return { ok: true };
 	const candidate = structuredClone(input);
 	if (!applyCandidate(candidate, value)) return rejection(value);
 	Object.assign(input, candidate);

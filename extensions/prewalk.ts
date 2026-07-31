@@ -183,6 +183,7 @@ function helpText(): string {
 		"/prewalk stats benchmark <summary.json>  Import an accepted verified benchmark summary.",
 		"/prewalk stats export <path>  Export validated JSONL without overwriting a file.",
 		"/prewalk stats reset  Confirm a new empty ledger generation.",
+		"/prewalk stats cleanup  Retry removal of retired ledger generations.",
 		"/prewalk run     Start a new manual Prewalk run after cancellation or failure.",
 		"/prewalk auto    Enable conservative automatic admission for this session.",
 		"/prewalk cancel  Disable automatic admission and stop the current Prewalk run.",
@@ -1073,13 +1074,26 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				const excluded = analyticsState !== undefined;
-				await analyticsStore.reset();
+				const result = await analyticsStore.reset();
 				analyticsState = undefined;
+				const completion = excluded
+					? "Analytics reset complete. The active run was excluded; collection resumes with the next Prewalk run."
+					: "Analytics reset complete; collection resumes with the next Prewalk run.";
 				ctx.ui.notify(
-					excluded
-						? "Analytics reset complete. The active run was excluded; collection resumes with the next Prewalk run."
-						: "Analytics reset complete; collection resumes with the next Prewalk run.",
-					"info",
+					result.cleanupComplete
+						? completion
+						: `${completion} Retired ledger cleanup is incomplete; run /prewalk stats cleanup to retry.`,
+					result.cleanupComplete ? "info" : "error",
+				);
+				return;
+			}
+			if (input === "cleanup") {
+				const result = await analyticsStore.retryRetiredGenerationCleanup();
+				ctx.ui.notify(
+					result.cleanupComplete
+						? "Retired analytics cleanup complete."
+						: `Retired analytics cleanup remains incomplete for ${result.remainingRetiredGenerations.length} generation(s); run /prewalk stats cleanup to retry.`,
+					result.cleanupComplete ? "info" : "error",
 				);
 				return;
 			}
@@ -1569,19 +1583,33 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			};
 		}
 		const action = typeof event.input.action === "string" ? event.input.action : undefined;
-		if (action && action !== "resume") return;
-		const resumePolicy =
-			action === "resume"
-				? matchingDelegationPolicy(event.input, persistedDelegationPolicies)
-				: undefined;
+		const existingRunAction =
+			action === "resume" || action === "steer" || action === "append-step";
+		if (action === "schedule") {
+			const activePolicy =
+				inheritedExecutionProfilePolicy ??
+				(coordinator.run ? executionProfilePolicy(coordinator.run) : undefined);
+			if (activePolicy) {
+				return {
+					block: true,
+					reason:
+						"Prewalk cannot safely propagate an active execution-profile policy to a delayed scheduled launch.",
+				};
+			}
+			return;
+		}
+		if (action && !existingRunAction) return;
+		const originalPolicy = existingRunAction
+			? matchingDelegationPolicy(event.input, persistedDelegationPolicies)
+			: undefined;
 		const activePolicy =
-			resumePolicy ??
+			originalPolicy ??
 			inheritedExecutionProfilePolicy ??
 			(coordinator.run ? executionProfilePolicy(coordinator.run) : undefined);
-		if (action === "resume" && !resumePolicy && activePolicy) {
+		if (existingRunAction && !originalPolicy && activePolicy) {
 			return {
 				block: true,
-				reason: "Prewalk cannot prove the original execution-profile policy for this resume.",
+				reason: `Prewalk cannot prove the original execution-profile policy for this ${action}.`,
 			};
 		}
 		if (!activePolicy) return;
@@ -1589,6 +1617,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			return {
 				block: true,
 				reason: "Prewalk could not validate the subagent launch arguments.",
+			};
+		}
+		const pendingPolicy = [...policyToolCalls.values()][0];
+		if (
+			pendingPolicy &&
+			encodeExecutionProfilePolicy(pendingPolicy) !== encodeExecutionProfilePolicy(activePolicy)
+		) {
+			return {
+				block: true,
+				reason:
+					"Prewalk cannot launch concurrent subagents with different execution-profile policies.",
 			};
 		}
 		const applied = applyExecutionProfilePolicy(event.input, activePolicy);
@@ -1616,7 +1655,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (parentSessionId) {
 			delegationInvocations.push({
 				toolCallId: event.toolCallId,
-				rootSessionId: process.env.PI_SUBAGENT_ROOT_SESSION_ID ?? parentSessionId,
+				rootSessionId: parentSessionId,
 				parentSessionId,
 				childCount: delegatedChildCount(event.args),
 				policy: policyToolCalls.get(event.toolCallId),

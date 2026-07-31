@@ -17,6 +17,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 import { AnalyticsStore } from "../src/analytics-store.js";
@@ -423,6 +424,122 @@ describe("stock Pi Agent-loop integration", () => {
 		await session.waitForIdle();
 
 		expect(calls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
+		session.dispose();
+	});
+
+	it("rewrites a real public subagent tool execution before its child provider boundary", async () => {
+		const planner = model(PLANNER_MODEL_ID);
+		const executor = model(EXECUTOR_MODEL_ID);
+		const providerCalls: string[] = [];
+		const executedInputs: Array<Record<string, unknown>> = [];
+		const provider: ExtensionFactory = (pi) => {
+			pi.registerProvider("openai-codex", {
+				api: "openai-codex-responses",
+				baseUrl: "https://example.test",
+				apiKey: "integration-token",
+				oauth: {
+					name: "OpenAI Codex",
+					login: async () => ({ access: "token", refresh: "refresh", expires: 1 }),
+					refreshToken: async (credentials) => credentials,
+					getApiKey: (credentials) => credentials.access,
+				},
+				models: [planner, executor],
+				streamSimple: (selected) => {
+					providerCalls.push(selected.id);
+					return providerCalls.length === 1
+						? response(planner, [
+								toolCall("subagent-1", "subagent", {
+									agent: "reviewer",
+									task: "Review without an explicit profile",
+								}),
+							])
+						: response(planner, [{ type: "text", text: "Delegation complete." }]);
+				},
+			});
+		};
+		const subagentTool: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				name: "subagent",
+				label: "Subagent fixture",
+				description: "Capture the effective public launch arguments.",
+				parameters: Type.Object({
+					agent: Type.String(),
+					task: Type.String(),
+					model: Type.Optional(Type.String()),
+					thinking: Type.Optional(Type.String()),
+				}),
+				execute: async (_toolCallId, params) => {
+					executedInputs.push(structuredClone(params));
+					return {
+						content: [{ type: "text", text: "captured" }],
+						details: {
+							runId: "fixture-run",
+							results: [
+								{
+									agent: params.agent,
+									exitCode: 0,
+									usage: {
+										input: 0,
+										output: 0,
+										cacheRead: 0,
+										cacheWrite: 0,
+										cost: 0,
+										turns: 0,
+									},
+								},
+							],
+						},
+					};
+				},
+			});
+		};
+		const settings = SettingsManager.create(workDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: workDir,
+			agentDir,
+			settingsManager: settings,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			extensionFactories: [
+				{ name: "provider", factory: provider },
+				{ name: "subagent-fixture", factory: subagentTool },
+				{ name: "prewalk", factory: prewalkExtension },
+			],
+		});
+		await loader.reload();
+		const runtime = await ModelRuntime.create({
+			authPath: path.join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const { session } = await createAgentSession({
+			cwd: workDir,
+			agentDir,
+			modelRuntime: runtime,
+			model: planner,
+			thinkingLevel: "high",
+			resourceLoader: loader,
+			settingsManager: settings,
+			sessionManager: SessionManager.inMemory(workDir),
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await session.bindExtensions({});
+
+		await session.prompt("/prewalk run");
+		await session.waitForIdle();
+		await session.prompt("Delegate the review.");
+		await session.waitForIdle();
+
+		expect(executedInputs).toEqual([
+			{
+				agent: "reviewer",
+				task: "Review without an explicit profile",
+				model: "openai-codex/gpt-5.6-luna",
+				thinking: "low",
+			},
+		]);
+		expect(providerCalls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
 		session.dispose();
 	});
 });

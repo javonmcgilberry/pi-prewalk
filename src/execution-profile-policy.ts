@@ -1,4 +1,4 @@
-import type { ModelThinkingLevel, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { PlannerProfile, PrewalkRun } from "./core.js";
 
 export const EXECUTION_PROFILE_POLICY_VERSION = 1;
@@ -6,7 +6,7 @@ export const EXECUTION_PROFILE_POLICY_VERSION = 1;
 export interface ExecutionProfile {
 	provider: string;
 	model: string;
-	reasoning: ThinkingLevel;
+	reasoning: ModelThinkingLevel;
 }
 
 interface ExecutionProfilePolicyBase {
@@ -36,7 +36,8 @@ const PLANNER_REASONING_LEVELS: readonly ModelThinkingLevel[] = [
 	"xhigh",
 	"max",
 ];
-const EXECUTOR_REASONING_LEVELS: readonly ThinkingLevel[] = [
+const EXECUTOR_REASONING_LEVELS: readonly ModelThinkingLevel[] = [
+	"off",
 	"minimal",
 	"low",
 	"medium",

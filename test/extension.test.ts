@@ -14,6 +14,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
+import { AnalyticsStore } from "../src/analytics-store.js";
 import {
 	DEFAULT_EXECUTOR,
 	EXECUTOR_MODEL_ID,
@@ -389,6 +390,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	delete process.env.PI_CODING_AGENT_DIR;
 	delete process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
 	await rm(agentDir, { recursive: true, force: true });
@@ -992,6 +994,34 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("active run was excluded");
 	});
 
+	it("reports incomplete reset cleanup and retries it without another reset", async () => {
+		vi.spyOn(AnalyticsStore.prototype, "reset").mockResolvedValue({
+			generation: "new-generation",
+			cleanupComplete: false,
+			remainingRetiredGenerations: ["old-generation"],
+		});
+		vi.spyOn(AnalyticsStore.prototype, "retryRetiredGenerationCleanup")
+			.mockResolvedValueOnce({
+				cleanupComplete: false,
+				remainingRetiredGenerations: ["old-generation"],
+			})
+			.mockResolvedValueOnce({
+				cleanupComplete: true,
+				remainingRetiredGenerations: [],
+			});
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		vi.mocked(harness.context.ui.confirm).mockResolvedValue(true);
+
+		await harness.commands.get("prewalk")?.("stats reset", harness.context);
+		expect(harness.notifications.at(-1)).toContain("stats cleanup");
+		await harness.commands.get("prewalk")?.("stats cleanup", harness.context);
+		expect(harness.notifications.at(-1)).toContain("remains incomplete");
+		await harness.commands.get("prewalk")?.("stats cleanup", harness.context);
+		expect(harness.notifications.at(-1)).toBe("Retired analytics cleanup complete.");
+		expect(AnalyticsStore.prototype.reset).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps routing active and stats readable when future analytics collection is disabled", async () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
@@ -1360,6 +1390,136 @@ describe("Prewalk extension harness", () => {
 		).toEqual([undefined]);
 		expect(process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV]).toContain('"model":"gpt-5.6-luna"');
 		expect(resume).toEqual({ action: "resume", id: "original-run" });
+	});
+
+	it("uses the original policy for appended steps and blocks delayed launches it cannot propagate", async () => {
+		const harness = createHarness();
+		harness.context.thinkingLevel = "high";
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const launch: Record<string, unknown> = { agent: "reviewer", task: "Review", async: true };
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "launch",
+			toolName: "subagent",
+			input: launch,
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "launch",
+			toolName: "subagent",
+			args: launch,
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "launch",
+			toolName: "subagent",
+			input: launch,
+			content: [],
+			isError: false,
+			details: { asyncId: "async-run", status: "running" },
+		});
+		const append: Record<string, unknown> = {
+			action: "append-step",
+			id: "async-run",
+			chain: [{ agent: "tester", task: "Test the result" }],
+		};
+
+		expect(
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "append",
+				toolName: "subagent",
+				input: append,
+			}),
+		).toEqual([undefined]);
+		expect(append).toMatchObject({
+			chain: [{ model: "openai-codex/gpt-5.6-luna:low" }],
+		});
+
+		expect(
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "schedule",
+				toolName: "subagent",
+				input: {
+					action: "schedule",
+					agent: "reviewer",
+					task: "Review later",
+					schedule: "+10m",
+				},
+			}),
+		).toEqual([
+			{
+				block: true,
+				reason:
+					"Prewalk cannot safely propagate an active execution-profile policy to a delayed scheduled launch.",
+			},
+		]);
+	});
+
+	it("blocks concurrent launches that require different inherited policies", async () => {
+		const harness = createHarness();
+		harness.context.thinkingLevel = "high";
+		harness.setBranch([
+			{
+				type: "custom",
+				customType: "prewalk-delegation-policy-v1",
+				data: {
+					version: 1,
+					sessionId: "session-extension-test",
+					runId: "older-run",
+					policy: {
+						version: 1,
+						policyId: "older-epoch",
+						epoch: "older-epoch",
+						planner: {
+							provider: "openai-codex",
+							model: "gpt-5.6-sol",
+							reasoning: "high",
+						},
+						status: "available",
+						defaultProfile: {
+							provider: "openai-codex",
+							model: "gpt-5.6-luna",
+							reasoning: "minimal",
+						},
+						allowedProfiles: [
+							{
+								provider: "openai-codex",
+								model: "gpt-5.6-luna",
+								reasoning: "off",
+							},
+						],
+					},
+				},
+			},
+		]);
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "current-launch",
+			toolName: "subagent",
+			input: { agent: "reviewer", task: "Review" },
+		});
+
+		expect(
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "older-resume",
+				toolName: "subagent",
+				input: { action: "resume", id: "older-run" },
+			}),
+		).toEqual([
+			{
+				block: true,
+				reason:
+					"Prewalk cannot launch concurrent subagents with different execution-profile policies.",
+			},
+		]);
 	});
 
 	it("fails closed when a child receives an invalid inherited policy", async () => {

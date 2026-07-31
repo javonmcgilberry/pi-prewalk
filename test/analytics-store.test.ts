@@ -292,7 +292,7 @@ describe("AnalyticsStore", () => {
 		const oldGeneration = await store.currentGeneration();
 		await store.writeJournal(journal(oldGeneration, "old-run"));
 
-		const newGeneration = await store.reset();
+		const { generation: newGeneration } = await store.reset();
 		expect(newGeneration).not.toBe(oldGeneration);
 		expect((await store.aggregate()).receiptCount).toBe(0);
 		expect((await store.aggregate()).unfinished).toEqual([]);
@@ -311,6 +311,37 @@ describe("AnalyticsStore", () => {
 		expect((await store.aggregate()).receiptCount).toBe(1);
 	});
 
+	it("keeps failed retired-generation cleanup retryable without rotating the new ledger", async () => {
+		let failCleanup = true;
+		const store = new AnalyticsStore(agentDirectory, {
+			beforeRetiredGenerationRemove: () => {
+				if (failCleanup) throw new Error("simulated cleanup failure");
+			},
+		});
+		const oldGeneration = await store.currentGeneration();
+		await store.writeJournal(journal(oldGeneration, "old-run"));
+
+		const reset = await store.reset();
+
+		expect(reset.cleanupComplete).toBe(false);
+		expect(reset.remainingRetiredGenerations).toEqual([oldGeneration]);
+		expect((await store.aggregate()).generation).toBe(reset.generation);
+		expect((await store.aggregate()).unfinished).toEqual([]);
+		expect(
+			await stat(path.join(store.directory, oldGeneration, "journals", "old-run--epoch-1.json")),
+		).toBeDefined();
+
+		failCleanup = false;
+		const cleanup = await store.retryRetiredGenerationCleanup();
+
+		expect(cleanup).toEqual({
+			cleanupComplete: true,
+			remainingRetiredGenerations: [],
+		});
+		expect((await store.aggregate()).generation).toBe(reset.generation);
+		await expect(stat(path.join(store.directory, oldGeneration))).rejects.toThrow(/ENOENT/);
+	});
+
 	it("does not retain a paused old-generation write after reset", async () => {
 		let release: (() => void) | undefined;
 		const paused = new Promise<void>((resolve) => {
@@ -325,7 +356,7 @@ describe("AnalyticsStore", () => {
 		const oldGeneration = await store.currentGeneration();
 		const write = store.writeJournal(journal(oldGeneration));
 		await new Promise((resolve) => setImmediate(resolve));
-		const newGeneration = await store.reset();
+		const { generation: newGeneration } = await store.reset();
 		release?.();
 		await expect(write).rejects.toThrow("prior ledger generation");
 		await expect(stat(path.join(store.directory, oldGeneration))).rejects.toThrow(/ENOENT/);

@@ -96,6 +96,16 @@ export interface AnalyticsStoreHooks {
 	afterManifestRotate?: (previousGeneration: string, generation: string) => void | Promise<void>;
 	beforeSnapshotValidation?: (generation: string) => void | Promise<void>;
 	beforeExportPublish?: (destination: string) => void | Promise<void>;
+	beforeRetiredGenerationRemove?: (generation: string) => void | Promise<void>;
+}
+
+export interface RetiredGenerationCleanup {
+	cleanupComplete: boolean;
+	remainingRetiredGenerations: string[];
+}
+
+export interface AnalyticsResetResult extends RetiredGenerationCleanup {
+	generation: string;
 }
 
 export function resolveAnalyticsDirectory(agentDirectory: string): string {
@@ -514,7 +524,7 @@ export class AnalyticsStore {
 		return receipts.length + delegation.length;
 	}
 
-	async reset(): Promise<string> {
+	async reset(): Promise<AnalyticsResetResult> {
 		const previous = await this.initialize();
 		const generation = randomUUID();
 		await this.ensureGenerationDirectories(generation);
@@ -526,21 +536,35 @@ export class AnalyticsStore {
 			`${JSON.stringify({ schemaVersion: ANALYTICS_SCHEMA_VERSION, generation, retiredGenerations })}\n`,
 		);
 		await this.hooks.afterManifestRotate?.(previous.generation, generation);
+		return {
+			generation,
+			...(await this.retryRetiredGenerationCleanup()),
+		};
+	}
+
+	async retryRetiredGenerationCleanup(): Promise<RetiredGenerationCleanup> {
+		const manifest = await this.initialize();
 		const remaining: string[] = [];
-		for (const retired of retiredGenerations) {
+		for (const retired of manifest.retiredGenerations ?? []) {
 			try {
+				await this.hooks.beforeRetiredGenerationRemove?.(retired);
 				await rm(this.generationDirectory(retired), { recursive: true, force: true });
 			} catch {
 				remaining.push(retired);
 			}
 		}
-		if (remaining.length > 0) {
-			await this.atomicReplace(
-				this.manifestPath,
-				`${JSON.stringify({ schemaVersion: ANALYTICS_SCHEMA_VERSION, generation, retiredGenerations: remaining })}\n`,
-			);
-		}
-		return generation;
+		await this.atomicReplace(
+			this.manifestPath,
+			`${JSON.stringify({
+				schemaVersion: ANALYTICS_SCHEMA_VERSION,
+				generation: manifest.generation,
+				...(remaining.length > 0 ? { retiredGenerations: remaining } : {}),
+			})}\n`,
+		);
+		return {
+			cleanupComplete: remaining.length === 0,
+			remainingRetiredGenerations: remaining,
+		};
 	}
 
 	private async ensureDirectories(): Promise<void> {
