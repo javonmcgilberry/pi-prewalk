@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 // @ts-expect-error The published extension artifact does not ship declarations.
 import codexConversion from "../node_modules/@howaboua/pi-codex-conversion/dist/index.js";
-import { PLANNER_MODEL_ID } from "../src/core.js";
+import { DEFAULT_EXECUTOR, PLANNER_MODEL_ID } from "../src/core.js";
 
 let temporaryRoot: string | undefined;
 
@@ -35,7 +35,13 @@ describe("installed Codex conversion composition", () => {
 			mkdir(agentDir, { recursive: true }),
 			mkdir(workDir, { recursive: true }),
 		]);
-		await writeFile(path.join(agentDir, "prewalk.json"), '{"enabled":true}\n');
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({
+				enabled: true,
+				executor: DEFAULT_EXECUTOR,
+			})}\n`,
+		);
 		await writeFile(
 			path.join(agentDir, "auth.json"),
 			`${JSON.stringify({

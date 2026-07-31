@@ -258,3 +258,93 @@ export function unblindFrozenMetrics(manifest, frozen, unblinding) {
 		...evaluation,
 	};
 }
+
+export function importVerifiedBenchmarkReport(
+	manifest,
+	schedule,
+	rows,
+	lock,
+	frozen,
+	unblinding,
+	finalReport,
+) {
+	verifyFrozenMetrics(manifest, schedule, rows, lock, frozen);
+	const verifiedReport = unblindFrozenMetrics(manifest, frozen, unblinding);
+	if (
+		finalReport?.schemaVersion !== 1 ||
+		finalReport.status !== "completed" ||
+		finalReport.final !== true ||
+		finalReport.accepted !== true ||
+		!isTimestamp(finalReport.completedAt) ||
+		verifiedReport.allTargetsMet !== true ||
+		canonicalJson(finalReport.report) !== canonicalJson(verifiedReport)
+	) {
+		throw new Error("Benchmark final report is not completed, accepted, and verified.");
+	}
+
+	const expectedRunsPerArm = manifest.tasks.length * manifest.repetitions;
+	const runCounts = {
+		solOnly: metricRunCount(verifiedReport.metrics.sol),
+		lunaOnly: metricRunCount(verifiedReport.metrics.luna),
+		prewalk: metricRunCount(verifiedReport.metrics.prewalk),
+	};
+	if (
+		Object.values(runCounts).some((count) => count !== expectedRunsPerArm) ||
+		Object.values(runCounts).reduce((total, count) => total + count, 0) !==
+			verifiedReport.runCount
+	) {
+		throw new Error("Benchmark final report run counts do not match verified evidence.");
+	}
+
+	const comparisons = {
+		solOnlyCost: verifiedMetricCost(verifiedReport.metrics.sol, "sol"),
+		lunaOnlyCost: verifiedMetricCost(verifiedReport.metrics.luna, "luna"),
+		prewalkCost: verifiedMetricCost(verifiedReport.metrics.prewalk, "prewalk"),
+		prewalkVsSolSavings:
+			verifiedReport.metrics.sol.medianCost - verifiedReport.metrics.prewalk.medianCost,
+		prewalkVsLunaSavings:
+			verifiedReport.metrics.luna.medianCost - verifiedReport.metrics.prewalk.medianCost,
+	};
+	return {
+		schemaVersion: 1,
+		benchmarkContractVersion: `benchmark-report-v${verifiedReport.schemaVersion}`,
+		evidenceFingerprint: canonicalDigest({
+			corpusDigest: verifiedReport.corpusDigest,
+			scheduleDigest: verifiedReport.scheduleDigest,
+			unblindingCommitment: verifiedReport.unblindingCommitment,
+			rawResultsDigest: verifiedReport.rawResultsDigest,
+			metricsDigest: verifiedReport.metricsDigest,
+			runCount: verifiedReport.runCount,
+		}),
+		completedAt: finalReport.completedAt,
+		runCounts,
+		comparisons,
+	};
+}
+
+function metricRunCount(metric) {
+	if (
+		!metric ||
+		typeof metric !== "object" ||
+		!metric.outcomes ||
+		typeof metric.outcomes !== "object"
+	) {
+		throw new Error("Benchmark final report metrics are incomplete.");
+	}
+	const counts = Object.values(metric.outcomes);
+	if (counts.some((count) => !Number.isInteger(count) || count < 0)) {
+		throw new Error("Benchmark final report outcome counts are invalid.");
+	}
+	return counts.reduce((total, count) => total + count, 0);
+}
+
+function verifiedMetricCost(metric, arm) {
+	if (!Number.isFinite(metric?.medianCost) || metric.medianCost < 0) {
+		throw new Error(`Benchmark final report ${arm} cost is invalid.`);
+	}
+	return metric.medianCost;
+}
+
+function isTimestamp(value) {
+	return typeof value === "string" && value.length > 0 && !Number.isNaN(Date.parse(value));
+}

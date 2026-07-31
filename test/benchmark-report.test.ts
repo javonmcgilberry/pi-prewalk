@@ -8,6 +8,7 @@ import {
 import { createBlindedSchedule } from "../scripts/benchmark-controller.mjs";
 import {
 	freezeBlindedMetrics,
+	importVerifiedBenchmarkReport,
 	unblindFrozenMetrics,
 	verifyFrozenMetrics,
 } from "../scripts/benchmark-report-lib.mjs";
@@ -149,6 +150,76 @@ describe("blinded benchmark reporting", () => {
 				mapping: swapped,
 			}),
 		).toThrow(/commitment/);
+	});
+
+	it("imports only a completed accepted verified final report", () => {
+		const { schedule, rows } = evidence();
+		const frozen = freezeBlindedMetrics(manifest(), schedule, rows);
+		const report = unblindFrozenMetrics(manifest(), frozen, {
+			schemaVersion: 1,
+			corpusDigest: schedule.corpusDigest,
+			scheduleDigest: schedule.scheduleDigest,
+			unblindingCommitment: schedule.unblindingCommitment,
+			commitmentNonce: schedule.commitmentNonce,
+			mapping: schedule.unblinding,
+		});
+		const summary = importVerifiedBenchmarkReport(
+			manifest(),
+			schedule,
+			rows,
+			{
+				schemaVersion: 1,
+				corpusDigest: schedule.corpusDigest,
+				scheduleDigest: schedule.scheduleDigest,
+				unblindingCommitment: schedule.unblindingCommitment,
+				rawResultsDigest: frozen.rawResultsDigest,
+				runCount: frozen.runCount,
+			},
+			frozen,
+			{
+				schemaVersion: 1,
+				corpusDigest: schedule.corpusDigest,
+				scheduleDigest: schedule.scheduleDigest,
+				unblindingCommitment: schedule.unblindingCommitment,
+				commitmentNonce: schedule.commitmentNonce,
+				mapping: schedule.unblinding,
+			},
+			{
+				schemaVersion: 1,
+				status: "completed",
+				final: true,
+				accepted: true,
+				completedAt: "2026-07-30T14:00:00.000Z",
+				report,
+			},
+		);
+		expect(summary.runCounts).toEqual({ solOnly: 20, lunaOnly: 20, prewalk: 20 });
+		expect(summary.evidenceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+		expect(() =>
+			importVerifiedBenchmarkReport(
+				manifest(),
+				schedule,
+				rows,
+				frozen,
+				frozen,
+				{
+					schemaVersion: 1,
+					corpusDigest: schedule.corpusDigest,
+					scheduleDigest: schedule.scheduleDigest,
+					unblindingCommitment: schedule.unblindingCommitment,
+					commitmentNonce: schedule.commitmentNonce,
+					mapping: schedule.unblinding,
+				},
+				{
+					schemaVersion: 1,
+					status: "rejected",
+					final: true,
+					accepted: false,
+					completedAt: "2026-07-30T14:00:00.000Z",
+					report,
+				},
+			),
+		).toThrow(/completed, accepted/);
 	});
 
 	it("recomputes frozen metrics from the locked raw rows before unblinding", () => {

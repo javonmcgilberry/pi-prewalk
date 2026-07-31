@@ -1,11 +1,25 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ModelThinkingLevel, ThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	type AnalyticsConfig,
+	DEFAULT_ANALYTICS_CONFIG,
+	parseAnalyticsConfig,
+} from "./analytics.js";
 import { isRecord } from "./guards.js";
 
-export const PLANNER_PROVIDER = "openai-codex";
-export const PLANNER_MODEL_ID = "gpt-5.6-sol";
-export const EXECUTOR_PROVIDER = "openai-codex";
-export const EXECUTOR_MODEL_ID = "gpt-5.6-luna";
-export const EXECUTOR_THINKING_LEVEL = "low";
+export const DEFAULT_PLANNER = {
+	provider: "openai-codex",
+	model: "gpt-5.6-sol",
+};
+export const DEFAULT_EXECUTOR = {
+	provider: "openai-codex",
+	model: "gpt-5.6-luna",
+	reasoning: "low",
+} satisfies ExecutorConfig;
+export const PLANNER_PROVIDER = DEFAULT_PLANNER.provider;
+export const PLANNER_MODEL_ID = DEFAULT_PLANNER.model;
+export const EXECUTOR_PROVIDER = DEFAULT_EXECUTOR.provider;
+export const EXECUTOR_MODEL_ID = DEFAULT_EXECUTOR.model;
+export const EXECUTOR_THINKING_LEVEL = DEFAULT_EXECUTOR.reasoning;
 
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
@@ -13,6 +27,23 @@ export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 
 export interface PrewalkConfig {
 	enabled: boolean;
+	executor: ExecutorConfig;
+	analytics?: AnalyticsConfig;
+}
+
+export type ParsedPrewalkConfig = PrewalkConfig & { analytics: AnalyticsConfig };
+
+export interface ModelConfig {
+	provider: string;
+	model: string;
+}
+
+export interface ExecutorConfig extends ModelConfig {
+	reasoning: ThinkingLevel;
+}
+
+export interface PlannerProfile extends ModelConfig {
+	reasoning: ModelThinkingLevel;
 }
 
 export type RunMode = "automatic" | "manual";
@@ -25,7 +56,7 @@ export type RunPhase =
 	| "completed"
 	| "cancelled"
 	| "failed";
-export type EffectiveRoute = "sol" | "luna" | "selected";
+export type EffectiveRoute = "planner" | "executor" | "selected";
 
 export interface MutationTrigger {
 	toolCallId: string;
@@ -38,6 +69,8 @@ export interface PrewalkRun {
 	mode: RunMode;
 	phase: RunPhase;
 	effectiveRoute: EffectiveRoute;
+	planner: PlannerProfile;
+	config: PrewalkConfig;
 	planningPromptInjected: boolean;
 	continuePending: boolean;
 	todoActive: boolean;
@@ -58,13 +91,26 @@ export type CoordinatorAction =
 	| { type: "send-continuation" }
 	| { type: "handoff"; trigger: MutationTrigger };
 
-const CONFIG_KEYS = new Set(["enabled"]);
+const CONFIG_KEYS = new Set(["enabled", "executor", "analytics"]);
+const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
+export const REASONING_LEVELS: readonly ThinkingLevel[] = [
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
 
-export function isPlannerSelected(model: Model<Api> | undefined): boolean {
-	return model?.provider === PLANNER_PROVIDER && model.id === PLANNER_MODEL_ID;
+export function isReasoningLevel(value: unknown): value is ThinkingLevel {
+	return typeof value === "string" && REASONING_LEVELS.some((level) => level === value);
 }
 
-export function parseConfig(value: unknown): PrewalkConfig {
+export function isPlannerSelected(model: Model<Api> | undefined, planner: ModelConfig): boolean {
+	return model?.provider === planner.provider && model.id === planner.model;
+}
+
+export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	if (!isRecord(value)) {
 		throw new Error("Prewalk config must be a JSON object.");
 	}
@@ -75,16 +121,56 @@ export function parseConfig(value: unknown): PrewalkConfig {
 	if (typeof value.enabled !== "boolean") {
 		throw new Error("Prewalk config enabled must be boolean.");
 	}
-	return { enabled: value.enabled };
+	const executor = parseModelConfig(value.executor, "executor", EXECUTOR_KEYS);
+	if (!isRecord(value.executor) || !isReasoningLevel(value.executor.reasoning)) {
+		throw new Error("Prewalk config executor.reasoning is invalid.");
+	}
+	const analytics =
+		value.analytics === undefined
+			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
+			: parseAnalyticsConfig(value.analytics);
+	return {
+		enabled: value.enabled,
+		executor: { ...executor, reasoning: value.executor.reasoning },
+		analytics,
+	};
 }
 
-function createRun(id: string, epoch: string, mode: RunMode, todoActive: boolean): PrewalkRun {
+function parseModelConfig(
+	value: unknown,
+	name: "planner" | "executor",
+	keys: ReadonlySet<string>,
+): ModelConfig {
+	if (!isRecord(value)) throw new Error(`Prewalk config ${name} must be a JSON object.`);
+	const unknownKeys = Object.keys(value).filter((key) => !keys.has(key));
+	if (unknownKeys.length > 0) {
+		throw new Error(`Unknown Prewalk config ${name} field: ${unknownKeys.join(", ")}.`);
+	}
+	if (typeof value.provider !== "string" || value.provider.length === 0) {
+		throw new Error(`Prewalk config ${name}.provider must be a non-empty string.`);
+	}
+	if (typeof value.model !== "string" || value.model.length === 0) {
+		throw new Error(`Prewalk config ${name}.model must be a non-empty string.`);
+	}
+	return { provider: value.provider, model: value.model };
+}
+
+function createRun(
+	id: string,
+	epoch: string,
+	mode: RunMode,
+	todoActive: boolean,
+	planner: PlannerProfile,
+	config: PrewalkConfig,
+): PrewalkRun {
 	return {
 		id,
 		epoch,
 		mode,
 		phase: mode === "manual" ? "planning" : "armed",
-		effectiveRoute: "sol",
+		effectiveRoute: "planner",
+		planner: structuredClone(planner),
+		config: structuredClone(config),
 		planningPromptInjected: mode === "manual",
 		continuePending: mode === "manual",
 		todoActive,
@@ -99,11 +185,18 @@ export class PrewalkCoordinator {
 		return this.#run;
 	}
 
-	arm(id: string, epoch: string, mode: RunMode, todoActive: boolean): CoordinatorAction {
+	arm(
+		id: string,
+		epoch: string,
+		mode: RunMode,
+		todoActive: boolean,
+		planner: PlannerProfile,
+		config: PrewalkConfig,
+	): CoordinatorAction {
 		if (this.#run && this.#run.phase !== "cancelled" && this.#run.phase !== "failed") {
 			throw new Error("Prewalk is already active.");
 		}
-		this.#run = createRun(id, epoch, mode, todoActive);
+		this.#run = createRun(id, epoch, mode, todoActive, planner, config);
 		return mode === "manual" ? { type: "send-planning" } : { type: "none" };
 	}
 
@@ -154,35 +247,35 @@ export class PrewalkCoordinator {
 		return { type: "none" };
 	}
 
-	activateLuna(): void {
+	activateExecutor(): void {
 		const run = this.requiredRun();
 		if (run.phase !== "handoff-pending") {
 			throw new Error("Prewalk handoff is not pending.");
 		}
 		run.phase = "active";
-		run.effectiveRoute = "luna";
+		run.effectiveRoute = "executor";
 	}
 
 	completeHandoff(): void {
 		const run = this.requiredRun();
 		if (run.phase !== "active") {
-			throw new Error("Luna is not active.");
+			throw new Error("The Prewalk executor is not active.");
 		}
 		run.phase = "completed";
 	}
 
-	cancel(selectedModelIsSol: boolean): void {
+	cancel(selectedModelIsPlanner: boolean): void {
 		const run = this.requiredRun();
 		run.phase = "cancelled";
-		run.effectiveRoute = selectedModelIsSol ? "sol" : "selected";
+		run.effectiveRoute = selectedModelIsPlanner ? "planner" : "selected";
 		run.continuePending = false;
 	}
 
-	fail(reasonCode: string, holdLunaRoute: boolean): void {
+	fail(reasonCode: string, holdExecutorRoute: boolean): void {
 		const run = this.requiredRun();
 		run.phase = "failed";
 		run.reasonCode = reasonCode;
-		run.effectiveRoute = holdLunaRoute ? "luna" : "sol";
+		run.effectiveRoute = holdExecutorRoute ? "executor" : "planner";
 		run.continuePending = false;
 	}
 

@@ -64,6 +64,56 @@ export function verifyFrozenMetrics(
 	frozen: FrozenMetrics,
 ): FrozenMetrics;
 
+export function importVerifiedBenchmarkReport(
+	manifest: BenchmarkManifest,
+	schedule: {
+		schemaVersion: 1;
+		corpusDigest: string;
+		scheduleDigest: string;
+		unblindingCommitment: string;
+		runs: ScheduledRun[];
+	},
+	rows: BlindedRow[],
+	lock: {
+		schemaVersion: 1;
+		corpusDigest: string;
+		scheduleDigest: string;
+		unblindingCommitment: string;
+		rawResultsDigest: string;
+		runCount: number;
+	},
+	frozen: FrozenMetrics,
+	unblinding: {
+		schemaVersion: 1;
+		corpusDigest: string;
+		scheduleDigest: string;
+		unblindingCommitment: string;
+		commitmentNonce: string;
+		mapping: Record<string, string>;
+	},
+	finalReport: {
+		schemaVersion: 1;
+		status: string;
+		final: boolean;
+		accepted: boolean;
+		completedAt: string;
+		report: unknown;
+	},
+): {
+	schemaVersion: 1;
+	benchmarkContractVersion: string;
+	evidenceFingerprint: string;
+	completedAt: string;
+	runCounts: { solOnly: number; lunaOnly: number; prewalk: number };
+	comparisons: {
+		solOnlyCost: number;
+		lunaOnlyCost: number;
+		prewalkCost: number;
+		prewalkVsSolSavings: number;
+		prewalkVsLunaSavings: number;
+	};
+};
+
 export function unblindFrozenMetrics(
 	manifest: BenchmarkManifest,
 	frozen: FrozenMetrics,

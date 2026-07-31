@@ -7,14 +7,9 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { streamSimple as builtinStreamSimple } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import {
-	EXECUTOR_MODEL_ID,
-	EXECUTOR_PROVIDER,
-	EXECUTOR_THINKING_LEVEL,
-	PLANNER_MODEL_ID,
-	PLANNER_PROVIDER,
-} from "./core.js";
+import type { PlannerProfile, PrewalkConfig } from "./core.js";
 
 type StreamSimple = NonNullable<ProviderConfig["streamSimple"]>;
 type ResolvedExecutorAuth = {
@@ -25,12 +20,12 @@ type ResolvedExecutorAuth = {
 };
 
 export interface ProviderOverlayState {
-	shouldRouteToLuna(): boolean;
+	shouldRouteToExecutor(): boolean;
 	isPrimaryAgentStream(): boolean;
 	currentRunId(): string | undefined;
-	onLunaStreamStarted(runId: string): void;
-	onLunaStreamSucceeded(runId: string): void;
-	onLunaStreamFailed(runId: string): void;
+	onExecutorStreamStarted(runId: string): void | Promise<void>;
+	onExecutorStreamSucceeded(runId: string): void | Promise<void>;
+	onExecutorStreamFailed(runId: string): void | Promise<void>;
 	onProviderDrift(): void;
 }
 
@@ -48,8 +43,8 @@ interface ProviderOverlayAPI {
 function forwardStream(
 	source: Promise<AssistantMessageEventStream>,
 	executor: Model<Api>,
-	onSucceeded: () => void,
-	onFailed: () => void,
+	onSucceeded: () => void | Promise<void>,
+	onFailed: () => void | Promise<void>,
 ): AssistantMessageEventStream {
 	const forwarded = createAssistantMessageEventStream();
 	void (async () => {
@@ -61,12 +56,12 @@ function forwardStream(
 					started = true;
 					forwarded.push(event);
 				} else if (event.type === "done") {
+					await settleCallback(onSucceeded);
 					terminal = true;
 					forwarded.push(event);
-					onSucceeded();
 				} else if (event.type === "error") {
+					await settleCallback(onFailed);
 					terminal = true;
-					onFailed();
 					const error = failedAssistantMessage(executor);
 					if (!started) forwarded.push({ type: "start", partial: error });
 					forwarded.push({ type: "error", reason: "error", error });
@@ -74,16 +69,24 @@ function forwardStream(
 					forwarded.push(event);
 				}
 			}
-			if (!terminal) throw new Error("Luna provider stream ended without a terminal event.");
+			if (!terminal) throw new Error("Executor provider stream ended without a terminal event.");
 		} catch {
 			if (terminal) return;
-			onFailed();
+			await settleCallback(onFailed);
 			const error = failedAssistantMessage(executor);
 			if (!started) forwarded.push({ type: "start", partial: error });
 			forwarded.push({ type: "error", reason: "error", error });
 		}
 	})();
 	return forwarded;
+}
+
+async function settleCallback(callback: () => void | Promise<void>): Promise<void> {
+	try {
+		await callback();
+	} catch {
+		// Routing results remain authoritative when an observational callback fails.
+	}
 }
 
 function failedAssistantMessage(executor: Model<Api>): AssistantMessage {
@@ -102,7 +105,7 @@ function failedAssistantMessage(executor: Model<Api>): AssistantMessage {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "error",
-		errorMessage: "Prewalk Luna provider stream failed.",
+		errorMessage: "Prewalk executor provider stream failed.",
 		timestamp: Date.now(),
 	};
 }
@@ -110,13 +113,14 @@ function failedAssistantMessage(executor: Model<Api>): AssistantMessage {
 function executorOptions(
 	options: SimpleStreamOptions | undefined,
 	auth: ResolvedExecutorAuth,
+	config: PrewalkConfig,
 ): SimpleStreamOptions {
 	return {
 		...options,
 		apiKey: auth.apiKey,
 		headers: auth.headers,
 		env: auth.env,
-		reasoning: EXECUTOR_THINKING_LEVEL,
+		reasoning: config.executor.reasoning,
 	};
 }
 
@@ -126,6 +130,8 @@ export function createProviderOverlay(
 		ModelRegistry,
 		"find" | "getApiKeyAndHeaders" | "getRegisteredProviderConfig"
 	>,
+	plannerProfile: PlannerProfile,
+	config: PrewalkConfig,
 	state: ProviderOverlayState,
 ): ProviderOverlay {
 	let previous: ProviderConfig | undefined;
@@ -134,37 +140,32 @@ export function createProviderOverlay(
 	const install = (): void => {
 		if (overlayStream) return;
 
-		const planner = modelRegistry.find(PLANNER_PROVIDER, PLANNER_MODEL_ID);
-		const executor = modelRegistry.find(EXECUTOR_PROVIDER, EXECUTOR_MODEL_ID);
-		if (!planner) throw new Error("Prewalk requires the configured Sol planner model.");
-		if (!executor) throw new Error("Prewalk requires the configured Luna executor model.");
-		if (planner.api !== executor.api) {
-			throw new Error("Prewalk requires Sol and Luna to use the same Pi API.");
+		const planner = modelRegistry.find(plannerProfile.provider, plannerProfile.model);
+		const executor = modelRegistry.find(config.executor.provider, config.executor.model);
+		if (!planner) throw new Error("Prewalk requires the configured planner model.");
+		if (!executor) throw new Error("Prewalk requires the configured executor model.");
+		if (planner.provider !== executor.provider || planner.api !== executor.api) {
+			throw new Error("Prewalk requires planner and executor to use the same provider and API.");
 		}
 
-		previous = modelRegistry.getRegisteredProviderConfig(PLANNER_PROVIDER);
-		const delegate = previous?.streamSimple;
-		if (!delegate || previous?.api !== "openai-codex-responses" || !previous.oauth) {
-			throw new Error(
-				"Prewalk requires the conversion-owned openai-codex provider to load first.",
-			);
-		}
+		previous = modelRegistry.getRegisteredProviderConfig(plannerProfile.provider);
+		const delegate = previous?.streamSimple ?? builtinStreamSimple;
 
 		const stream: StreamSimple = (
 			model: Model<Api>,
 			context: Context,
 			options?: SimpleStreamOptions,
 		) => {
-			const current = modelRegistry.getRegisteredProviderConfig(PLANNER_PROVIDER);
+			const current = modelRegistry.getRegisteredProviderConfig(plannerProfile.provider);
 			if (current?.streamSimple !== stream) {
 				state.onProviderDrift();
 				throw new Error("Prewalk provider overlay ownership changed during the session.");
 			}
 
 			if (
-				model.provider !== PLANNER_PROVIDER ||
-				model.id !== PLANNER_MODEL_ID ||
-				!state.shouldRouteToLuna() ||
+				model.provider !== plannerProfile.provider ||
+				model.id !== plannerProfile.model ||
+				!state.shouldRouteToExecutor() ||
 				!state.isPrimaryAgentStream()
 			) {
 				return delegate(model, context, options);
@@ -175,19 +176,23 @@ export function createProviderOverlay(
 			return forwardStream(
 				(async () => {
 					const auth = await modelRegistry.getApiKeyAndHeaders(executor);
-					if (!auth.ok) throw new Error("Luna authorization is unavailable.");
-					const delegated = delegate(executor, context, executorOptions(options, auth));
-					state.onLunaStreamStarted(runId);
+					if (!auth.ok) throw new Error("Executor authorization is unavailable.");
+					const delegated = delegate(
+						executor,
+						context,
+						executorOptions(options, auth, config),
+					);
+					await state.onExecutorStreamStarted(runId);
 					return delegated;
 				})(),
 				executor,
-				() => state.onLunaStreamSucceeded(runId),
-				() => state.onLunaStreamFailed(runId),
+				() => state.onExecutorStreamSucceeded(runId),
+				() => state.onExecutorStreamFailed(runId),
 			);
 		};
 
 		overlayStream = stream;
-		pi.registerProvider(PLANNER_PROVIDER, {
+		pi.registerProvider(plannerProfile.provider, {
 			...previous,
 			streamSimple: stream,
 		});
@@ -196,15 +201,15 @@ export function createProviderOverlay(
 	const restore = (): void => {
 		const stream = overlayStream;
 		if (!stream) return;
-		const current = modelRegistry.getRegisteredProviderConfig(PLANNER_PROVIDER);
+		const current = modelRegistry.getRegisteredProviderConfig(plannerProfile.provider);
 		if (current?.streamSimple !== stream) {
 			overlayStream = undefined;
 			previous = undefined;
 			return;
 		}
 
-		pi.unregisterProvider(PLANNER_PROVIDER);
-		if (previous) pi.registerProvider(PLANNER_PROVIDER, previous);
+		pi.unregisterProvider(plannerProfile.provider);
+		if (previous) pi.registerProvider(plannerProfile.provider, previous);
 		overlayStream = undefined;
 		previous = undefined;
 	};
@@ -214,7 +219,7 @@ export function createProviderOverlay(
 		restore,
 		ownsRegistration: () =>
 			overlayStream !== undefined &&
-			modelRegistry.getRegisteredProviderConfig(PLANNER_PROVIDER)?.streamSimple ===
+			modelRegistry.getRegisteredProviderConfig(plannerProfile.provider)?.streamSimple ===
 				overlayStream,
 	};
 }

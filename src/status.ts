@@ -1,45 +1,92 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { isPlannerSelected, type PrewalkRun } from "./core.js";
+import { isPlannerSelected, type ModelConfig, type PrewalkRun } from "./core.js";
+
+export interface DelegationStatus {
+	agent: string;
+	state: "running" | "completed" | "failed";
+	route?: "planner" | "executor";
+	reason?: string;
+}
+
+function modelLabel(model: ModelConfig): string {
+	if (model.model === "gpt-5.6-sol") return "5.6 Sol";
+	if (model.model === "gpt-5.6-luna") return "Luna";
+	return model.model;
+}
 
 export function compactStatus(
 	run: PrewalkRun | undefined,
 	selectedModel: Model<Api> | undefined,
+	_plannerReasoning = "off",
+	delegation?: DelegationStatus,
 ): string | undefined {
 	if (!run) return undefined;
-	if (run.phase === "cancelled" && !isPlannerSelected(selectedModel)) {
+	const plannerSelected = isPlannerSelected(selectedModel, run.planner);
+	if (run.phase === "cancelled" && !plannerSelected) {
 		const selected = selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "none";
-		return `prewalk: 5.6 Sol / Luna (cancelled; Pi: ${selected})`;
+		return `prewalk: ${modelLabel(run.planner)} / ${modelLabel(run.config.executor)} (cancelled; selected: ${selected})`;
 	}
 
-	const sol = run.effectiveRoute === "sol" ? "[5.6 Sol]" : "5.6 Sol";
-	const luna = run.effectiveRoute === "luna" ? "[Luna]" : "Luna";
+	const plannerLabel = `${modelLabel(run.planner)} · ${run.planner.reasoning}`;
+	const executorLabel = `${modelLabel(run.config.executor)} · ${run.config.executor.reasoning}`;
+	const planner = run.effectiveRoute === "planner" ? `[${plannerLabel}]` : plannerLabel;
+	const executor = run.effectiveRoute === "executor" ? `[${executorLabel}]` : executorLabel;
 	switch (run.phase) {
-		case "ready":
-			return `prewalk: ${sol} / ${luna} (ready)`;
+		case "handoff-pending":
+			return `prewalk: ${planner} / ${executor} (switching after this turn)`;
 		case "cancelled":
-			return `prewalk: ${sol} / ${luna} (cancelled)`;
+			return `prewalk: ${planner} / ${executor} (cancelled)`;
 		case "failed":
-			return `prewalk: ${sol} / ${luna} (failed)`;
-		default:
-			return `prewalk: ${sol} / ${luna}`;
+			return `prewalk: ${planner} / ${executor} (failed${run.reasonCode ? `: ${run.reasonCode.replaceAll("-", " ")}` : ""})`;
 	}
+	if (run.effectiveRoute !== "executor" && delegation) {
+		const agent = delegation.agent;
+		if (delegation.state === "failed") {
+			const reason = delegation.reason ? `: ${delegation.reason.replaceAll("-", " ")}` : "";
+			return `prewalk: ${planner} / ${executor} (${agent} Prewalk failed${reason})`;
+		}
+		if (delegation.state === "running") {
+			return `prewalk: ${planner} / ${executor} (${agent} running its own Prewalk)`;
+		}
+		if (delegation.route === "executor") {
+			return `prewalk: ${planner} / ${executor} (${agent} completed via executor)`;
+		}
+		if (delegation.route === "planner") {
+			return `prewalk: ${planner} / ${executor} (${agent} completed before handoff)`;
+		}
+		return `prewalk: ${planner} / ${executor} (${agent} completed; child route unavailable)`;
+	}
+	if (run.phase === "ready") {
+		return `prewalk: ${planner} / ${executor} (waiting for this agent's first code change)`;
+	}
+	return `prewalk: ${planner} / ${executor}`;
 }
 
 export function detailedStatus(
 	run: PrewalkRun | undefined,
 	selectedModel: Model<Api> | undefined,
+	plannerReasoning = "off",
+	delegation?: DelegationStatus,
 ): string {
 	if (!run) return "Prewalk is inactive.";
 	const selected = selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "none";
 	const detail = [
-		`status=${compactStatus(run, selectedModel)}`,
+		`status=${compactStatus(run, selectedModel, plannerReasoning, delegation)}`,
 		`mode=${run.mode}`,
 		`phase=${run.phase}`,
 		`run=${run.id}`,
+		`planner=${run.planner.provider}/${run.planner.model}`,
+		`executor=${run.config.executor.provider}/${run.config.executor.model}`,
+		`executor reasoning=${run.config.executor.reasoning}`,
 		`selected=${selected}`,
 		`todo=${run.todoActive ? (run.todoSeen ? "ready" : "required") : "inactive"}`,
 	];
 	if (run.trigger) detail.push(`trigger=${run.trigger.toolName}`);
 	if (run.reasonCode) detail.push(`reason=${run.reasonCode}`);
+	if (delegation) {
+		detail.push(`delegation=${delegation.agent} ${delegation.state}`);
+		if (delegation.route) detail.push(`delegation route=${delegation.route}`);
+		if (delegation.reason) detail.push(`delegation reason=${delegation.reason}`);
+	}
 	return detail.join("\n");
 }

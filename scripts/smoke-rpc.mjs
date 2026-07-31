@@ -10,14 +10,8 @@ const agentDir = path.join(temporaryRoot, "agent");
 const sessionPath = path.join(temporaryRoot, "session.jsonl");
 const settingsPath = path.join(agentDir, "settings.json");
 const prewalkPath = path.join(packageRoot, "extensions", "prewalk.ts");
-const conversionPath = path.join(
-	packageRoot,
-	"node_modules",
-	"@howaboua",
-	"pi-codex-conversion",
-	"dist",
-	"index.js",
-);
+const plannerModel = "anthropic/claude-opus-4-6";
+const executorModel = "anthropic/claude-sonnet-4-6";
 const piExecutable =
 	process.env.PREWALK_PI_EXECUTABLE ??
 	path.join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
@@ -28,26 +22,37 @@ function assert(condition, message) {
 
 try {
 	await mkdir(agentDir, { recursive: true, mode: 0o700 });
-	await writeFile(path.join(agentDir, "prewalk.json"), '{"enabled":true}\n', {
-		mode: 0o600,
-	});
+	await writeFile(
+		path.join(agentDir, "prewalk.json"),
+		`${JSON.stringify({
+			enabled: true,
+			planner: { provider: "anthropic", model: "claude-opus-4-6" },
+			executor: {
+				provider: "anthropic",
+				model: "claude-sonnet-4-6",
+				reasoning: "low",
+			},
+			analytics: {
+				enabled: true,
+				catalogFallbackEnabled: false,
+				recentReceiptCount: 10,
+				schemaVersion: 1,
+			},
+		})}\n`,
+		{ mode: 0o600 },
+	);
 	await writeFile(
 		path.join(agentDir, "auth.json"),
 		`${JSON.stringify({
-			"openai-codex": {
-				type: "oauth",
-				access: "rpc-smoke-token",
-				refresh: "rpc-smoke-refresh",
-				expires: Date.now() + 60_000,
-			},
+			anthropic: { type: "api_key", key: "rpc-smoke-token" },
 		})}\n`,
 		{ mode: 0o600 },
 	);
 	await writeFile(
 		settingsPath,
 		`${JSON.stringify({
-			defaultProvider: "openai-codex",
-			defaultModel: "gpt-5.6-sol",
+			defaultProvider: "anthropic",
+			defaultModel: "claude-opus-4-6",
 			defaultThinkingLevel: "high",
 			packages: [],
 		})}\n`,
@@ -66,10 +71,10 @@ try {
 		{ mode: 0o600 },
 	);
 	const args = buildRpcLaunchArgs({
-		extensionPath: conversionPath,
-		extraExtensions: [prewalkPath],
+		extensionPath: prewalkPath,
+		extraExtensions: [],
 		sessionPath,
-		model: "openai-codex/gpt-5.6-sol",
+		model: plannerModel,
 		thinking: "high",
 	});
 	const rpc = new RpcProcess({
@@ -81,15 +86,15 @@ try {
 	try {
 		const state = (await rpc.send({ type: "get_state" })).data;
 		assert(
-			`${state.model?.provider}/${state.model?.id}` === "openai-codex/gpt-5.6-sol",
-			"RPC smoke did not retain Sol as Pi's selected model.",
+			`${state.model?.provider}/${state.model?.id}` === plannerModel,
+			"RPC smoke did not retain the configured planner as Pi's selected model.",
 		);
 		await rpc.send({ type: "prompt", message: "/prewalk status" });
 		await rpc.send({ type: "prompt", message: "/prewalk cancel" });
 		await rpc.send({ type: "prompt", message: "/reload" });
 		const reloaded = (await rpc.send({ type: "get_state" })).data;
 		assert(
-			`${reloaded.model?.provider}/${reloaded.model?.id}` === "openai-codex/gpt-5.6-sol",
+			`${reloaded.model?.provider}/${reloaded.model?.id}` === plannerModel,
 			"RPC reload changed Pi's selected model.",
 		);
 	} finally {
@@ -105,8 +110,11 @@ try {
 		JSON.stringify({
 			ok: true,
 			pi: "0.82.1",
-			conversion: "3.0.3",
-			selectedModel: "openai-codex/gpt-5.6-sol",
+			conversionExtension: "not-loaded",
+			plannerModel,
+			executorModel,
+			selectedModel: plannerModel,
+			analytics: "local-only",
 			providerRequests: 0,
 			settingsStable: true,
 		}),

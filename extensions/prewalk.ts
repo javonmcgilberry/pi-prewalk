@@ -1,14 +1,45 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { readFile as readFileAsync } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
+import {
+	readFile as readFileAsync,
+	rename as renameFile,
+	writeFile as writeFileAsync,
+} from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ModelCost, Usage } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	ANALYTICS_SCHEMA_VERSION,
+	calculateSavings,
+	DEFAULT_ANALYTICS_CONFIG,
+	normalizeUsageObservations,
+	type RunJournal,
+	type RunOutcome,
+	type RunReceipt,
+	type UsageObservationSource,
+	type UsageRole,
+	usageEvidenceKey,
+} from "../src/analytics.js";
+import {
+	renderAnalyticsOverview,
+	renderReceiptReport,
+	renderTaskTreeReport,
+} from "../src/analytics-report.js";
+import { AnalyticsStore } from "../src/analytics-store.js";
+import {
+	parseDelegationAnalyticsEvent,
+	SUBAGENT_DELEGATION_ANALYTICS_PROGRESS_EVENT,
+	SUBAGENT_DELEGATION_ANALYTICS_REPLAY_REQUEST_EVENT,
+	SUBAGENT_DELEGATION_ANALYTICS_START_EVENT,
+	SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT,
+} from "../src/analytics-subagents.js";
 import {
 	type AuditEventKind,
 	createAuditRecord,
@@ -17,11 +48,10 @@ import {
 	runFromAudit,
 } from "../src/audit.js";
 import {
-	EXECUTOR_MODEL_ID,
-	EXECUTOR_PROVIDER,
+	DEFAULT_EXECUTOR,
 	isPlannerSelected,
-	PLANNER_MODEL_ID,
-	PLANNER_PROVIDER,
+	isReasoningLevel,
+	type PlannerProfile,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_PLAN_MESSAGE_TYPE,
@@ -29,11 +59,16 @@ import {
 	PrewalkCoordinator,
 	type PrewalkRun,
 	parseConfig,
+	REASONING_LEVELS,
 } from "../src/core.js";
+import {
+	EXECUTION_PROFILE_POLICY_REQUEST_EVENT,
+	respondToExecutionProfilePolicyRequest,
+} from "../src/execution-profile-policy.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
-import { compactStatus, detailedStatus } from "../src/status.js";
+import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
 import {
 	applyTodoOperation,
 	latestTodoPhases,
@@ -44,6 +79,8 @@ import {
 
 const STATUS_KEY = "prewalk";
 const PREWALK_TODO_REMINDER_MESSAGE_TYPE = "prewalk-todo-reminder";
+const MAX_CHILD_SESSION_BYTES = 16 * 1024 * 1024;
+const PREWALK_COMMANDS = ["status", "stats", "run", "cancel", "configure", "help", "--help"];
 const PROMPT_TYPES = new Set([
 	PREWALK_PLAN_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
@@ -103,6 +140,63 @@ function configPath(): string {
 	return path.join(getAgentDir(), "prewalk.json");
 }
 
+function helpText(): string {
+	return [
+		"Prewalk quick guide",
+		"",
+		"/prewalk status  Show the current planner, executor, gate, route, and failure reason.",
+		"/prewalk stats  Show lifetime, month, week, session, and recent local analytics.",
+		"/prewalk stats --successful  Show successful receipts only.",
+		"/prewalk stats receipt <run-id>  Show one receipt's evidence and calculation.",
+		"/prewalk stats task  Show root and delegated task-tree analytics.",
+		"/prewalk stats benchmark <summary.json>  Import an accepted verified benchmark summary.",
+		"/prewalk stats export <path>  Export validated JSONL without overwriting a file.",
+		"/prewalk stats reset  Confirm a new empty ledger generation.",
+		"/prewalk run     Start a new manual Prewalk run after cancellation or failure.",
+		"/prewalk cancel  Stop Prewalk routing for the current session.",
+		"/prewalk configure  Choose the executor and control analytics collection and catalog fallback.",
+		"/todos           Show the current Prewalk implementation checklist.",
+		"",
+		"Reset the current run: /prewalk cancel, then /prewalk run.",
+		"Reload extension and config changes: /reload.",
+		`Configuration file: ${configPath()}`,
+		"Configuration is written atomically by /prewalk configure.",
+		"Analytics stay local. Actual means Pi-reported attributed cost; estimated and catalog-estimated values are labeled counterfactuals; unavailable means evidence was insufficient; unfinished means no terminal receipt exists; verified is reserved for accepted benchmark evidence.",
+		"Disabling collection preserves existing receipts and does not change routing. Export refuses existing destinations. Reset excludes any active prior-generation run, and collection resumes on the next run.",
+		"",
+		"Prewalk derives the planner from Pi's selected model and reasoning for each epoch. Only primary Agent-loop requests route to the executor after the handoff gate.",
+		"Shift+Tab changes Sol reasoning while Sol is active and Luna reasoning after Luna takes over.",
+		"Sol and Luna reasoning are independent; Luna defaults to low unless you configure another level.",
+		"Subagents run independent Prewalk lifecycles. A strict child without todo still switches after its first successful code change.",
+		"Parent status reports an observed child outcome, but child code changes never switch the parent.",
+	].join("\n");
+}
+
+function defaultConfig(): PrewalkConfig {
+	return {
+		enabled: true,
+		executor: { ...DEFAULT_EXECUTOR },
+		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
+	};
+}
+
+function pricingSchedule(cost: ModelCost) {
+	return {
+		input: cost.input,
+		output: cost.output,
+		cacheRead: cost.cacheRead,
+		cacheWrite: cost.cacheWrite,
+		...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ ...tier })) } : {}),
+	};
+}
+
+function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
+	if (run.phase === "failed") return "failed";
+	if (run.phase === "handoff-pending") return "pending";
+	if (run.phase === "active" || run.phase === "completed") return "completed";
+	return "not-started";
+}
+
 function isMissingFile(error: unknown): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
@@ -121,6 +215,50 @@ async function readConfig(): Promise<PrewalkConfig> {
 		return parseConfig(JSON.parse(raw));
 	} catch {
 		throw new Error("configuration-invalid");
+	}
+}
+
+async function writeConfig(config: PrewalkConfig): Promise<void> {
+	const target = configPath();
+	const temporary = `${target}.${process.pid}.tmp`;
+	await writeFileAsync(temporary, `${JSON.stringify(config, undefined, 2)}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	await renameFile(temporary, target);
+}
+
+const CONFIG_PAGE_SIZE = 8;
+
+async function selectPaged(
+	ctx: ExtensionContext,
+	title: string,
+	choices: string[],
+): Promise<string | undefined> {
+	if (choices.length <= CONFIG_PAGE_SIZE) return ctx.ui.select(title, choices);
+	const pageCount = Math.ceil(choices.length / CONFIG_PAGE_SIZE);
+	let page = 0;
+	while (true) {
+		const start = page * CONFIG_PAGE_SIZE;
+		const visible = choices.slice(start, start + CONFIG_PAGE_SIZE);
+		const previous = "← Previous page";
+		const next = "Next page →";
+		const options = [
+			...visible,
+			...(page > 0 ? [previous] : []),
+			...(page < pageCount - 1 ? [next] : []),
+		];
+		const selected = await ctx.ui.select(`${title} (${page + 1}/${pageCount})`, options);
+		if (!selected) return undefined;
+		if (selected === previous) {
+			page -= 1;
+			continue;
+		}
+		if (selected === next) {
+			page += 1;
+			continue;
+		}
+		return selected;
 	}
 }
 
@@ -145,11 +283,106 @@ function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined):
 		run.phase === "handoff-pending" ||
 		run.phase === "active" ||
 		run.phase === "completed" ||
-		(run.phase === "failed" && run.effectiveRoute === "luna")
+		(run.phase === "failed" && run.effectiveRoute === "executor")
 	) {
 		return message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE;
 	}
 	return message.customType !== PREWALK_CHECKLIST_MESSAGE_TYPE;
+}
+
+function delegatedAgent(value: unknown): string {
+	if (!isRecord(value)) return "subagent";
+	const raw = typeof value.agent === "string" ? value.agent.trim() : "";
+	return raw ? raw.slice(0, 32) : "subagent";
+}
+
+function delegatedChildCount(value: unknown): number {
+	if (!isRecord(value)) return 1;
+	if (Array.isArray(value.tasks)) return Math.max(1, value.tasks.length);
+	if (Array.isArray(value.chain)) {
+		return Math.max(
+			1,
+			value.chain.reduce((count, step) => {
+				if (!isRecord(step)) return count + 1;
+				return count + (Array.isArray(step.parallel) ? step.parallel.length : 1);
+			}, 0),
+		);
+	}
+	return 1;
+}
+
+function latestChildPrewalkRun(sessionFile: unknown): PrewalkRun | undefined {
+	if (typeof sessionFile !== "string" || !path.isAbsolute(sessionFile)) return undefined;
+	const agentRoot = path.resolve(getAgentDir());
+	const resolved = path.resolve(sessionFile);
+	if (resolved !== agentRoot && !resolved.startsWith(`${agentRoot}${path.sep}`)) return undefined;
+	try {
+		if (statSync(resolved).size > MAX_CHILD_SESSION_BYTES) return undefined;
+		const lines = readFileSync(resolved, "utf8").split("\n");
+		for (let index = lines.length - 1; index >= 0; index -= 1) {
+			const line = lines[index]?.trim();
+			if (!line) continue;
+			let value: unknown;
+			try {
+				value = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			if (
+				!isRecord(value) ||
+				value.type !== "custom" ||
+				value.customType !== PREWALK_AUDIT_TYPE
+			) {
+				continue;
+			}
+			const record = parseAuditRecord(value.data);
+			return record ? runFromAudit(record) : undefined;
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+
+function delegationFromResult(
+	details: unknown,
+	isError: boolean,
+	fallbackAgent: string,
+): DelegationStatus {
+	if (!isRecord(details) || !Array.isArray(details.results)) {
+		return {
+			agent: fallbackAgent,
+			state: isError ? "failed" : "completed",
+			...(isError ? { reason: "subagent-tool-failed" } : {}),
+		};
+	}
+	let completed: DelegationStatus | undefined;
+	for (const value of details.results) {
+		if (!isRecord(value)) continue;
+		const agent = delegatedAgent(value);
+		const childRun = latestChildPrewalkRun(value.sessionFile);
+		if (childRun?.phase === "failed") {
+			return {
+				agent,
+				state: "failed",
+				reason: childRun.reasonCode ?? "unknown",
+			};
+		}
+		if (childRun) {
+			completed = {
+				agent,
+				state: "completed",
+				route: childRun.effectiveRoute === "executor" ? "executor" : "planner",
+			};
+		}
+	}
+	return (
+		completed ?? {
+			agent: fallbackAgent,
+			state: isError ? "failed" : "completed",
+			...(isError ? { reason: "subagent-tool-failed" } : {}),
+		}
+	);
 }
 
 function acceptsMutationEvidence(run: PrewalkRun | undefined): boolean {
@@ -173,15 +406,103 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
 	const mutations = new MutationTurnBuffer();
 	const todoReminder = new TodoReminder();
+	const analyticsStore = new AnalyticsStore(getAgentDir());
+	let activeSessionId: string | undefined;
+	let removeExecutionProfilePolicyListener: (() => void) | undefined;
+	const ensureExecutionProfilePolicyListener = (): void => {
+		if (removeExecutionProfilePolicyListener || !pi.events) return;
+		removeExecutionProfilePolicyListener = pi.events.on(
+			EXECUTION_PROFILE_POLICY_REQUEST_EVENT,
+			(value) => {
+				if (!activeSessionId) return;
+				respondToExecutionProfilePolicyRequest(value, coordinator.run, activeSessionId);
+			},
+		);
+	};
+	ensureExecutionProfilePolicyListener();
 	let overlay: ProviderOverlay | undefined;
 	let primaryAgentStream = false;
 	let todoPhases: TodoPhase[] = [];
 	let todoConflict = false;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
+	let delegation: DelegationStatus | undefined;
+	let removeTerminalInputListener: (() => void) | undefined;
+	type ActiveAnalyticsState = {
+		journal: RunJournal;
+		pricing: {
+			capturedAt: string;
+			rates: {
+				planner: ReturnType<typeof pricingSchedule>;
+				executor: ReturnType<typeof pricingSchedule>;
+			};
+		};
+		catalog: {
+			catalogDate: string;
+			rates: {
+				planner: ReturnType<typeof pricingSchedule>;
+				executor: ReturnType<typeof pricingSchedule>;
+			};
+		};
+	};
+	let analyticsState: ActiveAnalyticsState | undefined;
+
+	let analyticsWrites = Promise.resolve();
+	let analyticsFinalization: { runId: string; epoch: string; promise: Promise<void> } | undefined;
+	type DelegationInvocation = {
+		toolCallId: string;
+		rootSessionId: string;
+		parentSessionId: string;
+		childCount: number;
+		delegationRunId?: string;
+		childSessionIds: Map<number, string>;
+	};
+	const delegationInvocations: DelegationInvocation[] = [];
+
+	const recordDelegationEvent = (value: unknown): void => {
+		try {
+			const evidence = parseDelegationAnalyticsEvent(value);
+			const invocation = delegationInvocations.find(
+				(candidate) => candidate.toolCallId === evidence.invocationId,
+			);
+			if (!invocation) return;
+			if (
+				invocation.delegationRunId !== undefined &&
+				invocation.delegationRunId !== evidence.delegationRunId
+			)
+				return;
+			invocation.delegationRunId = evidence.delegationRunId;
+			if (
+				evidence.rootSessionId !== invocation.rootSessionId ||
+				evidence.parentSessionId !== invocation.parentSessionId ||
+				evidence.childIndex >= invocation.childCount
+			)
+				return;
+			if (invocation.delegationRunId !== evidence.delegationRunId) return;
+			const priorChild = invocation.childSessionIds.get(evidence.childIndex);
+			if (
+				priorChild !== undefined &&
+				evidence.childSessionId !== undefined &&
+				priorChild !== evidence.childSessionId
+			)
+				return;
+			if (evidence.childSessionId !== undefined)
+				invocation.childSessionIds.set(evidence.childIndex, evidence.childSessionId);
+			void enqueueAnalytics(async () => {
+				await analyticsStore.writeDelegationEvidence(value);
+			}).catch(() => undefined);
+		} catch {
+			// Optional delegation evidence fails closed without affecting routing.
+		}
+	};
+	if (pi.events !== undefined) {
+		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_START_EVENT, recordDelegationEvent);
+		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_PROGRESS_EVENT, recordDelegationEvent);
+		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, recordDelegationEvent);
+	}
 
 	const updateStatus = (ctx: ExtensionContext): void => {
-		const nextStatus = compactStatus(coordinator.run, ctx.model);
+		const nextStatus = compactStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation);
 		if (nextStatus === lastStatus) return;
 		ctx.ui.setStatus(STATUS_KEY, nextStatus);
 		lastStatus = nextStatus;
@@ -198,67 +519,254 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	};
 
-	const fail = (reasonCode: string, holdLunaRoute: boolean, ctx: ExtensionContext): void => {
+	const enqueueAnalytics = (operation: () => Promise<void>): Promise<void> => {
+		analyticsWrites = analyticsWrites.then(operation, operation);
+		return analyticsWrites;
+	};
+
+	const openAnalyticsJournal = async (run: PrewalkRun, ctx: ExtensionContext): Promise<void> => {
+		analyticsState = undefined;
+		analyticsFinalization = undefined;
+		const analytics = run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
+		if (!analytics.enabled) return;
+		const planner = ctx.modelRegistry.find(run.planner.provider, run.planner.model);
+		const executor = ctx.modelRegistry.find(
+			run.config.executor.provider,
+			run.config.executor.model,
+		);
+		if (!planner || !executor) return;
+		const generation = await analyticsStore.currentGeneration();
+		const journal: RunJournal = {
+			schemaVersion: ANALYTICS_SCHEMA_VERSION,
+			runId: run.id,
+			epoch: run.epoch,
+			sessionId: ctx.sessionManager.getSessionId(),
+			generation,
+			configuration: {
+				analytics: structuredClone(analytics),
+				planner: { provider: run.planner.provider, model: run.planner.model },
+				executor: { provider: run.config.executor.provider, model: run.config.executor.model },
+			},
+			startedAt: new Date().toISOString(),
+			lastObservedSequence: 0,
+			evidenceKeys: [],
+			outcome: "active",
+			handoffState: handoffState(run),
+			usage: [],
+		};
+		const pricing = {
+			capturedAt: new Date().toISOString(),
+			rates: {
+				planner: pricingSchedule(planner.cost),
+				executor: pricingSchedule(executor.cost),
+			},
+		};
+		const catalog = { catalogDate: pricing.capturedAt.slice(0, 10), rates: pricing.rates };
+		await analyticsStore.writeJournal(journal);
+		analyticsState = { journal, pricing, catalog };
+	};
+
+	const restoreAnalyticsJournal = async (
+		run: PrewalkRun,
+		ctx: ExtensionContext,
+	): Promise<void> => {
+		analyticsState = undefined;
+		analyticsFinalization = undefined;
+		const analytics = run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
+		if (!analytics.enabled) return;
+		const journal = await analyticsStore.restoreJournal(run.id, run.epoch);
+		if (!journal) return;
+		const planner = ctx.modelRegistry.find(run.planner.provider, run.planner.model);
+		const executor = ctx.modelRegistry.find(
+			run.config.executor.provider,
+			run.config.executor.model,
+		);
+		if (!planner || !executor) return;
+		const pricing = {
+			capturedAt: new Date().toISOString(),
+			rates: {
+				planner: pricingSchedule(planner.cost),
+				executor: pricingSchedule(executor.cost),
+			},
+		};
+		const catalog = { catalogDate: pricing.capturedAt.slice(0, 10), rates: pricing.rates };
+		analyticsState = { journal, pricing, catalog };
+	};
+
+	const recordAnalyticsUsage = (
+		_source: UsageObservationSource,
+		evidenceId: string,
+		provider: string,
+		model: string,
+		role: UsageRole,
+		usage: Usage,
+	): Promise<void> => {
+		const state = analyticsState;
+		if (!state) return Promise.resolve();
+		const observation = {
+			sequence: state.journal.lastObservedSequence + 1,
+			evidenceId,
+			source: _source,
+			provider,
+			model,
+			role,
+			final: true,
+			usage: { ...usage },
+		};
+		const key = usageEvidenceKey(observation);
+		let evidenceKeys = state.journal.evidenceKeys;
+		if (evidenceKeys === undefined) {
+			evidenceKeys = [];
+			state.journal.evidenceKeys = evidenceKeys;
+		}
+		if (evidenceKeys.includes(key)) return Promise.resolve();
+		state.journal.lastObservedSequence = observation.sequence;
+		evidenceKeys.push(key);
+		const [slice] = normalizeUsageObservations([observation]);
+		if (slice) state.journal.usage.push(slice);
+		return enqueueAnalytics(async () => {
+			await analyticsStore.writeJournal(state.journal);
+		});
+	};
+
+	const finalizeAnalytics = (outcome: RunOutcome): Promise<void> => {
+		const state = analyticsState;
+		if (!state) return analyticsWrites;
+		if (analyticsFinalization) {
+			if (
+				analyticsFinalization.runId === state.journal.runId &&
+				analyticsFinalization.epoch === state.journal.epoch
+			)
+				return analyticsFinalization.promise;
+			analyticsFinalization = undefined;
+		}
+		const { journal, pricing } = state;
+		const promise = enqueueAnalytics(async () => {
+			journal.outcome = outcome;
+			journal.handoffState = coordinator.run
+				? handoffState(coordinator.run)
+				: journal.handoffState;
+			const calculation = calculateSavings({
+				outcome,
+				usage: journal.usage,
+				modelMetadata: pricing,
+				catalog: state.catalog,
+				catalogFallbackEnabled: journal.configuration.analytics.catalogFallbackEnabled,
+			});
+			const receipt: RunReceipt = {
+				schemaVersion: ANALYTICS_SCHEMA_VERSION,
+				runId: journal.runId,
+				epoch: journal.epoch,
+				sessionId: journal.sessionId,
+				generation: journal.generation,
+				startedAt: journal.startedAt,
+				completedAt: new Date().toISOString(),
+				outcome,
+				handoffState: journal.handoffState,
+				planner: journal.configuration.planner,
+				executor: journal.configuration.executor,
+				usage: journal.usage,
+				actualCost: calculation.actualCost,
+				estimate: calculation.estimate,
+				pricingEvidence: calculation.pricingEvidence,
+				evidenceKeys: [...(journal.evidenceKeys ?? [])],
+				...(journal.lineage === undefined ? {} : { lineage: journal.lineage }),
+			};
+			await analyticsStore.promoteReceipt(receipt);
+			if (analyticsState === state) analyticsState = undefined;
+		}).catch((error) => {
+			if (analyticsFinalization?.promise === promise) analyticsFinalization = undefined;
+			throw error;
+		});
+		analyticsFinalization = { runId: journal.runId, epoch: journal.epoch, promise };
+		return promise;
+	};
+
+	const fail = (reasonCode: string, holdExecutorRoute: boolean, ctx: ExtensionContext): void => {
 		if (!coordinator.run) {
+			if (!ctx.model) {
+				ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
+				return;
+			}
 			coordinator.arm(
 				randomUUID(),
 				randomUUID(),
 				"automatic",
 				pi.getActiveTools().includes("todo"),
+				{
+					provider: ctx.model.provider,
+					model: ctx.model.id,
+					reasoning: ctx.thinkingLevel ?? "off",
+				},
+				defaultConfig(),
 			);
 		}
-		coordinator.fail(reasonCode, holdLunaRoute);
+		coordinator.fail(reasonCode, holdExecutorRoute);
 		mutations.resetForRun();
 		audit("failed", ctx);
+		if (
+			reasonCode === "executor-stream-failed" ||
+			(reasonCode !== "provider-drift" && (analyticsState?.journal.usage.length ?? 0) > 0)
+		) {
+			void finalizeAnalytics("failed").catch(() => {
+				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+			});
+		}
 		ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
 	};
 
-	const cancel = (selectedModelIsSol: boolean, ctx: ExtensionContext): void => {
-		coordinator.cancel(selectedModelIsSol);
+	const cancel = async (selectedModelIsPlanner: boolean, ctx: ExtensionContext): Promise<void> => {
+		coordinator.cancel(selectedModelIsPlanner);
 		mutations.resetForRun();
 		audit("cancelled", ctx);
+		await finalizeAnalytics("cancelled");
 		overlay?.restore();
 		overlay = undefined;
 	};
 
 	const ensureOverlay = (ctx: ExtensionContext): ProviderOverlay => {
 		if (overlay) return overlay;
-		const candidate = createProviderOverlay(pi, ctx.modelRegistry, {
-			shouldRouteToLuna: () =>
+		const run = coordinator.run;
+		if (!run) throw new Error("Prewalk is inactive.");
+		const candidate = createProviderOverlay(pi, ctx.modelRegistry, run.planner, run.config, {
+			shouldRouteToExecutor: () =>
 				coordinator.run?.phase === "handoff-pending" ||
-				coordinator.run?.effectiveRoute === "luna",
+				coordinator.run?.effectiveRoute === "executor",
 			isPrimaryAgentStream: () => primaryAgentStream,
 			currentRunId: () => coordinator.run?.id,
-			onLunaStreamStarted: (runId) => {
+			onExecutorStreamStarted: async (runId) => {
 				if (coordinator.run?.id !== runId || coordinator.run.phase !== "handoff-pending") {
 					return;
 				}
 				try {
-					coordinator.activateLuna();
-					audit("luna-active", ctx);
+					coordinator.activateExecutor();
+					audit("executor-active", ctx);
 				} catch {
 					fail("provider-drift", false, ctx);
+					await analyticsWrites;
 				}
 			},
-			onLunaStreamSucceeded: (runId) => {
+			onExecutorStreamSucceeded: async (runId) => {
 				if (coordinator.run?.id !== runId || coordinator.run.phase !== "active") return;
 				try {
 					coordinator.completeHandoff();
 					audit("handoff-completed", ctx);
 				} catch {
 					fail("provider-drift", true, ctx);
+					await analyticsWrites;
 				}
 			},
-			onLunaStreamFailed: (runId) => {
+			onExecutorStreamFailed: async (runId) => {
 				if (coordinator.run?.id !== runId) return;
 				if (coordinator.run.phase === "handoff-pending") {
-					fail("luna-stream-failed", false, ctx);
+					fail("executor-stream-failed", false, ctx);
 				} else if (coordinator.run.phase === "active") {
-					fail("luna-stream-failed", true, ctx);
+					fail("executor-stream-failed", true, ctx);
 				}
+				await analyticsWrites;
 			},
 			onProviderDrift: () =>
-				fail("provider-drift", coordinator.run?.effectiveRoute === "luna", ctx),
+				fail("provider-drift", coordinator.run?.effectiveRoute === "executor", ctx),
 		});
 		candidate.install();
 		overlay = candidate;
@@ -274,17 +782,22 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		) {
 			return true;
 		}
-		fail("provider-drift", coordinator.run?.effectiveRoute === "luna", ctx);
+		fail("provider-drift", coordinator.run?.effectiveRoute === "executor", ctx);
 		return false;
 	};
 
-	const validateModels = async (ctx: ExtensionContext): Promise<void> => {
-		const planner = ctx.modelRegistry.find(PLANNER_PROVIDER, PLANNER_MODEL_ID);
-		const executor = ctx.modelRegistry.find(EXECUTOR_PROVIDER, EXECUTOR_MODEL_ID);
-		if (!planner || !executor || !isPlannerSelected(ctx.model)) {
+	const validateModels = async (
+		plannerProfile: PlannerProfile,
+		config: PrewalkConfig,
+		ctx: ExtensionContext,
+	): Promise<void> => {
+		const planner = ctx.modelRegistry.find(plannerProfile.provider, plannerProfile.model);
+		const executor = ctx.modelRegistry.find(config.executor.provider, config.executor.model);
+		if (!planner || !executor || !isPlannerSelected(ctx.model, plannerProfile)) {
 			throw new Error("model-unavailable");
 		}
 		if (
+			planner.provider !== executor.provider ||
 			planner.api !== executor.api ||
 			planner.contextWindow <= 0 ||
 			executor.contextWindow < planner.contextWindow ||
@@ -336,15 +849,34 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 
 	const startRun = async (mode: "automatic" | "manual", ctx: ExtensionContext): Promise<void> => {
-		if (!isPlannerSelected(ctx.model)) return;
 		try {
 			const config = await readConfig();
 			if (mode === "automatic" && !config.enabled) return;
 			if (todoConflict) throw new Error("todo-conflict");
-			await validateModels(ctx);
-			ensureOverlay(ctx);
+			if (!ctx.model) throw new Error("model-unavailable");
+			const planner: PlannerProfile = {
+				provider: ctx.model.provider,
+				model: ctx.model.id,
+				reasoning: ctx.thinkingLevel ?? "off",
+			};
+			await validateModels(planner, config, ctx);
 			const todoActive = pi.getActiveTools().includes("todo");
-			const action = coordinator.arm(randomUUID(), randomUUID(), mode, todoActive);
+			const action = coordinator.arm(
+				randomUUID(),
+				randomUUID(),
+				mode,
+				todoActive,
+				planner,
+				config,
+			);
+			ensureOverlay(ctx);
+			const armedRun = coordinator.run;
+			if (armedRun) {
+				await openAnalyticsJournal(armedRun, ctx).catch(() => {
+					analyticsState = undefined;
+					ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
+				});
+			}
 			mutations.resetForRun();
 			todoReminder.reset();
 			audit("armed", ctx);
@@ -365,6 +897,228 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					? error.message
 					: "provider-unavailable";
 			fail(reason, false, ctx);
+		}
+	};
+
+	const configure = async (ctx: ExtensionContext): Promise<void> => {
+		if (!ctx.hasUI) {
+			ctx.ui.notify("/prewalk configure requires Pi's interactive UI.", "error");
+			return;
+		}
+		const available = ctx.modelRegistry.getAvailable();
+		const planner = ctx.model;
+		if (!planner) {
+			ctx.ui.notify("Select a planner model in Pi before configuring Prewalk.", "error");
+			return;
+		}
+		const executorCandidates = available.filter(
+			(model) =>
+				model.provider === planner.provider &&
+				model.api === planner.api &&
+				model.id !== planner.id,
+		);
+		if (executorCandidates.length === 0) {
+			ctx.ui.notify(
+				"That planner has no second available model on the same provider and API.",
+				"error",
+			);
+			return;
+		}
+		const executorChoices = executorCandidates.map((model) => `${model.provider}/${model.id}`);
+		const executorChoice = await selectPaged(ctx, "Prewalk executor", executorChoices);
+		if (!executorChoice) return;
+		const executor = executorCandidates.find(
+			(model) => `${model.provider}/${model.id}` === executorChoice,
+		);
+		if (!executor) {
+			ctx.ui.notify("The selected executor is no longer available.", "error");
+			return;
+		}
+		let savedConfig: PrewalkConfig | undefined;
+		try {
+			savedConfig = await readConfig();
+		} catch {
+			// A broken or missing config should not prevent the repair wizard.
+		}
+		const savedReasoning =
+			savedConfig?.executor.provider === executor.provider &&
+			savedConfig.executor.model === executor.id
+				? savedConfig.executor.reasoning
+				: undefined;
+		const preferredReasoning = savedReasoning ?? DEFAULT_EXECUTOR.reasoning;
+		const reasoningChoices = [
+			preferredReasoning,
+			...REASONING_LEVELS.filter((level) => level !== preferredReasoning),
+		];
+		const reasoningChoice = await ctx.ui.select("Luna/executor reasoning", reasoningChoices);
+		if (!isReasoningLevel(reasoningChoice)) return;
+		const savedAnalytics = savedConfig?.analytics ?? DEFAULT_ANALYTICS_CONFIG;
+		const collectionChoice = await ctx.ui.select("Analytics collection", [
+			savedAnalytics.enabled ? "enabled" : "disabled",
+			savedAnalytics.enabled ? "disabled" : "enabled",
+		]);
+		if (collectionChoice !== "enabled" && collectionChoice !== "disabled") return;
+		const catalogChoice = await ctx.ui.select("Catalog fallback estimates", [
+			savedAnalytics.catalogFallbackEnabled ? "enabled" : "disabled",
+			savedAnalytics.catalogFallbackEnabled ? "disabled" : "enabled",
+		]);
+		if (catalogChoice !== "enabled" && catalogChoice !== "disabled") return;
+		const nextConfig: PrewalkConfig = {
+			enabled: true,
+			executor: {
+				provider: executor.provider,
+				model: executor.id,
+				reasoning: reasoningChoice,
+			},
+			analytics: {
+				enabled: collectionChoice === "enabled",
+				catalogFallbackEnabled: catalogChoice === "enabled",
+				recentReceiptCount: savedAnalytics.recentReceiptCount,
+				schemaVersion: ANALYTICS_SCHEMA_VERSION,
+			},
+		};
+		const confirmed = await ctx.ui.confirm(
+			"Save Prewalk configuration?",
+			`${planner.provider}/${planner.id} plans, then ${executorChoice} executes at ${reasoningChoice} reasoning.`,
+		);
+		if (!confirmed) return;
+		await writeConfig(nextConfig);
+		if (
+			coordinator.run &&
+			coordinator.run.phase !== "cancelled" &&
+			coordinator.run.phase !== "failed"
+		) {
+			await finalizeAnalytics("cancelled");
+		}
+		overlay?.restore();
+		overlay = undefined;
+		coordinator.reset();
+		mutations.resetForRun();
+		lastAuditKey = undefined;
+		lastStatus = undefined;
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		await startRun("manual", ctx);
+		ctx.ui.notify("Prewalk configuration saved and a new planning run started.", "info");
+	};
+
+	const showStats = async (argumentsText: string, ctx: ExtensionContext): Promise<void> => {
+		await analyticsWrites;
+		const input = argumentsText.trim();
+		try {
+			if (input.startsWith("benchmark ")) {
+				const source = input.slice("benchmark ".length).trim();
+				if (!source) throw new Error("missing-benchmark-path");
+				const summary = JSON.parse(await readFileAsync(source, "utf8"));
+				await analyticsStore.writeVerifiedBenchmarkSummary(summary);
+				ctx.ui.notify("Verified benchmark evidence imported.", "info");
+				return;
+			}
+			if (input.startsWith("export ")) {
+				const destination = input.slice("export ".length).trim();
+				if (!destination) throw new Error("missing-export-path");
+				const count = await analyticsStore.exportJsonLines(destination);
+				ctx.ui.notify(`Exported ${count} analytics receipts to ${destination}.`, "info");
+				return;
+			}
+			if (input === "reset") {
+				const confirmed = await ctx.ui.confirm(
+					"Reset Prewalk analytics?",
+					"This starts a new empty ledger generation. Existing receipts leave current totals, and an active run is excluded.",
+				);
+				if (!confirmed) {
+					ctx.ui.notify("Analytics reset cancelled; nothing changed.", "info");
+					return;
+				}
+				const excluded = analyticsState !== undefined;
+				await analyticsStore.reset();
+				analyticsState = undefined;
+				ctx.ui.notify(
+					excluded
+						? "Analytics reset complete. The active run was excluded; collection resumes with the next Prewalk run."
+						: "Analytics reset complete; collection resumes with the next Prewalk run.",
+					"info",
+				);
+				return;
+			}
+			if (input === "task") {
+				const report = await analyticsStore.taskTree(ctx.sessionManager.getSessionId());
+				ctx.ui.notify(renderTaskTreeReport(report), "info");
+				return;
+			}
+			if (input.startsWith("receipt ")) {
+				const runId = input.slice("receipt ".length).trim();
+				const receipt = (await analyticsStore.listReceipts()).find(
+					(candidate) => candidate.runId === runId,
+				);
+				ctx.ui.notify(
+					receipt
+						? renderReceiptReport(receipt)
+						: `No analytics receipt found for run ${runId}.`,
+					receipt ? "info" : "error",
+				);
+				return;
+			}
+			const successfulOnly = input === "--successful";
+			if (input && !successfulOnly) throw new Error("unknown-stats-arguments");
+			const outcomes: readonly RunOutcome[] | undefined = successfulOnly
+				? ["succeeded"]
+				: undefined;
+			const common = outcomes ? { outcomes } : {};
+			const analytics = coordinator.run?.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
+			const snapshot = await analyticsStore.snapshot();
+			const now = new Date();
+			const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			const [lifetime, month, week, session] = await Promise.all([
+				analyticsStore.aggregate(
+					{
+						...common,
+						window: "lifetime",
+						recentLimit: analytics.recentReceiptCount,
+						now,
+						timeZone,
+					},
+					snapshot,
+				),
+				analyticsStore.aggregate({ ...common, window: "month", now, timeZone }, snapshot),
+				analyticsStore.aggregate({ ...common, window: "week", now, timeZone }, snapshot),
+				analyticsStore.aggregate(
+					{
+						...common,
+						now,
+						timeZone,
+						sessionId: ctx.sessionManager.getSessionId(),
+					},
+					snapshot,
+				),
+			]);
+			const verifiedBenchmark = await analyticsStore.readVerifiedBenchmarkSummary();
+			ctx.ui.notify(
+				renderAnalyticsOverview({
+					lifetime,
+					month,
+					week,
+					session,
+					verifiedBenchmark: verifiedBenchmark ?? undefined,
+				}),
+				"info",
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("choose a new filename")) {
+				ctx.ui.notify(error.message, "error");
+				return;
+			}
+			if (
+				error instanceof Error &&
+				error.message !== "missing-export-path" &&
+				error.message !== "unknown-stats-arguments"
+			) {
+				ctx.ui.notify(`Analytics request failed: ${error.message}`, "error");
+				return;
+			}
+			ctx.ui.notify(
+				"Usage: /prewalk stats [--successful|task|receipt <run-id>|benchmark <summary.json>|export <path>|reset]",
+				"error",
+			);
 		}
 	};
 
@@ -400,10 +1154,21 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("prewalk", {
 		description: "Inspect, run, or cancel the current Prewalk handoff.",
+		getArgumentCompletions: (prefix) =>
+			PREWALK_COMMANDS.filter((command) => command.startsWith(prefix.trim().toLowerCase())).map(
+				(command) => ({ label: command, value: command }),
+			),
 		async handler(args, ctx) {
 			const command = args.trim() || "status";
+			if (command === "help" || command === "--help") {
+				ctx.ui.notify(helpText(), "info");
+				return;
+			}
 			if (command === "status") {
-				ctx.ui.notify(detailedStatus(coordinator.run, ctx.model), "info");
+				ctx.ui.notify(
+					detailedStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation),
+					"info",
+				);
 				return;
 			}
 			if (command === "cancel") {
@@ -411,7 +1176,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("Prewalk is inactive.", "info");
 					return;
 				}
-				cancel(isPlannerSelected(ctx.model), ctx);
+				await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+				return;
+			}
+			if (command === "stats" || command.startsWith("stats ")) {
+				await showStats(command.slice("stats".length), ctx);
 				return;
 			}
 			if (command === "run") {
@@ -426,7 +1195,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				await startRun("manual", ctx);
 				return;
 			}
-			ctx.ui.notify("Usage: /prewalk [status|run|cancel]", "error");
+			if (command === "configure") {
+				await configure(ctx);
+				return;
+			}
+			ctx.ui.notify("Usage: /prewalk [status|stats|run|cancel|configure|help|--help]", "error");
 		},
 	});
 
@@ -438,9 +1211,40 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		activeSessionId = ctx.sessionManager.getSessionId();
+		ensureExecutionProfilePolicyListener();
 		primaryAgentStream = false;
+		delegation = undefined;
+		delegationInvocations.length = 0;
+		removeTerminalInputListener?.();
+		removeTerminalInputListener = ctx.ui.onTerminalInput((data) => {
+			const run = coordinator.run;
+			if (
+				!matchesKey(data, "shift+tab") ||
+				!run ||
+				run.effectiveRoute !== "executor" ||
+				(run.phase !== "active" && run.phase !== "completed")
+			) {
+				return undefined;
+			}
+			const currentIndex = REASONING_LEVELS.indexOf(run.config.executor.reasoning);
+			const next =
+				REASONING_LEVELS[(currentIndex + 1) % REASONING_LEVELS.length] ??
+				DEFAULT_EXECUTOR.reasoning;
+			run.config.executor.reasoning = next;
+			updateStatus(ctx);
+			ctx.ui.notify(
+				`${modelLabelForNotice(run.config.executor.model)} reasoning: ${next}`,
+				"info",
+			);
+			return { consume: true };
+		});
+		pi.events?.emit(SUBAGENT_DELEGATION_ANALYTICS_REPLAY_REQUEST_EVENT, {
+			sessionId: ctx.sessionManager.getSessionId(),
+		});
 		const todoTool = pi.getAllTools().find((tool) => tool.name === "todo");
-		todoConflict = !todoTool || !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
+		todoConflict =
+			todoTool !== undefined && !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
 		todoPhases = latestTodoPhases(
 			ctx.sessionManager
 				.buildContextEntries()
@@ -451,6 +1255,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			const record = latestAuditRecord(ctx);
 			if (record) {
 				const restored = runFromAudit(record);
+				if (restored.phase === "failed" && restored.reasonCode === "configuration-invalid") {
+					coordinator.reset();
+					lastAuditKey = JSON.stringify(record);
+					await startRun("automatic", ctx);
+					return;
+				}
 				coordinator.restore(restored);
 				lastAuditKey = JSON.stringify(record);
 				if (restored.phase === "cancelled") {
@@ -458,10 +1268,19 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				try {
-					await validateModels(ctx);
+					await validateModels(restored.planner, restored.config, ctx);
 					ensureOverlay(ctx);
+					if (restored.phase !== "failed") {
+						await restoreAnalyticsJournal(restored, ctx).catch(() => {
+							analyticsState = undefined;
+							ctx.ui.notify(
+								"Prewalk analytics could not restore; routing is unchanged.",
+								"error",
+							);
+						});
+					}
 				} catch {
-					fail("provider-unavailable", restored.effectiveRoute === "luna", ctx);
+					fail("provider-unavailable", restored.effectiveRoute === "executor", ctx);
 				}
 				updateStatus(ctx);
 			}
@@ -473,8 +1292,21 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		await startRun("automatic", ctx);
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		activeSessionId = undefined;
+		removeExecutionProfilePolicyListener?.();
+		removeExecutionProfilePolicyListener = undefined;
 		primaryAgentStream = false;
+		delegation = undefined;
+		if (event.reason !== "reload") {
+			await finalizeAnalytics(
+				coordinator.run?.phase === "completed" ? "succeeded" : "cancelled",
+			);
+		} else {
+			await analyticsWrites;
+		}
+		removeTerminalInputListener?.();
+		removeTerminalInputListener = undefined;
 		overlay?.restore();
 		overlay = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -488,6 +1320,31 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_end", () => {
 		primaryAgentStream = false;
+	});
+
+	pi.on("message_end", async (event) => {
+		const run = coordinator.run;
+		if (!analyticsState || !run || event.message.role !== "assistant") return;
+		let role: UsageRole = "auxiliary";
+		if (
+			event.message.provider === run.planner.provider &&
+			event.message.model === run.planner.model
+		) {
+			role = "planner-primary";
+		} else if (
+			event.message.provider === run.config.executor.provider &&
+			event.message.model === run.config.executor.model
+		) {
+			role = "executor-primary";
+		}
+		await recordAnalyticsUsage(
+			"assistant",
+			`message:${event.message.timestamp}:${event.message.provider}:${event.message.model}`,
+			event.message.provider,
+			event.message.model,
+			role,
+			event.message.usage,
+		);
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -512,7 +1369,51 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		mutations.recordExecutionUpdate(event);
 	});
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (event.toolName !== "subagent") return;
+		const parentSessionId = ctx.sessionManager.getSessionId();
+		if (parentSessionId) {
+			delegationInvocations.push({
+				toolCallId: event.toolCallId,
+				rootSessionId: process.env.PI_SUBAGENT_ROOT_SESSION_ID ?? parentSessionId,
+				parentSessionId,
+				childCount: delegatedChildCount(event.args),
+				childSessionIds: new Map(),
+			});
+			if (delegationInvocations.length > 64) delegationInvocations.shift();
+		}
+		delegation = {
+			agent: delegatedAgent(event.args),
+			state: "running",
+		};
+		updateStatus(ctx);
+	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.usage && analyticsState) {
+			const run = coordinator.run;
+			const selected = ctx.model;
+			const provider = selected?.provider ?? run?.planner.provider;
+			const model = selected?.id ?? run?.planner.model;
+			if (provider && model) {
+				await recordAnalyticsUsage(
+					"tool-result",
+					`tool:${event.toolCallId}`,
+					provider,
+					model,
+					"auxiliary",
+					event.usage,
+				);
+			}
+		}
+		if (event.toolName === "subagent") {
+			delegation = delegationFromResult(
+				event.details,
+				event.isError,
+				delegation?.agent ?? delegatedAgent(event.input),
+			);
+			updateStatus(ctx);
+		}
 		if (!acceptsMutationEvidence(coordinator.run)) return;
 		mutations.recordResult({
 			toolCallId: event.toolCallId,
@@ -561,10 +1462,47 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		);
 	});
 
-	pi.on("model_select", (event, ctx) => {
+	pi.on("session_compact", async (event, ctx) => {
+		if (!event.compactionEntry.usage || !analyticsState) return;
+		const run = coordinator.run;
+		const selected = ctx.model;
+		const provider = selected?.provider ?? run?.planner.provider;
+		const model = selected?.id ?? run?.planner.model;
+		if (provider && model) {
+			await recordAnalyticsUsage(
+				"compaction",
+				`compaction:${event.compactionEntry.id}`,
+				provider,
+				model,
+				"compaction",
+				event.compactionEntry.usage,
+			);
+		}
+	});
+
+	pi.on("model_select", async (event, ctx) => {
 		if (event.source === "restore" || !coordinator.run || coordinator.run.phase === "cancelled") {
 			return;
 		}
-		cancel(isPlannerSelected(event.model), ctx);
+		await cancel(isPlannerSelected(event.model, coordinator.run.planner), ctx);
 	});
+
+	pi.on("thinking_level_select", (event, ctx) => {
+		const run = coordinator.run;
+		if (
+			run?.effectiveRoute === "planner" &&
+			run.phase !== "cancelled" &&
+			run.phase !== "failed"
+		) {
+			run.planner.reasoning = event.level;
+			audit("planner-reasoning-changed", ctx);
+		}
+		updateStatus(ctx);
+	});
+}
+
+function modelLabelForNotice(model: string): string {
+	if (model === "gpt-5.6-sol") return "Sol";
+	if (model === "gpt-5.6-luna") return "Luna";
+	return model;
 }

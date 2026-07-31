@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createAuditRecord, parseAuditRecord, runFromAudit } from "../src/audit.js";
-import type { PrewalkRun } from "../src/core.js";
+import { DEFAULT_EXECUTOR, DEFAULT_PLANNER, type PrewalkRun } from "../src/core.js";
 
 const run: PrewalkRun = {
 	id: "run-1",
 	epoch: "epoch-1",
 	mode: "automatic",
 	phase: "handoff-pending",
-	effectiveRoute: "sol",
+	effectiveRoute: "planner",
+	planner: { ...DEFAULT_PLANNER, reasoning: "high" },
+	config: {
+		enabled: true,
+		executor: { ...DEFAULT_EXECUTOR },
+	},
 	planningPromptInjected: true,
 	continuePending: false,
 	todoActive: true,

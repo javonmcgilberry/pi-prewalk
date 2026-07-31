@@ -1,8 +1,8 @@
 ---
-title: Extension-Only Sol-to-Luna Prewalk - Plan
+title: Standalone Extension-Only Prewalk with Optional Provider Composition
 type: feat
 date: 2026-07-30
-topic: extension-only-sol-luna-prewalk
+topic: standalone-extension-only-prewalk
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-brainstorm
@@ -10,353 +10,319 @@ execution: code
 deepened: 2026-07-30
 ---
 
-# Extension-Only Sol-to-Luna Prewalk - Plan
+# Standalone Extension-Only Prewalk with Optional Provider Composition
 
 ## Goal Capsule
 
-Deliver a faithful Sol-to-Luna reproduction of Oh My Pi's current Prewalk behavior as a supported stock-Pi extension. Sol establishes the implementation trajectory, then Luna inherits the same live transcript after the todo-and-first-mutation gate without changing Pi's selected or saved model.
+Deliver a faithful extension-only reproduction of Oh My Pi's current Prewalk behavior that works on stock Pi without `pi-codex-conversion` or any other third-party provider extension. Sol-to-Luna remains the default and benchmark pair: Sol establishes the implementation trajectory, then Luna inherits the same live transcript after the OMP handoff gate while Pi continues to select and save Sol.
 
-This plan owns the polished Sol-to-Luna release only. Provider-agnostic pairs such as Opus-to-Sonnet remain follow-up work.
+Prewalk may compose with an already registered provider stream, including `@howaboua/pi-codex-conversion`, but that composition is optional. Provider-neutral same-provider and same-API pairs such as Opus-to-Sonnet are configurable in this release. Cross-provider routing remains deferred.
 
-There are no unresolved implementation blockers. This plan fixes the directional benchmark protocol, audit contract, bundled todo behavior, provider-overlay ownership, and reload semantics without broadening phase one.
+Normal Pi compaction must preserve the OMP trajectory without a Prewalk-specific summary or prompt-rehydration subsystem. Codex Conversion native Responses compaction is a separately characterized optional profile because its current implementation reconstructs input from persisted session entries and selects its compaction model from Pi's selected model.
 
 ---
 
 ## Product Contract
 
-> **Product Contract preservation:** R1 through R26 retain their confirmed meaning. R27 and R28 reflect the later user-confirmed decision to ship experimentally and start with an OMP-shaped directional study instead of a 300-run release gate. The Deferred-to-Planning questions are resolved by KTD1 through KTD12.
+> **Product Contract preservation:** R1 through R25 and R27 through R28 retain the previously confirmed OMP fidelity, lifecycle, visibility, reload-state, and benchmark intent. R1, R2, R11 through R21, R23, and R25 are generalized from fixed labels to a validated configured pair while retaining Sol-to-Luna as the default. R26 is replaced with the current standalone-first compatibility contract. R29 through R36 record the user's correction that Codex Conversion and its native compaction must remain optional integrations.
+
+> **2026-07-30 planner-authority amendment:** Pi's selected runtime model and reasoning are authoritative when each Prewalk epoch starts. Prewalk configuration stores only the executor model and executor reasoning defaults. Every reference below to a "configured planner," a planner picker, or a saved planner is superseded by that rule. Before handoff, Pi's normal Shift+Tab control updates the epoch's planner reasoning. After handoff, Prewalk consumes Shift+Tab for executor reasoning. An explicit model change cancels the active epoch, and the next epoch derives its planner from Pi's newly selected model. The executor must still share the snapshotted planner's provider and API and satisfy the existing capacity and authorization checks.
 
 ### Summary
 
-Prewalk will replace the patched runtime with a stock-Pi extension that wraps the installed `openai-codex` stream, reproduces current OMP planning and handoff behavior, and ships the normal todo capability that stock Pi lacks. Sol remains selected and saved while the wrapper routes Luna after the gate, and the same live run survives extension reload without persisting Luna as Pi's model choice.
+Prewalk replaces the patched runtime with a supported stock-Pi extension. It reproduces current OMP planning, todo, continuation, mutation, and handoff behavior; routes only primary Agent-loop requests through the effective planner or executor; and leaves Pi's selected and saved model unchanged.
+
+The provider seam has two valid lanes:
+
+1. When no extension has registered a provider stream, Prewalk delegates through stock Pi's public provider implementation.
+2. When another extension has registered a config-based `streamSimple`, Prewalk wraps and delegates through that stream without importing, configuring, or depending on the owning package.
+
+The installed provider implementation changes transport behavior, not whether Prewalk can operate.
+
+A complete extension-native `Provider` registration is outside the safe composition surface in Pi 0.83.0 because installing a config-based wrapper would delete that native registration. Prewalk must detect this case, leave it untouched, and fail closed with actionable status.
 
 ### Problem Frame
 
-The current local implementation depends on a patched Pi model-control API and patch-maintenance machinery. Stock Pi's public `setModel()` path persists its choice, so it cannot produce an ephemeral Luna executor while keeping Sol as the model a new or reopened session selects.
+The current local implementation originated around a patched Pi model-control API. Stock Pi's public `setModel()` persists its choice, so it cannot produce an ephemeral executor while preserving the planner as the model selected on a new or reopened session.
 
-Earlier research was pinned to an older OMP revision, and the standalone `ThewindMom/pi-prewalk` project has since explored several relevant Pi-specific edges. The requirements need a current authority order so useful secondary ideas do not silently replace OMP behavior.
+Pi 0.83.0 already exposes the public provider registry, effective provider lookup, model and credential lookup, lifecycle events, context projection, compaction preparation, custom entries, commands, UI controls, and status rendering required for a standalone provider overlay. Its built-in `openai-codex` provider includes Sol, Luna, OAuth, and a stock `streamSimple` implementation.
 
-Pi 0.82.1 exposes public provider registration, model and credential lookup, lifecycle events, tool events, steering messages, custom entries, and status rendering. Focused Agent-loop proofs have already shown that a provider overlay can return Luna-authored messages while Pi's host-selected model remains Sol.
+The current dirty provider-overlay implementation incorrectly throws when an `openai-codex` pair has no prior custom stream. That behavior is not a product requirement. It also omits the provider API when installing the no-prior-registration lane, which stock Pi rejects. Implementation must replace this coupling rather than preserve it.
 
 ### Fidelity Authority and Adaptations
 
-- **Canonical behavior:** OMP `main` at revision [`8db0228f4d38ff5d41b30038b6d227b01ea0fc8a`](https://github.com/can1357/oh-my-pi/tree/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a) is the phase-one behavioral baseline. Its Prewalk coordinator, three prompt files, and applicable tests govern R3 through R10 and R22.
+- **Canonical behavior:** OMP `main` at revision [`4df68d60438423b384b2b47fb3d6835641624757`](https://github.com/can1357/oh-my-pi/tree/4df68d60438423b384b2b47fb3d6835641624757) is the behavioral authority for the coordinator, three prompt files, gate, and applicable tests.
 
-- **Prompt reuse:** OMP and this work are MIT-licensed, and stock Pi can inject hidden steering messages through its public extension surface. No prompt adaptation is currently necessary, so R3 requires the three OMP prompts verbatim.
+- **Prompt reuse:** OMP and this work are MIT-licensed. Prewalk injects the exact prompt bytes as ordinary hidden custom messages through Pi's public `sendMessage()` surface, matching OMP's direct steering model. The planning nudge is removed from effective context at handoff. Continuation and executor-checklist messages remain ordinary hidden history.
 
-- **Handoff adaptation:** OMP uses a host-owned temporary model switch. This extension must route provider requests instead because Pi's supported persistent model selection would violate the Sol-on-reopen contract. Governs R10, R18, and R19.
+- **Handoff adaptation:** OMP uses a host-owned temporary model switch. Prewalk substitutes the executor model only at the public provider seam because Pi's persistent model selection would violate the reopen contract.
 
-- **Mutation adaptation:** Current OMP recognizes completed `edit` and `write` results. This release additionally requires success-only handling and recognizes direct or shell-driven `apply_patch`, because a failed mutation does not establish the first valid move and Pi may expose patching through either tool path. Governs R7 and R8.
+- **Mutation adaptation:** Current OMP recognizes completed `edit` and `write` results. Prewalk additionally requires success-only handling and recognizes direct or shell-driven `apply_patch` because Pi may expose patching through either tool path.
 
-- **Secondary research:** [`ThewindMom/pi-prewalk` at `5f0a80432679867ff04cbcee20620b4a7168070b`](https://github.com/ThewindMom/pi-prewalk/tree/5f0a80432679867ff04cbcee20620b4a7168070b) informs Pi-specific edge cases only. Its persistent `setModel()` flow, shortened prompts, resume semantics, compatibility fallbacks, and fake-harness-only validation do not govern this release. Governs R23 through R25.
+- **Secondary research:** [`ThewindMom/pi-prewalk` at `5f0a80432679867ff04cbcee20620b4a7168070b`](https://github.com/ThewindMom/pi-prewalk/tree/5f0a80432679867ff04cbcee20620b4a7168070b) informs configuration, status, mutation, context, and test edge cases only. Its persistent `setModel()` flow, stale prompt differences, compatibility fallbacks, and fake-harness-only proof do not govern this release.
 
-| Secondary area | Adopted research value | Explicit boundary |
-| --- | --- | --- |
-| Configuration | Strict target, type, and authorization failures inform R17 and R20. | Configuration must never select or persist Luna, and phase one does not generalize model pairs. |
-| Status | Gate and trigger details inform the state coverage in R12 through R17. | The compact planner/executor presentation in R11 is authoritative. |
-| Mutation detection | Success-only results, patch command recognition, false-positive rejection, and parallel-result handling inform R7 through R9. | OMP remains the gate authority, and no other secondary trigger is inherited. |
-| Context scrubbing | Filtering stale hidden prompts after handoff, cancellation, and reopen informs R10 and R16. | The visible transcript and useful working trajectory remain intact. |
-| Tests | Edge scenarios inform R24. | A hand-called fake harness cannot satisfy R25. |
+- **Optional provider research:** `howaboua-pi-stuff` `main` at [`18c8366a0af0a88c25e5309ec634cda3157687ab`](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/18c8366a0af0a88c25e5309ec634cda3157687ab), package version 3.0.4, is the authority for optional Codex Conversion composition and native compaction characterization. It is not an implementation foundation.
 
 ### Key Decisions
 
-- **Use only stock Pi extension and provider APIs** (session-settled: user-directed - chosen over patching Pi or waiting for a new host API: the extension must install and operate independently). Governs R2, R10, R18, R19, and R21.
+- **Stock Pi standalone is the primary release path.** Prewalk must install, configure, run, reload, cancel, compact, and uninstall with no Codex Conversion package present.
 
-- **Ship Sol-to-Luna before generalizing providers** (session-settled: user-directed - chosen over provider-agnostic phase one: the fixed pair must work beautifully before the mechanism broadens). Governs R1, R2, R10, R20, R25, and R26.
+- **Provider composition is capability-based.** Prewalk wraps the effective provider stream available through Pi's public registry. It never branches on an extension package name or reads another extension's private configuration.
 
-- **Use the latest verified OMP implementation as the authority** (session-settled: user-directed - chosen over older local research and secondary implementations: fidelity must track the source that owns Prewalk). Governs R3 through R10 and R22.
+- **Sol-to-Luna remains the default.** The shipped example, status examples, authenticated canary, and comparative benchmark use Sol-to-Luna.
 
-- **Reuse OMP's prompts exactly** (session-settled: user-directed - chosen over paraphrased prompts: the license and public Pi message surface permit exact reuse). Governs R3 and R9.
+- **Same-provider configuration is in scope.** `/prewalk configure` may select any validated planner/executor pair sharing a provider and API, including Opus-to-Sonnet. Cross-provider pairs remain deferred.
 
-- **Extend mutation recognition only where Pi requires it** (session-settled: user-directed - chosen over inheriting every secondary behavior: successful direct and shell-driven patching are real Pi mutations). Governs R7, R8, R22, and R23.
+- **Normal Pi compaction follows OMP's message lifecycle.** Prewalk scrubs only the planning nudge at handoff. Continuation and executor-checklist messages remain normal hidden history, and Prewalk does not create a separate summary or stage-aware prompt-rehydration path.
 
-- **Expose effective routing through compact Prewalk status** (session-settled: user-directed - chosen over changing Pi's native selector: native selection must remain Sol). Governs R11 through R17.
+- **Native Codex compaction is conditional.** Current Codex Conversion 3.0.4 compacts the selected planner model from persisted entries. Prewalk must not claim executor-owned native compaction or silently enable an unproven profile.
 
-- **Treat published Prewalk results as benchmark targets** (session-settled: user-approved - chosen over treating external figures as release guarantees: this model pair needs its own evidence). Governs R26 and R27.
+- **The human owns persistent routing configuration.** The native `/prewalk configure` wizard and documented JSON file are the only configuration paths. The model cannot invoke a tool that changes the persisted pair.
+
+- **OMP is the simplicity baseline.** Prewalk adds a subsystem only when stock Pi's extension boundary requires an adaptation or this product contract requires an observable user control. Every deviation from OMP must name that reason and carry a focused test; no speculative fallback, generalized compatibility layer, or duplicate state is allowed.
 
 ### Actors
 
-- A1. **Pi user:** Starts or reopens a coding session, observes the active Prewalk side, and expects the handoff to require no manual transcript relay.
-- A2. **Sol planner:** Explores the task, writes the implementation plan, creates the todo trajectory, and lands the first successful mutation.
-- A3. **Luna executor:** Inherits the live transcript, todo state, and first valid mutation, then continues implementation and verification.
-- A4. **Prewalk extension:** Owns arming, hidden guidance, gate tracking, effective provider routing, status, audit records, and scoped cleanup.
-- A5. **Pi host:** Owns the selected model, saved settings, transcript, extension lifecycle, model registry, and provider registry.
-- A6. **Existing Codex provider extension:** Supplies the installed `openai-codex` stream behavior that Prewalk must preserve.
+- A1. **Pi user:** Selects the planner, configures a pair, observes effective routing, and retains control over cancellation and model selection.
+- A2. **Configured planner:** Explores the task, creates the todo trajectory, and lands the first successful mutation.
+- A3. **Configured executor:** Inherits the same session transcript and continues after the gate.
+- A4. **Prewalk extension:** Owns arming, hidden guidance, gate tracking, provider routing, status, minimal reload state, and scoped cleanup.
+- A5. **Pi host:** Owns the selected model, saved settings, transcript, extension lifecycle, model registry, provider registry, and normal compaction.
+- A6. **Optional config-based provider implementation:** May supply a public `ProviderConfig.streamSimple` that Prewalk preserves through delegation. Its absence is normal.
 
 ### Requirements
 
 **Session lifecycle**
 
-- R1. On `startup`, `new`, `resume`, or `fork`, an eligible session must begin with Sol already selected, reset prior live-run state, and arm one automatic handoff. `reload` must restore the same live-run epoch and state without creating another automatic arm.
+- R1. On `startup`, `new`, `resume`, or `fork`, an eligible session with the configured planner already selected must reset prior live-run state and arm one automatic handoff. `reload` must restore the same run epoch without creating another automatic arm.
 
-- R2. Prewalk must never change Pi's selected or saved model. It is eligible only while Pi has selected Sol, and arming must not create a provider request. An explicit user model change must cancel Prewalk, remove its effective route, preserve the user's selection, and suppress automatic re-arming until the next live session.
+- R2. Prewalk must never change Pi's selected or saved model. An explicit user model change cancels Prewalk, removes its effective route, preserves the user's selection, and suppresses automatic re-arming until the next live session.
 
-- R3. The hidden planning, continuation, and executor-checklist messages must match OMP's three prompt files verbatim at the canonical revision, retain required MIT attribution, and return to requirements review before any prompt-byte deviation.
+- R3. The hidden planning, continuation, and executor-checklist messages must match OMP's three canonical prompt files byte for byte, retain required attribution, and return to requirements review before any byte changes.
 
-- R4. Automatic arming must let Sol complete its first assistant turn before injecting the hidden planning prompt, while manual arming must inject that prompt before the next eligible Sol turn.
+- R4. Automatic arming lets the planner complete its first assistant turn before injecting the planning prompt. Manual arming injects it before the next eligible planner turn without starting a provider request.
 
-- R5. The planning prompt must remain hidden from A1, require the bundled normal todo workflow when `todo` is active, and continue the same Sol run rather than ending on a plan. When `todo` is inactive, the prompt bytes remain unchanged but the coordinator applies R7's explicit gate bypass.
+- R5. The planning prompt remains hidden from A1, requires the bundled normal todo workflow when `todo` is active, and continues the same planner run rather than ending on a plan. When `todo` is inactive, the prompt bytes remain unchanged and the gate bypasses the todo requirement.
 
-- R6. OMP's bounded continuation state transitions must apply: planning starts with one pending continuation, tool progress re-arms one continuation, a prose-only turn consumes it, and another prose-only turn without intervening tool progress ends normally.
+- R6. OMP's bounded continuation transitions apply: planning starts with one pending continuation, tool progress re-arms one continuation, a prose-only turn consumes it, and another prose-only turn without intervening tool progress ends normally.
 
 **Gate and mutation**
 
-- R7. Prewalk must ship an OMP-compatible `todo` tool, active by default and persisted through normal tool-result history. A successful active `todo` result must open the gate, a failed result must leave it closed, and an inactive `todo` tool must bypass the gate exactly as current OMP does. Another extension owning the `todo` name is an explicit compatibility failure, not an alternate implementation.
+- R7. Prewalk bundles Pi's normal persistent `todo` implementation. Like OMP, the coordinator keys only on whether the resolved `todo` tool is active and whether a non-error `todo` result occurred. Pi's normal first-registration-wins rule determines which `todo` implementation is active; Prewalk does not add an ownership-policing subsystem.
 
-- R8. After R7 opens the gate, the first successful `edit`, `write`, direct `apply_patch`, stock `bash` execution of `apply_patch`, or terminal `exec_command` execution of `apply_patch` must become Sol's handoff mutation. Failed, cancelled, partial, or still-running mutations, quoted mentions, shell comments, and commands that only print patch text must not trigger.
+- R8. After the gate opens, the first successful `edit`, `write`, direct `apply_patch`, stock `bash` execution of `apply_patch`, or terminal `exec_command` execution of `apply_patch` becomes the planner's handoff mutation. Failed, cancelled, partial, still-running, quoted, commented, or print-only operations do not trigger.
 
-- R9. Multiple eligible tool results in one assistant turn must produce one deterministic handoff after all results from that turn are available.
+- R9. Multiple eligible tool results in one assistant turn produce one deterministic handoff after all results from that turn are available.
 
-- R10. Before Luna's first primary Agent-loop request, the planning prompt must be absent from effective context while the transcript, todo trajectory, Sol's mutation and result, and OMP's verbatim executor checklist remain available. Prewalk planning, continuation, and checklist messages must also be filtered from compaction input so auxiliary summarization cannot preserve stale guidance.
+- R10. Before the executor's first primary Agent-loop request, the planning nudge is absent from effective context while the visible transcript, todo trajectory, planner mutation and result, continuation history, and exact executor checklist remain available. Because stock Pi session entries are append-only, the extension may apply a narrow public-context or compaction-preparation filter for the planning nudge after handoff; it must not filter continuation or checklist history or build a general prompt-scrubbing framework.
 
 **Effective model and status**
 
-- R11. The compact footer must be based on `prewalk: 5.6 Sol / Luna`, and the effective side must remain unambiguous without relying on color alone.
+- R11. Compact status contains only the configured planner and executor labels, their reasoning levels, the effective side, and one short declarative state clause in the shape `prewalk: planner / executor`. Color reinforces the state but is never the only signal. Selected-model, trigger, provider-lane, failure, and recovery details belong in `/prewalk status`, not the footer. The default renders as `prewalk: 5.6 Sol / Luna`.
 
 | ID | State | Required status behavior |
 | --- | --- | --- |
-| R12. | Armed Sol | Render `prewalk: [5.6 Sol] / Luna`; detailed status reports that todo is still required when it is active. |
-| R13. | Gate-ready Sol | Render `prewalk: [5.6 Sol] / Luna (ready)`; detailed status reports that the next successful eligible mutation completes the handoff. |
-| R14. | Active Luna | Render `prewalk: 5.6 Sol / [Luna]`; every subsequent request in the live session routes to Luna. |
-| R15. | Completed handoff | Keep Luna marked active and report the trigger after Luna's first primary Agent-loop stream completes successfully. Compaction, title generation, and other auxiliary streams must not activate or complete the handoff. This state describes completion of the handoff, not completion of the user's coding task. |
-| R16. | Cancelled | When Pi still selects Sol, render `prewalk: [5.6 Sol] / Luna (cancelled)`. After an explicit selection of another model, render `prewalk: 5.6 Sol / Luna (cancelled; Pi: <provider/model>)` with no Prewalk side marked active. Keep subsequent requests on the user's selected model, scrub stale Prewalk guidance from effective context, and prevent automatic re-arming in the same live session. Cancellation must remain available before and after handoff. |
-| R17. | Failed | Render `prewalk: [5.6 Sol] / Luna (failed)` for a pre-handoff failure and `prewalk: 5.6 Sol / [Luna] (failed)` for a thrown or streamed Luna failure. Include the reason in detailed status. A pre-handoff failure leaves routing on Sol; a Luna failure keeps the Luna route held until A1 cancels into R16 or starts a replacement session. |
+| R12. | Armed planner | Mark the planner active and explain in detailed status that todo is still required when active. Default: `prewalk: [5.6 Sol] / Luna`. |
+| R13. | Gate-ready planner | Mark the planner active with `ready`, and explain that the next successful eligible mutation schedules the switch after that turn. |
+| R14. | Active executor | Mark the executor active. Every later primary request in the live session routes to it. Default: `prewalk: 5.6 Sol / [Luna]`. |
+| R15. | Completed handoff | Keep the executor active and report the trigger after its first primary stream succeeds. Auxiliary streams cannot activate or complete the handoff. |
+| R16. | Cancelled | When Pi still selects the planner, mark the planner with `cancelled`. After another model is selected, mark neither side and show the selected model. Scrub stale guidance and do not re-arm in the live session. |
+| R17. | Failed | Mark the route that actually failed and show a stable reason in detailed status. A pre-handoff failure stays on the planner. An executor failure keeps the executor route until cancellation or session replacement. |
 
-**Persistence, identity, and composition**
+- R18. Prewalk must not patch Pi, import private Pi modules, call persistent `setModel()` for handoff, create a synthetic router model, retain patch/updater machinery, or inspect another extension's private state.
 
-- R18. Prewalk must not patch Pi, import private Pi modules, call persistent `setModel()` for the handoff, create a synthetic router model, or retain patch and updater machinery.
+- R19. The provider overlay must capture the effective public provider implementation before installation. It delegates through stock Pi or a captured config-based `streamSimple`, installs a wrapper with the configured API, validates terminal provider/model identity, and restores the captured stream only while its wrapper still owns the current stream slot. If a later config-only registration changes other fields but leaves Prewalk's wrapper installed, cleanup preserves those newer fields while restoring the captured stream. If another stream or native provider takes ownership, Prewalk leaves it untouched. It must not depend on the local fork-only `streamImplementationId` API.
 
-- R19. The provider overlay must capture and wrap the `openai-codex` stream registered by A6, preserve that stream's transport behavior, verify wrapper ownership before routing or restoration, and restore the captured stream only while Prewalk still owns the current registration. Missing, late, or drifting provider ownership must fail visibly without replacing another extension's registration.
+- R20. Planner and executor models must resolve through Pi's public model registry with independent authorization. The configured pair must share provider and API, the executor context window must be at least the planner context window, and the executor must support the configured reasoning level. Model metadata and auth validate when arming. Immediately before committing the route, Prewalk validates the fully prepared executor request, including its checklist and output reserve, against executor capacity. An unexpected later executor overflow is reported visibly with compact-and-retry guidance and never triggers a hidden model fallback or retry.
 
-- R20. Luna must resolve through Pi's public model registry with configured authorization before handoff. Planner and executor requests must use their correct model metadata and credentials without cross-request leakage.
+- R21. Executor-authored assistant messages and usage records retain the executor's actual provider and model identity even though Pi continues to select and save the planner.
 
-- R21. Luna-authored assistant messages and usage records must retain Luna's actual provider and model identity even though Pi's native selector and saved settings continue to name Sol.
-
-- R22. Prewalk must append versioned extension-owned audit records for every state transition needed to reproduce the live run across `reload`, including arm, prompt injection, continuation budget, todo readiness, handoff trigger, Luna activation, completion, cancellation, and failure. Records and user-visible failure details must use an allowlist of stable codes and non-sensitive fields. They must never contain prompt bodies, transcript content, credentials, request payloads, provider responses, raw provider or tool errors, filesystem paths, or native Pi model-selection semantics.
+- R22. Prewalk persists one minimal versioned run-state snapshot per meaningful transition, and the latest valid snapshot is the sole reload authority. Phase is authoritative; effective route and prompt eligibility derive from phase except that a failed state records which route failed. The snapshot uses stable allowlisted fields and never contains prompt bodies, transcript content, credentials, request payloads, raw provider or tool errors, headers, filesystem paths, or provider responses. Because no standalone release exists yet, implementation replaces the unreleased record shape and rejects obsolete records instead of carrying a compatibility parser.
 
 **Validation and measured outcomes**
 
-- R23. Current OMP tests are the primary parity suite. Every scenario in `packages/coding-agent/test/agent-session-prewalk.test.ts` and `packages/coding-agent/test/prewalk-startup-degradation.test.ts` at the canonical revision must be classified as directly applicable, Pi-adapted, or excluded with a fixed-pair rationale.
+- R23. Current OMP tests are the primary parity suite. Every canonical coordinator and startup-degradation scenario is classified as directly applicable, Pi-adapted, or excluded with a written rationale.
 
-- R24. Secondary tests may add edge coverage for successful and failed mutations, direct and shell-driven `apply_patch`, false-positive patch text, parallel results, inactive todo, cancellation, prompt scrubbing, state restoration, and bounded continuation. They must not redefine behavior owned by R3 through R10.
+- R24. Secondary tests add valuable edge coverage for successful and failed mutations, direct and shell-driven `apply_patch`, false positives, parallel results, inactive todo, cancellation, hidden-prompt scrubbing, reload, and bounded continuation without redefining OMP-owned behavior.
 
-- R25. Validation must include both a mocked extension harness and real Pi Agent-loop integration. Agent-loop coverage must run the actual extension events and provider stream composition rather than simulating them with hand-called callbacks.
+- R25. Validation includes both a mocked extension harness and real Pi Agent-loop integration. Agent-loop coverage runs actual extension events and provider composition rather than hand-calling callbacks.
 
-- R26. Compatibility evidence must target the currently installed Pi 0.82.1 and `@howaboua/pi-codex-conversion` 3.0.3, including the real provider-registration order in the active Pi configuration.
+- R26. Compatibility evidence targets installed Pi 0.83.0 as the standalone baseline. Optional Codex Conversion evidence targets package 3.0.4 at upstream revision `18c8366a`, and neither its installation nor a specific load order may be required for standalone success.
 
-- R27. The first paid benchmark must compare Sol-only, Luna-only, and Sol-to-Luna Prewalk once on one frozen corpus of at least 20 independently validated tasks. It must report pass rate, provider cost, elapsed duration, prohibited lookup attempts, and every failed or invalid run. Prohibited lookups are a local offline-sandbox diagnostic and must not be described as Stencil's web-search or cheating metric.
+- R27. Before removing the experimental label, the paid benchmark compares planner-only, executor-only, and Prewalk on one frozen corpus of at least 20 independently validated tasks, with five attempts per task and arm. It reports pass rate, provider cost, elapsed duration, prohibited lookup attempts, and every failed or invalid run.
 
-- R28. Before any model run, the benchmark manifest and analysis policy must be frozen. The first report is directional and must not emit a release verdict. It reports whether Prewalk remains within 5 percentage points of Sol-only, improves median provider cost or elapsed duration by at least 15 percent against Sol-only, exceeds Luna-only by at least 10 percentage points, keeps the non-winning cost or duration metric within 5 percent, and does not exceed Sol-only's prohibited-lookup rate. The package may ship as experimental before provider results exist, but public numeric performance or savings claims require at least three attempts per task and arm. Three attempts are also required when the first result is close or noisy or more than one run is invalid or times out; five attempts are reserved for an inconclusive three-attempt follow-up. The shipped runner accepts only the one-attempt initial study, so any repeated study requires its own reviewed and frozen protocol change before provider work.
+- R28. The benchmark policy is frozen before model runs. Prewalk must stay within 5 percentage points of planner-only quality, improve median provider cost or elapsed duration by at least 15 percent against planner-only, exceed executor-only quality by at least 10 percentage points, keep the non-winning cost or duration metric within 5 percent, and not exceed planner-only's prohibited-lookup rate. An explicitly experimental package may ship before these results exist, but no normal release verdict or public numeric quality, cost, or time claim is permitted before R27's five-attempt study.
+
+**Standalone, optional composition, configuration, and compaction**
+
+- R29. With no third-party provider extension installed, the default Sol-to-Luna flow must complete through stock Pi's built-in `openai-codex` provider. Missing Codex Conversion must never produce a configuration or startup failure.
+
+- R30. When an extension has registered a compatible config-based stream for the configured provider, Prewalk must preserve that effective transport through public delegation. It must work when the registration exists before Prewalk arms, survive both package-list orders where Pi lifecycle semantics permit it, fail visibly on later provider drift, and never overwrite the later owner. A complete extension-native provider registration must remain untouched and produce `unsupported-provider-composition`.
+
+- R31. A missing config uses the built-in Sol-to-Luna default in memory without writing a file. A malformed config is a distinct setup error. `/prewalk configure` uses Pi's native `ctx.ui.select` and `confirm` surfaces in this order: planner, filtered compatible executor, filtered executor reasoning, and one confirmation summarizing the result. No free-form input is required. When a run is active, confirmation states that a successful save cancels and resets that run. Prewalk validates and atomically saves the new config before cancelling the old run; a cancelled wizard or failed save changes neither the persisted config nor the live run. Headless users can edit the documented JSON schema.
+
+- R32. `/prewalk help` and `/prewalk --help` explain setup, status, automatic and manual runs, ready/switching language, cancellation, reset, configuration, reasoning, provider constraints, compaction profiles, troubleshooting, and uninstall behavior. `/prewalk reset run` cancels the current run and starts a fresh manual epoch with the current configuration when the configured planner is selected. `/prewalk reset config` atomically restores the saved reset profile as the active configuration; the packaged reset profile is Sol-to-Luna, while `/prewalk configure` may replace the saved reset profile only through a separate explicit confirmation. A failed reset write preserves the current configuration and run. `/prewalk status|run|cancel|reset|configure` remain discoverable.
+
+- R33. Normal Pi compaction must preserve OMP's ordinary hidden-message behavior. After handoff, the planning nudge must not re-enter executor context through a later compaction; continuation and executor-checklist messages remain eligible for normal summarization. Prewalk never injects a replacement stage prompt after compaction, and compaction never activates, completes, cancels, or reroutes a handoff. A version-pinned real Pi test must cover manual, threshold, and overflow preparation before any broader filtering is introduced.
+
+- R34. Native Codex Responses compaction is not part of standalone Prewalk's core completion contract. With Codex Conversion 3.0.4, Prewalk must document and characterize that native compaction reads persisted session entries and targets `ctx.model`, which remains the planner. Full support requires a public prepared-message or exclusion contract plus an explicit planner-versus-executor compaction policy.
+
+- R35. Release validation has independent lanes for stock Pi alone, a config-based registered stream, optional Codex Conversion with native V2 disabled, and normal Pi compaction. A complete native-provider test proves fail-closed preservation. A native V2 characterization test documents the current boundary without making the standalone lane red.
+
+- R36. Codex Conversion must not be a runtime, peer, install, configuration, or startup dependency. It may exist as a pinned development-only compatibility fixture.
 
 ### Key Flows
 
-- F1. **Automatic Sol trajectory**
-  - **Trigger:** A1 opens a new or existing session that is eligible for automatic Prewalk.
-  - **Actors:** A1, A2, A4, A5
-  - **Steps:** Per R1 through R6, Pi selects Sol, Prewalk arms without an extra request, Sol gets its first turn, and the exact hidden OMP planning and continuation behavior advances toward a valid mutation.
-  - **Outcome:** Sol owns exploration, planning, todo creation, and the first valid implementation move.
+1. **Standalone automatic flow:** A1 starts stock Pi with the configured planner selected. Prewalk arms without a request, reproduces the OMP trajectory, captures the first successful mutation, and delegates the next primary request to the executor through the stock provider implementation.
 
-- F2. **Todo-gated provider handoff**
-  - **Trigger:** R7's todo gate is open and a mutation candidate completes.
-  - **Actors:** A2, A3, A4, A5, A6
-  - **Steps:** Prewalk applies R8 and R9, scrubs context per R10, then changes effective routing without changing Pi's selected model.
-  - **Outcome:** Luna receives the next request with the complete useful trajectory and truthful model identity.
+2. **Optional provider composition:** An extension has already registered a compatible config-based stream. Prewalk captures it, adds its routing wrapper, and delegates planner and executor calls through the captured stream. A complete native provider is left untouched and reported as unsupported composition.
 
-- F3. **Status and live continuation**
-  - **Trigger:** Prewalk changes state before or after handoff.
-  - **Actors:** A1, A3, A4
-  - **Steps:** The compact footer and detailed command status apply R11 through R17 while transcript attribution follows R21.
-  - **Outcome:** A1 can tell which model is effectively active and whether the handoff is waiting, ready, complete, cancelled, or failed.
+3. **Native configuration:** A1 runs `/prewalk configure`, selects a planner, compatible executor, and supported executor reasoning, confirms the change, and receives clear guidance to select the planner if Pi currently selects another model.
 
-- F4. **Close and reopen**
-  - **Trigger:** The live session ends or A1 reopens it later.
-  - **Actors:** A1, A4, A5, A6
-  - **Steps:** Prewalk records the outcome, removes only its provider overlay, and applies R1, R18, R19, and R22 on the next live session.
-  - **Outcome:** Pi reopens on its saved user-selected model with no stale Luna route or hidden planning prompt. Prewalk creates a fresh armed epoch only when that model is Sol; otherwise it remains inactive.
+4. **Handoff and shared transcript:** The planner opens todo and completes the first mutation. At `turn_end`, status changes to `switching after this turn`. The next primary request uses the executor with the same live session and truthful executor identity.
 
-- F5. **Extension reload**
-  - **Trigger:** A1 runs Pi's extension reload while Prewalk is armed, planning, ready, handoff-pending, active, completed, cancelled, or failed.
-  - **Actors:** A1, A4, A5, A6
-  - **Steps:** The outgoing extension restores the captured base stream only if it still owns the wrapper. The replacement extension reads the latest state for the current live-run epoch, reinstalls the wrapper over A6, restores the continuation budget and effective route, and filters stale Prewalk guidance.
-  - **Outcome:** Reload does not create a second automatic arm, lose a valid gate, route a failed Luna run through Sol, or confuse old hidden guidance with the current run.
+5. **Cancellation and model selection:** A1 cancels or selects another Pi model. Prewalk restores only its owned provider registration, removes the effective route, preserves Pi's selection, and suppresses same-session automatic re-arming.
 
-- F6. **Explicit user model change**
-  - **Trigger:** A1 uses Pi's normal model selector or cycle control during any Prewalk state.
-  - **Actors:** A1, A4, A5
-  - **Steps:** Prewalk records cancellation, clears its effective route and prompt state, conditionally restores its provider wrapper, and leaves Pi's selected and saved model untouched.
-  - **Outcome:** The user's explicit choice wins, and Prewalk does not re-arm automatically until a replacement live session.
+6. **Reload:** The outgoing instance conditionally restores its captured stream without overwriting newer provider fields. The replacement reads the latest valid run-state snapshot and installs a fresh wrapper without adding an arm or request.
 
-```mermaid
-stateDiagram-v2
-    [*] --> ArmedSol: new or reopened session
-    ArmedSol --> GateReadySol: successful todo or todo inactive
-    ArmedSol --> Cancelled: cancel
-    GateReadySol --> HandoffPending: first successful mutation at turn_end
-    GateReadySol --> Cancelled: cancel
-    HandoffPending --> ActiveLuna: first Luna request accepted
-    ActiveLuna --> CompletedHandoff: first Luna stream succeeds
-    ArmedSol --> Failed: target or routing failure
-    GateReadySol --> Failed: target or routing failure
-    ActiveLuna --> Failed: provider failure
-    CompletedHandoff --> Failed: later Luna stream failure
-    Cancelled --> [*]: session closes
-    CompletedHandoff --> [*]: session closes
-    Failed --> [*]: explicit recovery or session closes
-```
+7. **Normal Pi compaction:** Pi compacts the ordinary transcript with the selected planner. After handoff, Prewalk ensures only that the old planning nudge cannot re-enter executor context; continuation and checklist history follow Pi's normal summarization behavior. No prompt is re-injected and the route and phase remain unchanged.
+
+8. **Optional native Codex compaction:** When native V2 is enabled, Prewalk reports the compatibility limitation rather than claiming executor-owned compaction. Current behavior is characterized and an upstream contract is required before it becomes a supported profile.
 
 ### Acceptance Examples
 
-- AE1. **Normal OMP sequence**
-  - **Given:** A new session is armed and `todo` is active.
-  - **When:** Sol performs read-only exploration, receives the exact planning prompt, creates todo successfully, and completes a successful edit.
-  - **Then:** Sol owns every request through the edit, Luna owns the next request, only Luna sees the checklist, and the planning prompt is absent from Luna's context.
-  - **Covers:** R1 through R10, R14, R15, and R21.
+- AE1. **Stock Pi, no Conversion**
+  - **Given:** Pi 0.83.0 loads Prewalk with no custom `openai-codex` registration.
+  - **When:** Sol completes the OMP todo and first-mutation gate.
+  - **Then:** The next primary request uses Luna through stock Pi, Pi still selects Sol, and the Luna assistant message identifies Luna.
+  - **Covers:** R1 through R10, R19 through R21, R26, and R29.
 
-- AE2. **Gate and failure handling**
-  - **Given:** Sol is armed with an active todo tool.
-  - **When:** An edit succeeds before todo, todo later fails, and another edit succeeds.
-  - **Then:** All requests remain on Sol until a later successful todo and successful eligible mutation occur.
-  - **Covers:** R7 and R8.
+- AE2. **Optional Conversion composition**
+  - **Given:** Codex Conversion 3.0.4 has registered a compatible effective stream and native V2 is disabled.
+  - **When:** The same flow executes.
+  - **Then:** Both planner and executor calls preserve Conversion transport behavior, but Prewalk contains no package-specific import, config read, or runtime requirement.
+  - **Covers:** R19, R20, R26, R30, R35, and R36.
 
-- AE3. **Pi patch paths**
-  - **Given:** R7's gate is open.
-  - **When:** A direct `apply_patch` succeeds or a successful shell command executes `apply_patch` as a command or pipeline stage.
-  - **Then:** Exactly one handoff occurs, while failed patch results, quoted examples, comments, and printed patch text do not trigger.
-  - **Covers:** R8, R9, and R24.
+- AE3. **Provider-neutral Anthropic pair**
+  - **Given:** A1 configures Opus-to-Sonnet with a shared provider/API and supported executor reasoning.
+  - **When:** The pair validates and the planner is selected.
+  - **Then:** Status uses the configured labels, the OMP gate remains unchanged, and the executor request resolves its own credentials and identity.
+  - **Covers:** R11 through R21 and R31.
 
-- AE4. **Parallel tool results**
-  - **Given:** R7's gate is open.
-  - **When:** One assistant turn returns parallel successful and failed mutation results.
-  - **Then:** Prewalk waits for the complete turn, chooses the first successful eligible result deterministically, records one trigger, and routes one next request to Luna.
-  - **Covers:** R8 through R10 and R22.
+- AE4. **Invalid pair or reasoning**
+  - **Given:** The models differ in provider or API, credentials are missing, or the executor does not support the chosen reasoning level.
+  - **When:** A1 tries to save.
+  - **Then:** The wizard explains the specific validation failure and leaves the prior config untouched.
+  - **Covers:** R20 and R31.
 
-- AE5. **Bounded continuation**
-  - **Given:** The planning prompt has been injected.
-  - **When:** Sol alternates prose-only turns and tool-progress turns without an eligible mutation.
-  - **Then:** Each tool-progress segment earns at most one continuation, and consecutive prose-only turns terminate without a loop.
-  - **Covers:** R6 and R23.
+- AE5. **Provider drift**
+  - **Given:** Prewalk owns its wrapper.
+  - **When:** Another extension replaces or materially changes the provider registration.
+  - **Then:** Prewalk fails visibly, sends no misrouted request, and does not restore over the new owner.
+  - **Covers:** R17, R19, and R30.
 
-- AE6. **Inactive todo**
-  - **Given:** `todo` exists in Pi's registry but is not active for the session.
-  - **When:** Sol completes its first successful eligible mutation.
-  - **Then:** The todo gate does not block and the next request routes to Luna.
-  - **Covers:** R7, R8, and R23.
+- AE5a. **Complete native provider protection**
+  - **Given:** Another extension owns a complete native provider registration for the configured provider.
+  - **When:** Prewalk evaluates the route.
+  - **Then:** It leaves that provider untouched, reports `unsupported-provider-composition`, and sends no request through a replacement compatibility stream.
+  - **Covers:** R17, R19, R30, and R35.
 
-- AE7. **Status truthfulness**
-  - **Given:** Pi's native selector continues to display Sol.
-  - **When:** Prewalk moves through armed, ready, active, completed, cancelled, or failed state.
-  - **Then:** The compact status matches R12 through R17, and Luna-authored transcript messages identify Luna.
-  - **Covers:** R11 through R17 and R21.
+- AE6. **Normal Pi compaction**
+  - **Given:** Prewalk is planning, active, completed, cancelled, or failed.
+  - **When:** Pi compacts the session.
+  - **Then:** State and routing do not change. After handoff, the old planning nudge is absent from executor context, while continuation and checklist history may be summarized normally. Prewalk injects no replacement prompt.
+  - **Covers:** R10, R22, R33, and R35.
 
-- AE8. **Cancellation and reopen**
-  - **Given:** An armed run has injected the hidden planning prompt.
-  - **When:** A1 cancels and later reopens the session.
-  - **Then:** The stale prompt never reaches effective context, the cancelled live session does not re-arm, and the reopened session starts cleanly on Sol under R1.
-  - **Covers:** R1, R10, R16, R18, and R22.
+- AE7. **Native V2 characterization**
+  - **Given:** Codex Conversion native V2 is enabled after handoff.
+  - **When:** Its `session_before_compact` handler runs.
+  - **Then:** Tests prove the current planner-owned target and persisted-entry input boundary. Prewalk does not label this profile fully supported.
+  - **Covers:** R34 and R35.
 
-- AE9. **Provider composition**
-  - **Given:** `@howaboua/pi-codex-conversion` registers `openai-codex` before Prewalk.
-  - **When:** A real Pi Agent loop runs Sol through handoff and then requests Luna.
-  - **Then:** Both requests traverse the existing Codex stream behavior with isolated model metadata and authorization, while only the second assistant message identifies Luna.
-  - **Covers:** R19 through R21, R25, and R26.
+- AE8. **Configuration cancellation**
+  - **Given:** A1 starts the wizard with an existing valid config.
+  - **When:** A1 cancels any step or rejects final confirmation.
+  - **Then:** No file or live-run state changes.
+  - **Covers:** R31.
 
-- AE10. **Target or provider failure**
-  - **Given:** Luna is unavailable, unauthorized, or fails during delegated streaming.
-  - **When:** Prewalk tries to arm or route.
-  - **Then:** A pre-handoff readiness failure leaves Sol effective. A delegated Luna failure leaves Luna effective until cancellation. Both branches enter their route-specific failed status, send no substitute executor request, and leave Pi settings unchanged.
-  - **Covers:** R17, R18, R20, and R22.
+- AE9. **Active-run reconfiguration**
+  - **Given:** A run is armed or executor-routed.
+  - **When:** A1 confirms a different pair.
+  - **Then:** Prewalk atomically saves the new config, records a configuration-change cancellation for the old run, restores its wrapper, and starts a manual run only if Pi already selects the new planner. If the save fails, the old config and run remain unchanged.
+  - **Covers:** R2, R19, R22, and R31.
+
+- AE10. **Explicit reset paths**
+  - **Given:** A1 has a custom active pair and a separately confirmed reset profile.
+  - **When:** A1 runs `/prewalk reset run` or `/prewalk reset config`.
+  - **Then:** Run reset creates a fresh manual epoch from the active pair, while config reset atomically restores the saved profile. Either write failure preserves the prior config and run.
+  - **Covers:** R31 and R32.
 
 - AE11. **Measured claims**
-  - **Given:** An experimental release is ready for efficacy study.
-  - **When:** Sol-only, Luna-only, and Sol-to-Luna runs execute the declared corpus.
-  - **Then:** Each arm runs once on every frozen task, the report includes every R27 measure and failed run, and the result is labeled directional. Numeric public claims are deferred until R28's repetition requirement is met.
+  - **Given:** The experimental package is ready for efficacy study.
+  - **When:** Planner-only, executor-only, and Prewalk each run the frozen corpus five times.
+  - **Then:** The report includes every required measure and failure and applies R28's release and public-claim thresholds. Until then, the package remains explicitly experimental and makes no numeric efficacy claim.
   - **Covers:** R27 and R28.
-
-- AE12. **Faithful reload before handoff**
-  - **Given:** Sol has received the planning prompt, consumed or re-armed part of the continuation budget, and may have opened the todo gate.
-  - **When:** A1 reloads extensions.
-  - **Then:** The replacement extension restores the same live-run epoch, plan-injection state, continuation budget, todo readiness, status, and one-arm guarantee without adding a provider request.
-  - **Covers:** R1, R3 through R7, R12, R13, R19, and R22.
-
-- AE13. **Faithful reload after handoff**
-  - **Given:** Luna is active, completed, or failed with its route held.
-  - **When:** A1 reloads extensions and then sends another prompt.
-  - **Then:** The wrapper is safely restored over the existing conversion stream, the request still routes to Luna, and cancellation remains the only path back to Sol within that live session.
-  - **Covers:** R14 through R17, R19, R21, and R22.
-
-- AE14. **User model choice wins**
-  - **Given:** Prewalk is armed or Luna-routed.
-  - **When:** A1 selects another model through Pi.
-  - **Then:** Prewalk cancels, removes only its own routing state, preserves A1's new model choice, and does not re-arm automatically in that live session.
-  - **Covers:** R2, R16, R18, R19, and R22.
 
 ### Success Criteria
 
-- All directly applicable OMP parity scenarios and every documented Pi adaptation pass in both validation layers required by R23 through R25.
-- A real installed-Pi run demonstrates AE1, AE7, AE8, and AE9 on Pi 0.82.1 with `@howaboua/pi-codex-conversion` 3.0.3.
-- Every request, transcript entry, status state, audit record, and reopen path reports the effective model truthfully under R11 through R22.
-- The initial benchmark manifest contains at least 20 independently validated tasks and one repetition per arm, freezes R28's targets before results are known, and publishes the full R27 comparison without omitting failed or invalid runs.
-- The runtime contains none of R18's prohibited patch, private-import, persistent-switch, synthetic-model, or updater paths.
+- Stock Pi 0.83.0 completes a real Agent-loop Sol-to-Luna handoff with no Codex Conversion package loaded.
+- Before a normal release, the same behavioral suite passes through a config-based registered stream, and optional Codex Conversion 3.0.4 composition passes with native V2 disabled. These independent tracks do not block the first standalone experimental proof.
+- The configured planner remains Pi's selected and saved model while executor messages, usage, status, and run state report the effective route truthfully.
+- OMP prompts and applicable parity behavior remain exact, and every adaptation or exclusion is explicit.
+- Normal Pi compaction preserves the useful trajectory without resurrecting the planning nudge after handoff and without a Prewalk-owned summary or prompt-rehydration subsystem.
+- Native V2 is documented and tested as a current compatibility boundary, not silently advertised as supported.
+- Package metadata and startup paths contain no runtime or peer dependency on Codex Conversion.
+- A linked paid evaluation runs five attempts across the configured default planner, executor, and Prewalk arms before the experimental label or public-claim restriction can be removed.
 
 ### Scope Boundaries
 
 **In scope**
 
-- The fixed model pair and live-session lifecycle defined by R1, R2, and R10.
-- The OMP fidelity and parity boundary defined by R3 through R10 and R23.
-- The Pi-specific mutation coverage defined by R7 through R9 and R24.
-- OMP-faithful bundled todo behavior and full live-run restoration across Pi extension reload.
-- The status, composition, validation, and benchmark outcomes defined by R11 through R22 and R25 through R28.
+- Standalone stock Pi provider routing.
+- Sol-to-Luna defaults and benchmark.
+- Configurable same-provider, same-API planner/executor pairs.
+- Native Pi configuration UI, help, status, reasoning selection, cancellation, reset, and reload.
+- Optional composition with config-based public provider streams, including Codex Conversion with native V2 disabled.
+- OMP-parity normal Pi compaction behavior and native V2 characterization.
+- OMP parity, Pi mutation adaptations, real Agent-loop coverage, installed smoke, and authenticated default-pair canary.
 
 **Deferred**
 
-- Provider-agnostic configuration, Opus-to-Sonnet routing, cross-provider authorization, provider capability normalization, and same-model thinking-only handoffs.
-- Any optional upstream Pi proposal justified by implementation evidence.
+- Cross-provider pairs and cross-provider credential normalization.
+- Full native V2 support until Pi or Codex Conversion exposes a public prepared-message or exclusion contract and the compaction-model policy is settled.
+- Complete native-provider wrapping until Pi exposes a public provider-layering API.
+- Same-model effort-only handoffs and OMP task-agent configuration.
+- An upstream Pi or Codex Conversion proposal, which follows concrete compatibility evidence and does not block standalone release.
+- Paid comparative evaluation execution, which follows the implementation and controls normal-release and public-claim eligibility.
 
 **Out of scope**
 
-- The prohibited integration and maintenance paths in R18.
-- Adopting `ThewindMom/pi-prewalk` as the implementation foundation or preserving its Pi 0.80.x compatibility behavior.
-- OMP task-agent configuration and same-model effort transitions excluded by R23's fixed-pair classification.
-- Exact promises for external benchmark figures beyond R27 and R28.
-- Redesigning Pi's native model selector or transcript format instead of satisfying R11 and R21.
-
-<!-- ce-section: work-relationships -->
-### How This Work Fits Together
-
-This artifact owns the fixed Sol-to-Luna release. The surrounding work below is the current understanding, not a committed roadmap.
-
-- **Provider-agnostic Prewalk depends on this release.**
-  - It reuses the proven behavioral contract, provider-overlay seam, status semantics, and validation layers.
-  - It may add provider-pair configuration, cross-provider credential rules, capability checks, same-model effort transitions, and Opus-to-Sonnet coverage.
-
-- **An upstream Pi proposal can proceed independently after evidence exists.**
-  - It may address native selector identity, audit semantics, or safer provider-overlay composition.
-  - It must not block the extension-only release.
-
-- **Earlier patch-maintenance work is historical context only.**
-  - It shares the original Prewalk goal but has no runtime or release dependency relationship with this artifact.
+- Patching Pi, private imports, persistent handoff selection, synthetic router models, updater machinery, and package-specific private integration.
+- Changing Codex Conversion settings from Prewalk.
+- Treating native V2 planner-owned compaction as executor-owned.
+- Preserving compatibility with the abandoned patched product.
 
 ### Dependencies and Assumptions
 
-- The current OMP authority is revision `8db0228f4d38ff5d41b30038b6d227b01ea0fc8a`, fetched from `origin/main` on 2026-07-30. The scoped coordinator, prompt, and parity-test diff from the previously inspected `52bd191b34c7e9044b82cda51f92e0df51693855` revision is empty.
-- The current secondary research authority is `ThewindMom/pi-prewalk` revision `5f0a80432679867ff04cbcee20620b4a7168070b`.
-- Installed Pi 0.82.1 retains the public provider-registration, model-registry, authorization, lifecycle, context, tool, steering, custom-entry, and status APIs used by this contract.
-- `@howaboua/pi-codex-conversion` 3.0.3 remains registered before this local extension and continues to own the base `openai-codex` stream.
-- Pi extensions share one trusted host process. Registration order and wrapper identity prove composition ownership, not cryptographic provenance or isolation from another installed extension; conversion 3.0.3 and the installed extension set are part of the release trusted computing base.
-- Sol and Luna remain available and authorized through `openai-codex` with compatible context and output limits for the fixed-pair release.
-- The package owns the phase-one `todo` tool and requires its name to be free of conflicting extension ownership.
-- Public Pi APIs can filter extension-owned hidden messages from effective model context but cannot delete previously persisted session entries. In this contract, scrubbing always means effective-context removal.
-- The benchmark task curator freezes and validates the corpus without exposing gold patches or solution references to benchmark runs or evaluators.
+- OMP revision `4df68d60438423b384b2b47fb3d6835641624757` is the canonical fidelity authority.
+- Pi 0.83.0 is the installed standalone target and exposes the required public provider and lifecycle APIs.
+- Stock Pi's `openai-codex` provider includes Sol and Luna and can resolve their OAuth authorization.
+- Codex Conversion 3.0.4 at `18c8366a` is an optional compatibility target only.
+- Pi extensions share one trusted process. Provider ownership is enforced by captured public registration identity and drift checks, not isolation from malicious extensions.
+- Pi's resolved active `todo` implementation owns todo behavior; Prewalk observes only active-tool presence and non-error results, matching OMP.
+- Pi's public `sendMessage()` persists hidden custom messages and delivers their exact bytes to the model. The public sequential context hook can narrowly omit the planning nudge after handoff without changing continuation or checklist history.
+- The benchmark curator freezes and validates the corpus without exposing gold patches or solution references to model runs.
 
 ### Planning Resolutions
 
-No product or planning questions remain open.
+No product decisions block implementation planning.
 
-- Resolved by KTD8: the initial benchmark uses at least 20 independently validated tasks, one repetition per arm, paired randomized execution, and the directional claim boundary in R28.
-- Resolved by KTD6: audit entries are versioned state-transition records that omit prompts, transcript content, credentials, payloads, and responses.
-- Resolved by KTD3: Prewalk bundles the OMP-compatible normal todo capability and treats conflicting ownership as incompatible.
-- Resolved by KTD9: task-agent and same-model effort tests appear in the parity matrix as explicit phase-one exclusions.
+- Stock Pi standalone is the release baseline.
+- Sol-to-Luna is the shipped default, while same-provider/API pairs are configurable now.
+- Codex Conversion is optional transport composition.
+- Normal Pi compaction follows OMP's ordinary message lifecycle and adds no stage-aware rehydration behavior.
+- Native V2 remains unsupported for full fidelity until a public interoperability contract exists.
+- The unresolved future product decision is whether native compaction should target Pi's selected planner or Prewalk's effective executor after handoff. It does not block standalone Prewalk.
 
 ---
 
@@ -364,345 +330,209 @@ No product or planning questions remain open.
 
 ### Key Technical Decisions
 
-- KTD1. **Wrap the conversion stream through Pi's public provider registry.** On session startup, Prewalk requires an existing `openai-codex` registration with the API and `streamSimple` supplied by `@howaboua/pi-codex-conversion` 3.0.3. It captures that handler, registers one stable wrapper, delegates Sol requests unchanged, and delegates Luna-routed primary Agent-loop requests through the captured handler with the registry-resolved Luna model and Luna authorization. Agent lifecycle state distinguishes primary turns from compaction, title generation, and other auxiliary requests, which delegate without advancing handoff state. Cleanup restores the captured handler only when the current registration is still identity-equal to Prewalk's wrapper. There is no generic provider stack, synthetic model, or transport reimplementation. Governs R15 and R18 through R21.
+- KTD1. **Resolve transport through Pi's public provider surface.** Before installing its wrapper, Prewalk checks for a complete extension-registered native provider and fails closed without mutation when one exists. Otherwise it captures the effective provider through `ctx.modelRegistry.getProvider()` and any prior config registration. The wrapper delegates both planner and executor requests through the captured effective `streamSimple`, and installation supplies `api: planner.api`. It does not import Pi's deprecated compatibility entrypoint or use local fork-only recipient identity APIs.
 
-- KTD2. **Port current OMP's turn-boundary coordinator instead of adapting the checkpoint coordinator.** The replacement state machine tracks the current live-run epoch, automatic or manual mode, whether the planning prompt was injected, the bounded continuation budget, todo readiness, ordered mutation candidates, effective route, first Luna stream outcome, cancellation, and failure. Automatic mode schedules the exact planning steer after Sol's first completed assistant turn. Manual mode makes the same prompt eligible for the next natural Sol request without starting a request itself. Governs R1 through R10.
+- KTD2. **Own only the installed stream slot.** Routing verifies that Prewalk's wrapper is still the effective stream. Cleanup restores the captured stream while rebasing later config-only fields when the wrapper still occupies that slot. A later stream or native-provider owner ends Prewalk ownership, and cleanup leaves that registration untouched.
 
-- KTD3. **Ship the normal todo capability inside Prewalk.** Phase one owns the `todo` name and provides the current OMP operations needed to initialize, advance, complete, block, abandon, append, remove, and view phased work. Todo snapshots persist in normal tool results, restore from the active session branch, auto-promote one task, and issue bounded incomplete-work reminders through public Pi events. The renderer and reminder plumbing adapt to stock Pi's public extension APIs, while OMP-only sticky HUD and task-agent integration stay excluded. An inactive todo still bypasses the gate, and another extension owning the same name fails compatibility validation. Governs R5, R7, R10, R18, and R23.
+- KTD3. **Keep pairs same-provider and same-API.** This avoids cross-provider transport normalization and lets one provider wrapper substitute model metadata while Pi resolves each model's credentials independently. The executor must have at least the planner's context window. The wizard derives executor reasoning from Pi's supported levels and maps `off` to omission of the stream reasoning option. Startup validates metadata and auth; handoff validates the fully prepared executor context, exact checklist, and output reserve against executor capacity.
 
-- KTD4. **Ship OMP's three Prewalk prompts as attributed byte-for-byte assets.** The planning, continuation, and executor-checklist files are copied from the canonical revision with their SHA-256 digests and MIT attribution. Hidden custom-message metadata carries the run identity; prompt content remains unchanged. The `context` and pre-compaction hooks remove stale Prewalk planning, continuation, and checklist messages from effective model and summarization context, then expose only the message valid for the current primary turn. Session JSONL remains append-only because stock Pi has no supported entry-deletion API. Governs R3 through R6, R10, R16, and R18.
+- KTD4. **Port OMP's compact coordinator.** One phase machine is authoritative for arming, todo readiness, switching, executor activation, completion, cancellation, and failure. It stores only the run identity, automatic/manual mode, continuation flag, todo-seen flag, trigger, and failed route that cannot be derived from phase. Prewalk bundles Pi's normal persistent todo implementation, but the gate follows OMP by observing whichever `todo` tool Pi resolved as active and its non-error results.
 
-- KTD5. **Classify mutations conservatively and decide at `turn_end`.** Tool-result hooks record successful candidates by tool-call ID but never hand off immediately. At the completed assistant-turn boundary, the coordinator reads the assistant-authored tool-call order, applies current OMP's same-turn todo semantics, and selects the first successful eligible mutation once. Direct `apply_patch`, stock `bash`, and Code Mode `exec_command` require completed success evidence. Shell recognition accepts only an unquoted executable `apply_patch` token in a command position and rejects comments, printed text, partial failures, still-running sessions, and dynamically constructed commands that cannot be proven. Governs R7 through R9, R21, R23, and R24.
+- KTD5. **Use direct hidden messages like OMP.** The extension sends the exact planning, continuation, and checklist prompts as hidden custom messages. At handoff, the sequential context hook omits only the planning nudge from the executor request. The latest minimal run-state snapshot is the reload authority and diagnostic record; there is no separate audit log, prompt-marker state machine, generic context scrubber, or post-compaction prompt re-injection.
 
-- KTD6. **Persist reload state as extension-owned audit transitions.** Each custom entry records only an allowlisted schema version, run ID, live-run epoch, event kind, phase, effective route, mode, planner and executor identities, overlay fingerprint, and optional trigger or stable reason code. Status, notifications, audit entries, canary evidence, and benchmark artifacts share the same allowlist-based output policy. They never persist prompt text, transcript text, credentials, request payloads, file contents, raw provider or tool errors, headers, filesystem paths, or provider responses outside benchmark model output explicitly retained for blinded scoring. `reload` rehydrates the latest epoch and reinstalls the wrapper without adding an arm or request; `startup`, `new`, `resume`, and `fork` start a fresh epoch and ignore prior live-run state. Each transition is appended once. Governs R1, R11 through R17, R19, and R22.
+- KTD6. **Select normal mutations directly at `turn_end`.** Pi's ordered terminal `toolResults` are the authority for edit, write, direct patch, and completed shell results, matching OMP's turn-boundary inspection. Only genuinely yielded `exec_command` or Code Mode continuations use a small session-id correlation map.
 
-- KTD7. **Separate the visible phase from the effective route.** The footer renderer owns the route-specific compact strings in R12 through R17, while `/prewalk status` adds mode, run ID, todo requirement, trigger, selected Pi model, and failure reason. Luna routing begins when the wrapper accepts the first delegated request. Completion is recorded only when that first Luna stream succeeds. A thrown or streamed Luna failure changes the phase to failed but keeps the route and Luna marker active. `/prewalk cancel` and an explicit Pi model-selection event remove the route; a non-Sol selection renders as the explicit Pi model with neither Prewalk side active. Prewalk never changes the user's selected model itself. Governs R2 and R11 through R17.
+- KTD7. **Derive routing from phase.** Pi owns the selected planner and the coordinator owns phase. The wrapper derives planner or executor routing from that phase and records a separate route only for an ambiguous failed state. A one-use, non-persisted token created by the sequential context hook authorizes exactly the next primary Agent-loop request; every unmarked, stale, auxiliary, or concurrent stream stays on Pi's selected planner.
 
-- KTD8. **Freeze a paired three-arm directional study before model execution.** The corpus manifest contains at least 20 independently audited public coding tasks, with repository revision, prompt, test command, timeout, and validation evidence. Because OpenAI's July 2026 audit estimates that roughly 30 percent of SWE-Bench Pro is broken, inclusion requires gold-patch success plus prompt, test, and baseline review rather than dataset membership alone. A trusted controller owns provider credentials and model calls. It delegates repository tools to disposable credential-free workers with only the task checkout mounted, task-process networking denied, no host or agent-directory mounts, no credential helpers, and bounded CPU, memory, storage, and time. Evaluators with gold-patch access run separately from workers. The first study runs every task once under each arm in randomized paired order with fixed prompts, tool slate, retry policy, cache policy, timeouts, and network controls. The task is the statistical unit; paired analysis reports pass rate, median cost, median elapsed time, uncertainty, and prohibited lookup attempts. The comparison targets remain frozen, but the report is explicitly directional and cannot issue a release verdict. A separate three-attempt study is required for close or noisy results, more than one invalid or timeout, or a public numeric claim; five attempts are used only when three remain inconclusive. Governs R27 and R28.
+- KTD8. **Make configuration human-only and atomic.** `/prewalk configure` uses registry-backed selections rather than free-form input, validates before confirmation, writes an owner-only temp file, and atomically replaces the config only after confirmation. A successful replacement precedes cancellation of an active run, so write failure preserves the old config and run. Active configuration and the optional user-replaceable reset profile share one strict document. `/prewalk reset run` creates a fresh run from active config; `/prewalk reset config` atomically restores the saved reset profile. No model-facing tool changes configuration.
 
-- KTD9. **Make OMP parity classification executable evidence.** The canonical matrix lists every test in OMP's main coordinator and startup-degradation suites by upstream name and revision. The first eight coordinator scenarios and both startup scenarios are direct or Pi-adapted coverage. The four same-model effort/no-op scenarios and all task-agent Prewalk scenarios are explicit non-applicable cases because phase one is a fixed top-level Sol-to-Luna route. The matrix cannot silently drop a canonical case. Governs R23 and R24.
+- KTD9. **Keep normal compaction ordinary.** Prewalk does not own summarization or reconstruct stage prompts after compaction. A version-pinned real Pi contract test proves that the post-handoff planning nudge stays out of manual, threshold, and overflow compaction paths; any narrow in-place preparation filtering required by stock Pi is limited to that nudge. Current Codex Conversion native V2 reads persisted entries and uses `ctx.model`; it receives a characterization test and documentation. Full support waits for a public prepared-input/exclusion hook and an explicit compaction-model policy.
 
-- KTD10. **Use three validation layers plus a separate benchmark.** Unit and mocked-extension tests prove pure state, prompts, mutation classification, todo behavior, audit entries, and UI output. Real Agent-loop tests use stock Pi's exported session factory, extension loader, model runtime, and deterministic streams so callbacks are not hand-called. A release-only authenticated canary loads conversion 3.0.3 before Prewalk, snapshots settings, sends bounded real Sol and Luna requests, and records redacted identity evidence. The benchmark is a separate opt-in operation and never runs during routine tests, install, startup, or the canary. Governs R21 and R23 through R28.
+- KTD10. **Prove Sol-to-Luna before generalizing.** Unit and harness tests cover deterministic state and UI. The first vertical slice is the default Sol-to-Luna pair through stock-Pi routing, a real Agent loop, and installed smoke. Same-provider pair configuration follows that proof. Registered-stream composition, Codex Conversion characterization, and complete native-provider protection run as independent pre-release compatibility tracks. The authenticated default-pair canary proves actual model identities. The comparative benchmark is a separate paid evaluation.
 
-- KTD11. **Keep phase-one configuration deliberately fixed.** `prewalk.json` stores only whether automatic Prewalk is enabled. Planner, executor, provider, and Luna reasoning are fixed to `openai-codex/gpt-5.6-sol`, `openai-codex/gpt-5.6-luna`, `openai-codex`, and `low`. Startup validates exact model IDs, API compatibility, context and output limits, authorization, tool ownership, provider registration order, and wrapper ownership. A failed invariant is visible and blocks arming; it does not activate compatibility or provider-agnostic fallbacks. Governs R1, R2, R17, R18, R20, and R26.
-
-- KTD12. **Delete the patch product rather than preserving compatibility with it.** The updater executable, version manifest, reviewed patch, updater fixtures, patched type mapping, checkpoint tool, cross-provider fingerprints, generic target configuration, and their tests leave the shipped package. Runtime code compiles against the published stock Pi 0.82.1 declarations. Historical plans remain historical artifacts, while current README and research pages clearly identify the extension-only design as authoritative. Governs R18, R25, and R26.
+- KTD11. **Delete the patch product.** No patched declarations, updater, recipient identity shim, checkpoint tool, or compatibility fallback remains in the shipped package. Historical plans stay historical.
 
 ### High-Level Technical Design
 
-#### Provider and agent-loop topology
-
 ```mermaid
 flowchart LR
-    U["User prompt"] --> P["Pi Agent loop<br/>selected model: Sol"]
+    U["User prompt"] --> P["Pi Agent loop<br/>selected planner"]
     P --> C["Prewalk coordinator"]
-    C --> S{"Effective route"}
-    S -->|Sol| W["Prewalk provider wrapper"]
-    S -->|Luna| W
-    W -->|Sol model and original options| B["Captured pi-codex-conversion stream"]
-    W -->|Luna model and resolved auth| B
-    B --> O["OpenAI Codex provider"]
-    O --> M["Assistant message<br/>truthful provider and model"]
+    C --> R{"Effective route"}
+    R --> W["Prewalk provider wrapper"]
+    W --> E{"Captured effective provider"}
+    E -->|No custom registration| S["Stock Pi provider stream"]
+    E -->|Compatible registration exists| O["Optional registered stream"]
+    S --> M["Assistant message<br/>actual model identity"]
+    O --> M
     M --> P
-    C --> A["Versioned audit entries"]
-    C --> F["Compact Prewalk status"]
+    C --> X["Context projection"]
+    C --> A["Audit and status"]
 ```
 
-Pi continues to own the selected Sol model, session, transcript, tool execution, and provider lifecycle. Prewalk owns only its state machine, hidden custom messages, todo tool, wrapper, status, and audit entries. The captured conversion stream remains the only transport implementation.
-
-#### Live-run and reload state
-
-```mermaid
-stateDiagram-v2
-    [*] --> ArmedSol: eligible startup, new, resume, or fork
-    ArmedSol --> PlanningSol: first Sol turn or manual arm
-    PlanningSol --> PlanningSol: bounded continuation
-    PlanningSol --> GateReadySol: successful todo or todo inactive
-    GateReadySol --> HandoffPending: first successful eligible mutation at turn_end
-    HandoffPending --> ActiveLuna: first Luna request accepted
-    ActiveLuna --> Completed: first Luna stream succeeds
-    ActiveLuna --> FailedLunaHeld: first or later Luna stream fails
-    Completed --> FailedLunaHeld: later Luna stream fails
-    ArmedSol --> FailedSol: compatibility or readiness failure
-    PlanningSol --> FailedSol: compatibility or readiness failure
-    GateReadySol --> FailedSol: compatibility or readiness failure
-    ArmedSol --> Cancelled: cancel or user model change
-    PlanningSol --> Cancelled: cancel or user model change
-    GateReadySol --> Cancelled: cancel or user model change
-    ActiveLuna --> Cancelled: cancel or user model change
-    Completed --> Cancelled: cancel or user model change
-    FailedLunaHeld --> Cancelled: cancel or user model change
-    FailedSol --> Cancelled: manual cancel
-    ArmedSol --> ArmedSol: reload restores epoch
-    PlanningSol --> PlanningSol: reload restores epoch
-    GateReadySol --> GateReadySol: reload restores epoch
-    HandoffPending --> HandoffPending: reload restores trigger
-    ActiveLuna --> ActiveLuna: reload restores route
-    Completed --> Completed: reload restores route
-    FailedLunaHeld --> FailedLunaHeld: reload restores route
-    FailedSol --> FailedSol: reload restores failure
-    Cancelled --> Cancelled: reload preserves suppression
-```
-
-`FailedSol` and `FailedLunaHeld` use different active-side markers because their effective routes differ. Replacement session events create a new epoch; only `reload` resumes the current one.
+Prewalk never creates a second session or copied summary. The executor receives the same branch, user messages, planner messages, todo results, first mutation, and tool result. Only phase-invalid hidden guidance is removed.
 
 ### Constraints and Invariants
 
-- Production TypeScript must narrow unknown data through guards and must not use type casts. Tests may use casts only where harness construction requires them.
-- No compatibility branch may detect or consume the patched `setSessionModelAndThinkingLevel` API.
-- The wrapper must never call itself, route Luna through a different transport, or restore over a provider stream it no longer owns.
-- No prompt sentinel or run metadata may alter the canonical three OMP prompt bodies.
-- Tool-result arrival order must not determine the mutation trigger.
-- A failed Luna stream must never be retried through Sol.
-- Reload reconstruction may read only Prewalk-owned custom entries from the current branch and epoch.
-- Routine verification must remain non-billable and isolated from the user's normal agent directory.
-- Allowlist tests must assert exact permitted keys and reject secret-shaped headers, payloads, paths, raw errors, and later schema expansion across status, notifications, audit, canary, and benchmark outputs.
+- Production TypeScript narrows unknown input with guards and uses no type casts.
+- The wrapper never calls itself, changes providers, or delegates an executor request with planner credentials.
+- Auxiliary streams remain on Pi's selected planner and cannot activate or complete handoff.
+- A failed executor stream never retries through the planner.
+- Internal run-state snapshots never enter provider or compaction input. Hidden planning, continuation, and checklist messages follow R10 and R33.
+- A config change cannot rewrite the pair or reasoning recorded for an existing run epoch.
+- Status remains understandable without color.
+- Provider errors are reduced to stable allowlisted reasons.
+- Routine verification is non-billable and isolated from the user's normal agent directory.
 
 ---
 
 ## Implementation Units
 
-### U1. Stock-Pi package baseline and fixed phase-one contract
+### U1. Standalone package and configuration contract
 
-**Goal:** Make unsupported patched declarations and generic configuration impossible before implementing new behavior.
-
-**Paths:**
-
-- `tsconfig.json`
-- `package.json`
-- `package-lock.json`
-- `prewalk.example.json`
-- `.gitignore`
-- `test/package.test.ts`
+**Paths:** `package.json`, `package-lock.json`, `tsconfig.json`, `prewalk.example.json`, `src/config.ts`, `test/package.test.ts`, `test/config.test.ts`
 
 **Changes:**
 
-- Remove the TypeScript path mapping to the patched sibling Pi checkout.
-- Remove the updater binary, `tar`, and generic target, thinking, and cross-provider configuration from the package contract.
-- Pin stock Pi packages at 0.82.1 and add exact development coverage for `@howaboua/pi-codex-conversion` 3.0.3 and the configured Biome version.
-- Reduce durable configuration to strict `{ "enabled": boolean }` behavior with unknown fields rejected.
-- Add package tests that fail if patched APIs, updater paths, target configurability, private Pi imports, or non-test production casts reappear.
+- Target published Pi 0.83.0 APIs and remove patched path mappings and updater dependencies.
+- Define one strict document containing the active planner, executor, enabled state, executor reasoning, and optional reset profile.
+- Keep Sol-to-Luna with low executor reasoning as the in-memory and example default. A missing file does not write or fail; a malformed file enters a distinct setup error.
+- Ensure Codex Conversion appears only as an optional development fixture, never runtime or peer metadata.
+- Reject unknown fields and invalid models without compatibility fallbacks.
 
-**Behavior and verification:**
-
-- The package typechecks only against published stock Pi.
-- Package metadata and tests exclude updater, patch, private-import, sibling-type, and generic-recipient paths before later units add release assets.
+**Verification:** Package tests prove stock-Pi-only installability, strict config parsing, no prohibited dependencies or imports, and no production casts.
 
 **Dependencies:** None.
 
-### U2. Canonical prompts, OMP-compatible todo, and coordinator
+### U2. Canonical prompts, todo, and compact coordinator
 
-**Goal:** Replace the checkpoint workflow with current OMP's observable planning, continuation, todo, and gate semantics.
-
-**Paths:**
-
-- `prompts/prewalk-plan.md`
-- `prompts/prewalk-continue.md`
-- `prompts/prewalk-checklist.md`
-- `prompts/todo.md`
-- `THIRD_PARTY_NOTICES.md`
-- `src/core.ts`
-- `src/todo.ts`
-- `test/core.test.ts`
-- `test/todo.test.ts`
-- `test/prompts.test.ts`
+**Paths:** `prompts/**`, `THIRD_PARTY_NOTICES.md`, `src/core.ts`, `src/todo.ts`, `src/context.ts`, `test/core.test.ts`, `test/todo.test.ts`, `test/prompts.test.ts`, `test/context.test.ts`
 
 **Changes:**
 
-- Copy the canonical OMP prompt assets, record their revision and digests, and preserve MIT attribution.
-- Define the live-run state and bounded continuation transitions without `prewalk_checkpoint`.
-- Implement the phased todo operations, snapshot persistence, branch restoration, auto-promotion, bounded completion reminder, public Pi renderer, and `/todos` view needed by the shared Sol-to-Luna trajectory.
-- Keep the gate open when todo is inactive, but require a successful result when it is active.
-- Detect conflicting `todo` ownership before automatic or manual arming.
+- Preserve the three OMP prompt assets byte for byte with revision, digests, and attribution.
+- Implement OMP automatic/manual injection, bounded continuation, todo gate, and run state.
+- Inject the prompts directly as hidden custom messages and scrub only the planning nudge from executor context at handoff.
+- Keep one authoritative phase machine and one minimal run-state snapshot representation.
+- Restore todo and run state from the active branch without projecting internal state records to either model.
 
-**Behavior and verification:**
-
-- Prompt tests compare exact bytes and hashes.
-- Coordinator tests port OMP's automatic injection, manual arm, successful and failed todo, prose-only continuation, bash-only bound, tool-progress re-arm, and inactive-todo cases.
-- Todo tests prove valid operations, invalid operations as error results, branch reconstruction, one in-progress task, reminder bounds, and transcript-visible state inherited by Luna.
+**Verification:** Exact-byte prompt tests, canonical OMP coordinator scenarios, todo reconstruction, single-source-of-truth state assertions, and effective-context presence/absence assertions.
 
 **Dependencies:** U1.
 
 ### U3. Successful mutation classification and complete-turn selection
 
-**Goal:** Apply the Pi-specific success and `apply_patch` adaptations without false positives or race-dependent handoffs.
-
-**Paths:**
-
-- `src/mutation.ts`
-- `test/mutation.test.ts`
-- `test/fixtures/mutations/*.json`
+**Paths:** `src/mutation.ts`, `test/mutation.test.ts`, `test/fixtures/mutations/**`
 
 **Changes:**
 
-- Normalize direct built-in `edit` and `write`, direct conversion `apply_patch`, stock `bash`, and Code Mode `exec_command` outcomes into one conservative candidate model.
-- Track tool calls and results by ID, distinguish terminal success from failure, partial failure, cancellation, and still-running sessions, and preserve assistant-authored call order.
-- For Code Mode, consume `tool_execution_update` plus terminal `exec` and `wait` results, retain nested traces by cell and trace ID, and correlate yielded `exec_command` sessions through later `write_stdin` calls without relying on one outer Pi tool-call ID.
-- Parse only the shell command positions required to prove an executed `apply_patch`; reject quoted examples, comments, print commands, aliases, nested dynamic shells, and incomplete traces.
-- At `turn_end`, apply current OMP's same-turn todo behavior and choose the first successful eligible mutation exactly once.
+- Normalize successful `edit`, `write`, direct `apply_patch`, stock `bash`, and available Code Mode traces.
+- Classify ordinary terminal results directly from Pi's ordered `turn_end` payload.
+- Correlate only genuinely yielded command sessions or Code Mode continuations by session identity.
+- Reject failure, cancellation, partial output, comments, quoted examples, and print-only content.
+- Select one assistant-authored mutation at `turn_end`.
 
-**Behavior and verification:**
-
-- Fixture-driven tests cover direct and shell patch success, nonzero exits, partial patch results, parallel mixed results, yielded cells, persistent command sessions, more than 50 nested traces, missing terminal results, comments, quoting, pipelines, and printed patch content.
-- Reordering result arrival without changing assistant-authored order does not change the chosen trigger.
+**Verification:** Fixture tests cover direct, shell, parallel, yielded, failed, false-positive, and incomplete traces.
 
 **Dependencies:** U2.
 
-### U4. Public provider overlay and truthful Luna streaming
+### U4. Standalone provider resolver and ownership-safe config-stream overlay
 
-**Goal:** Route Luna through the existing Codex conversion stream while Pi continues to select and save Sol.
-
-**Paths:**
-
-- `src/provider-overlay.ts`
-- `test/provider-overlay.test.ts`
+**Paths:** `src/provider-overlay.ts`, `test/provider-overlay.test.ts`
 
 **Changes:**
 
-- Capture the registered conversion config after extension loading and require its expected API, OAuth, and stream handler.
-- Install one stable wrapper whose routing state can change without re-registering at handoff.
-- Resolve Luna and its authorization through the public model registry before delegated streaming.
-- Forward the delegated stream's events and terminal result without rewriting provider, model, usage, stop reason, or error identity.
-- Detect thrown and streamed Luna failures, keep the Luna route held, and restore the captured handler only under identity ownership.
-- Detect registration drift before a request; pre-handoff drift fails on Sol, while post-handoff drift aborts rather than leaking a request to Sol.
+- Detect a complete extension-registered native provider and fail closed without changing it.
+- Capture the effective public provider plus any prior config registration.
+- Install a wrapper with the configured API using only upstream Pi 0.83.0 public fields.
+- Delegate through stock Pi when no custom config stream exists and through a captured config-based stream when one does.
+- Resolve executor metadata, credentials, and supported reasoning independently.
+- Validate the delegate's terminal provider/model identity and fail visibly rather than rewriting a mismatch.
+- Restore the captured stream while preserving later config-only fields when Prewalk's wrapper still owns the stream slot. Leave a later stream or native-provider owner untouched.
 
-**Behavior and verification:**
-
-- Unit tests prove unchanged Sol delegation, Luna substitution, target auth resolution, no cross-request leakage, Luna-authored results, no Sol fallback, recursion prevention, conditional restoration, missing conversion failure, and later-owner preservation.
+**Verification:** The stock built-in lane passes first. Independent compatibility tests then cover config-based streams, complete extension-registered native-provider preservation, both load orders, recursion prevention, auth isolation, auxiliary planner streams, terminal identity mismatch, rebased restore, later-stream ownership, and executor failure with no planner fallback.
 
 **Dependencies:** U1.
 
-### U5. Extension orchestration, status, audit, and reload fidelity
+### U5. Native configure/help UI, status, run state, and lifecycle
 
-**Goal:** Connect the coordinator, todo tool, mutation evidence, wrapper, hidden prompts, and Pi lifecycle into one faithful extension.
-
-**Paths:**
-
-- `extensions/prewalk.ts`
-- `src/audit.ts`
-- `src/status.ts`
-- `test/extension.test.ts`
-- `test/status.test.ts`
-- `test/audit.test.ts`
+**Paths:** `extensions/prewalk.ts`, `src/state.ts`, `src/status.ts`, `test/extension.test.ts`, `test/status.test.ts`, `test/state.test.ts`
 
 **Changes:**
 
-- Register the todo tool and Prewalk commands, then install the provider wrapper after verifying conversion-first order.
-- Use hidden `sendMessage` steers for the exact planning, continuation, and checklist prompts, with run identity only in metadata.
-- Filter stale Prewalk messages in the `context` hook without touching other extension messages or visible history.
-- Filter every Prewalk hidden message from pre-compaction input and ensure auxiliary provider streams cannot activate or complete the Luna handoff.
-- Record mutation evidence during tool events and commit the handoff at `turn_end`.
-- Render every compact and detailed status state, including the two failed routing modes.
-- Append idempotent audit transitions and rebuild the current epoch on `reload`.
-- Start new epochs for `startup`, `new`, `resume`, and `fork`; cancel on explicit model selection; support cancellation before and after handoff; and conditionally restore the wrapper during shutdown.
+- Register `/prewalk status|run|cancel|reset|configure|help|--help`, `/todos`, and the todo tool.
+- Build the registry-backed configuration wizard and reset-profile controls with validation, atomic save-before-cancel ordering, and separate confirmation before replacing the reset profile.
+- Keep compact status to pair, reasoning, active side, and one short state clause. Put selected model, derived route, trigger/failure, transport lane, and recovery action in `/prewalk status`.
+- Distinguish missing-config default, disabled, malformed config, inactive because another model is selected, unsupported native composition, and runtime failure.
+- Use `switching after this turn` for the committed handoff transition.
+- Replace the unreleased record representation with one minimal versioned run-state snapshot and reject obsolete local records. Do not create a separate audit-log subsystem.
+- Rehydrate reload, cancel on explicit model selection or confirmed config change, and restore provider ownership safely.
 
-**Behavior and verification:**
-
-- The mocked harness covers every callback and UI acceptance path that does not require a real Agent loop, installed provider transport, authenticated provider request, or benchmark run. It also covers exact prompt scheduling, zero requests at arm time, status strings, cancellation, audit redaction, reload of every state, replacement sessions, provider drift, and explicit user selection.
+**Verification:** Harness tests cover every UI branch, help content, config write failure, active-run reconfiguration, all statuses, redaction, reload states, explicit selection, and zero requests at arm time.
 
 **Dependencies:** U2, U3, and U4.
 
-### U6. OMP parity matrix and real Pi Agent-loop proof
+### U6. OMP-parity compaction and optional native V2 boundary
 
-**Goal:** Prove behavior through stock Pi's real lifecycle instead of only hand-called extension callbacks.
-
-**Paths:**
-
-- `test/fixtures/omp-prewalk-parity.json`
-- `test/omp-parity.test.ts`
-- `test/agent-loop.test.ts`
-- `test/codex-conversion.test.ts`
+**Paths:** `extensions/prewalk.ts`, `src/context.ts`, `test/compaction.test.ts`, `test/codex-conversion.test.ts`, `README.md`, `docs/research/2026-07-30-prewalk-extension-composition.md`
 
 **Changes:**
 
-- Pin every canonical OMP scenario by upstream test name, revision, classification, local test, and exclusion rationale.
-- Construct isolated sessions with stock Pi's public `ModelRuntime`, `DefaultResourceLoader`, `createAgentSession`, and in-memory session manager.
-- Load conversion 3.0.3 before Prewalk and replace only the network boundary with deterministic streams.
-- Drive actual agent turns through Sol exploration, todo, mutation, Luna continuation, reload, cancellation, and failure.
-- Trigger compaction before and after handoff, cancellation, and reload to prove auxiliary streams stay out of route activation and completion while Prewalk guidance stays out of summaries.
+- Verify normal Pi compaction without a Prewalk-owned summary or prompt-rehydration path.
+- Prove the planning nudge cannot re-enter executor context after handoff through manual, threshold, or overflow compaction. If stock Pi requires in-place preparation filtering, limit it to that nudge and pin the behavior with a real Pi contract test.
+- Preserve continuation and checklist messages as ordinary hidden history.
+- Characterize Codex Conversion 3.0.4 native V2 input and planner-model selection without reading private runtime config.
+- Document native V2 as unsupported for full Prewalk fidelity and define the upstream contract needed to change that status.
 
-**Behavior and verification:**
+**Verification:** Normal compaction passes before and after handoff without resurrecting the planning nudge or adding a replacement prompt. Native V2 characterization proves current planner ownership and no false compatibility claim.
 
-- Assert provider call order, no request at arming, Sol ownership through the mutation, Luna ownership afterward, exact effective contexts, todo trajectory, audit entries, status, unchanged selected model and settings bytes, transcript identity, reload continuity, and conditional stream restoration.
-- Excluded same-model and task-agent cases remain visible in the matrix and cannot be mistaken for unimplemented parity.
+**Dependencies:** U2, U4, and U5.
 
-**Dependencies:** U5.
+### U7. OMP parity and real Agent-loop matrix
 
-### U7. Installed smoke, authenticated canary, and package documentation
-
-**Goal:** Prove the shipped package works in the installed Pi composition and remove the obsolete patch product completely.
-
-**Paths:**
-
-- `scripts/smoke-rpc.mjs`
-- `scripts/rpc-support.mjs`
-- `scripts/rpc-support.d.mts`
-- `scripts/canary-provider.mjs`
-- `scripts/canary-guard.mjs`
-- `scripts/canary-support.mjs`
-- `scripts/canary-support.d.mts`
-- `test/scripts.test.ts`
-- `README.md`
-- `docs/research/prewalk-extension-only-feasibility.md`
-- `docs/research/prewalk-implementation-verification.md`
-- `updater/**` (delete)
-- `test/updater.test.ts` (delete)
-- `test/updater-cli.test.ts` (delete)
-- `test/fixtures/updater/**` (delete)
-- `src/protocol.mjs` (delete)
-- `src/protocol.d.mts` (delete)
-- `src/recipient-identity.mjs` (delete)
-- `src/recipient-identity.d.mts` (delete)
+**Paths:** `test/fixtures/omp-prewalk-parity.json`, `test/omp-parity.test.ts`, `test/agent-loop.test.ts`, `test/codex-conversion.test.ts`
 
 **Changes:**
 
-- Rewrite non-billable RPC smoke around stock Pi, isolated agent directories, conversion-first loading, provider ownership, status, reload, cancellation, and byte-identical settings.
-- Rewrite the release-only canary around a bounded temporary fixture and explicit provider-cost confirmation. Capture only redacted model sequence, usage totals, status, trigger type, settings hashes, and pass/fail evidence.
-- Stage only the `openai-codex` credential material needed by the canary into an owner-only temporary agent directory, never copy the complete credential store, and remove the project, agent directory, and credential material on success, failure, timeout, signal, or provider rejection.
-- Remove every updater, patch, generic recipient, checkpoint, and compatibility artifact from runtime, tests, scripts, package metadata, and current documentation.
-- Finalize the shipped file list after the prompt, extension, smoke, and canary assets exist. Benchmark assets remain U8's package responsibility.
-- Mark the older feasibility and implementation-verification conclusions as superseded where they reject provider overlays or describe patched behavior.
-- Document installation order, fixed model requirements, todo ownership, status meaning, reload behavior, cancellation, troubleshooting, routine checks, canary consent, and uninstall behavior.
+- Pin every OMP scenario by upstream name, revision, classification, local test, and rationale.
+- Drive actual Pi sessions through planner exploration, todo, mutation, executor continuation, reload, cancellation, failure, and compaction.
+- Make stock Pi with Prewalk as the only provider-related extension the primary lane.
+- Treat optional config-stream, Codex Conversion 3.0.4, and complete native-provider lanes as independent pre-release compatibility tracks rather than prerequisites for the standalone Agent-loop proof.
+- Add a same-provider Anthropic pair to prove provider-neutral behavior.
 
-**Behavior and verification:**
+**Verification:** The standalone lane asserts shared transcript, call order, selected planner stability, executor identity, the one-use primary-request token, planning-nudge scrubbing, derived route state, and provider restoration. Each optional lane adds only its transport-specific assertions.
 
-- Smoke and package tests prove that no code path requires a patched Pi installation.
-- The authenticated canary proves actual Sol and Luna model identities through conversion 3.0.3, with no settings mutation and no hidden prompt in Luna's effective context.
-- Canary tests prove minimum credential selection, owner-only file modes, unconditional cleanup after injected failures, and absence of secret-shaped values in retained evidence.
+**Dependencies:** The standalone lane depends on U5 and the normal-compaction portion of U6. Optional lanes may finish independently before a normal release.
 
-**Dependencies:** U6.
+### U8. Installed smoke, authenticated canary, and user documentation
 
-### U8. Frozen comparative benchmark and release report
+**Paths:** `scripts/smoke-rpc.mjs`, `scripts/canary-provider.mjs`, supporting scripts and tests, `README.md`, current research docs, obsolete updater and patch paths
 
-**Goal:** Validate the local Sol-to-Luna claims without copying external headline numbers.
+**Changes:**
 
-**Paths:**
+- Make the installed smoke run stock Pi plus Prewalk first.
+- Add optional registered-stream composition smoke without making it a prerequisite.
+- Keep the authenticated canary on the default Sol-to-Luna pair with explicit cost consent and a hard ceiling of four total provider requests.
+- Stage authorization in a newly created owner-only temporary Pi directory, keep secrets out of arguments and logs, and remove the directory on success, failure, timeout, and handled signals.
+- Remove obsolete patch/updater paths.
+- Document standalone installation first, optional Conversion composition second, wizard/help commands, reasoning, status, compaction, reset, troubleshooting, and uninstall.
 
-- `benchmark/corpus.json`
-- `benchmark/README.md`
-- `scripts/benchmark-prewalk.mjs`
-- `scripts/benchmark-report.mjs`
-- `test/benchmark.test.ts`
-- `benchmark/results/` (generated and ignored)
+**Verification:** Smoke proves standalone discovery, handoff, reload, cancellation, and byte-identical Pi settings. Canary proves real Sol/Luna identity, refuses a fifth request, and retains no credential or transcript artifacts on any exit path.
 
-**Preparation after U6:**
+**Dependencies:** Standalone smoke and documentation depend only on the standalone U7 lane. Optional composition documentation follows its independent compatibility track.
 
-- Curate at least 20 tasks only after gold-patch, baseline, prompt, test, and environment validation; record exclusions and corpus digest before model runs.
-- Build and contract-test the manifest, trusted controller, disposable worker image, narrow IPC boundary, evaluator isolation, network denial, mount allowlist, resource limits, and redacted artifact schemas before release polish completes.
+### Follow-on comparative evaluation
 
-**Execution after U7:**
+The paid comparative study is a linked evaluation plan, not an implementation unit or a blocker for an explicitly experimental package. This implementation must expose the stable arm selection, identity, usage, cost, and elapsed-time evidence that the evaluation consumes.
 
-- Run Sol-only, Luna-only, and Prewalk once per task with randomized paired ordering and identical non-model settings.
-- Rebuild each frozen base revision as a fresh single-commit repository with no upstream refs, reflogs, alternate object stores, gold patches, or solution-bearing objects. Run task tools without provider credentials, host or agent-directory mounts, network access, or repository credential helpers. Block access to task solutions and gold patches, record attempted prohibited lookups and sandbox violations, and retain failures and timeouts in the denominator.
-- Generate raw JSONL and keep arm identities blinded through evaluation and aggregate metric finalization. After evaluator outputs and metrics are frozen, unblind the three arm labels for the directional report and explicit unsupported claims.
+The follow-on evaluation preserves:
 
-**Behavior and verification:**
+- The frozen 20-task planner-only, executor-only, and Prewalk corpus and analysis policy.
+- Five attempts per task and arm before a normal release verdict or public numeric claim.
+- Credential-free, network-restricted workers isolated from gold patches.
+- Reporting that includes every failure and rejects mutable corpora, unequal arms, permissive sandboxes, secret-shaped evidence, premature unblinding, or unsupported claims.
 
-- Benchmark contract tests reject a mutable or incomplete corpus, the wrong repetition count, changed arm settings, omitted failed runs, premature unblinding, post-result target changes, leaked secret-shaped values, permissive mounts or networks, inherited credentials, reachable solution history, sandbox escape, and reports that omit R28's directional comparison after the final unblind.
-- Package verification includes the frozen benchmark manifest, benchmark documentation, runner, and report generator while continuing to exclude generated results.
-- The first report may describe only its observed task-level result and must remain labeled directional.
-
-**Dependencies:** Preparation depends on U6 and may proceed alongside U7. Provider runs, final analysis, release reporting, and benchmark package verification depend on U7.
+Paid runs begin only after U8. Their outcome does not change whether the extension implementation is complete, but it controls removal of the experimental label and any quality, cost, or time claim.
 
 ---
 
@@ -710,38 +540,22 @@ stateDiagram-v2
 
 ### Test Layers
 
-| Layer | Purpose | Required evidence |
-| --- | --- | --- |
-| Static and unit | Types, lint, prompt bytes, coordinator, todo, mutation parser, audit, status, provider wrapper | All deterministic tests pass against published Pi 0.82.1 types. |
-| Mocked extension harness | Extension callbacks and UI outputs under controlled event sequences | Every callback and UI acceptance path that does not require a real Agent loop, installed transport, authenticated request, or benchmark run has an assertion. |
-| Real Agent loop | Pi message persistence, turn ordering, context projection, provider routing, reload, model identity | Actual `createAgentSession` turns prove Sol then Luna without changing selected Sol and satisfy AE9's loop-level portion. |
-| Installed RPC smoke | Package discovery and real configured extension order without provider cost | Isolated process proves conversion-first overlay, status, cancellation, reload, and settings stability. |
-| Authenticated canary | Real conversion transport and real Sol/Luna identities | Explicit opt-in evidence proves the live handoff and contains no credentials or transcript. |
-| Comparative benchmark | Quality, cost, duration, and evaluation integrity | At least 60 runs satisfy AE11, report every precommitted target, and remain labeled directional. |
-
-### OMP Parity Classification
-
-| Canonical scenario | Classification | Phase-one expectation |
-| --- | --- | --- |
-| First edit/write after successful todo; bash and todo do not trigger | Pi-adapted | Require successful mutation and add direct or shell `apply_patch`. |
-| Edit before todo does not switch; later edit after todo does | Direct | Preserve current OMP gate. |
-| Failed todo keeps the gate closed | Direct | Preserve current OMP gate. |
-| Text-only plan reply forces continuation | Direct | Preserve exact continuation prompt and budget. |
-| Completed bash-only work receives one bounded continuation | Direct | Preserve current OMP bound. |
-| Tool progress re-arms continuation | Direct | Preserve current OMP transition. |
-| Registered but inactive todo bypasses gate | Direct | Preserve current OMP behavior. |
-| Manual `/prewalk` pre-arms the next eligible mutation | Direct | Adapt command wiring only. |
-| Same-model effort downgrade | Excluded | Fixed Sol-to-Luna changes model identity. |
-| Genuine same-model no-op | Excluded | Fixed pair cannot be a same-model no-op. |
-| Clamped same-model no-op | Excluded | Configurable same-model effort is deferred. |
-| Same-model auto-to-inherit transition | Excluded | Configurable effort modes are deferred. |
-| Startup target lacks configured auth | Direct | Fail visibly and leave Sol usable. |
-| Startup target resolves with configured auth | Direct | Arm once without a provider request. |
-| Task-agent Prewalk scenarios | Excluded | Phase one covers the top-level live Pi session only. |
+| Layer | Required evidence |
+| --- | --- |
+| Static and unit | Pi 0.83.0 types, lint, strict config, prompt bytes, run state, todo, mutation, context, status, and provider resolver. |
+| Mocked extension harness | Every command, wizard, callback, lifecycle, status, and failure branch that does not require a real Agent loop. |
+| Real stock Pi Agent loop | Prewalk is the only provider-related extension; actual turns prove planner then executor, shared transcript, unchanged selected planner, and normal compaction. |
+| Optional config-stream loop | Config-based stream delegation, both load orders, rebased stream restore, and provider drift. |
+| Native-provider protection | A complete extension-registered native provider remains untouched and produces actionable unsupported-composition status. |
+| Optional Codex Conversion loop | Version 3.0.4 with native V2 disabled preserves Conversion behavior without becoming a dependency. |
+| Native V2 characterization | Current raw-session input and selected-planner compaction are documented as a limitation. |
+| Installed RPC smoke | Stock Pi package discovery, status, cancellation, reload, config, and settings stability. |
+| Authenticated canary | Bounded default-pair calls prove real model identities with explicit cost consent. |
+| Follow-on comparative evaluation | The linked five-attempt, 20-task, three-arm study provides 300 runs before a normal release verdict or public numeric claim. |
 
 ### Deterministic Commands
 
-Implementation and review must invoke the repository's `run-tests-on-request` skill for test execution. The implementation adds the missing lint and focused scripts so the final deterministic sequence is:
+Implementation and review must invoke the repository's `run-tests-on-request` skill for every test execution. The final deterministic sequence is:
 
 ```sh
 npm run lint
@@ -752,86 +566,69 @@ npm run smoke:rpc
 npm pack --dry-run
 ```
 
-Focused development commands may target the touched Vitest files first, but the full sequence above is required before completion.
-
-### Release-Only Provider Canary
-
-The canary is billable and requires an exact consent token. It runs only after deterministic verification passes:
-
-```sh
-npm run canary:provider -- \
-  --confirm-provider-cost I_UNDERSTAND_PROVIDER_REQUESTS \
-  --auth-file "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" \
-  --pi "$(command -v pi)" \
-  --evidence-dir ./canary-evidence
-```
-
-The canary must use a temporary project and owner-only agent directory, validate installed Pi 0.82.1 and conversion 3.0.3, stage only the required `openai-codex` credential material, limit the mutation fixture, reject unexpected tools, hash settings before and after, and retain only allowlisted evidence. Cleanup must remove the project, agent directory, and staged credentials after success, failure, timeout, signal, or provider rejection.
-
-### Comparative Benchmark
-
-After corpus freeze and a dry-run contract check, the benchmark requires separate consent for at least 60 task runs:
-
-```sh
-npm run benchmark -- \
-  --manifest benchmark/corpus.json \
-  --repetitions 1 \
-  --confirm-provider-cost I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS
-```
-
-The runner must refuse fewer than 20 tasks, any initial repetition count other than one, changed targets, an unfrozen manifest, missing environment digests, or an output directory containing prior arm results. The report command consumes immutable raw evidence and never reruns or edits model outputs.
-
-Provider calls run in the trusted controller. Repository tools run in disposable credential-free workers whose task checkout is rebuilt as a fresh single-commit repository, with only that checkout mounted, task-process networking denied, no host or agent-directory mounts, no credential helpers, and enforced resource limits. Evaluators with solution access run in separate workers after each task attempt is sealed.
+This planning pass runs none of these commands.
 
 ### Failure Injection
 
-- Missing or late conversion registration leaves routing on Sol and enters visible failed state.
-- Conflicting todo ownership blocks arming.
-- Luna authorization loss before handoff fails on Sol; provider rejection after handoff holds the Luna route.
-- Direct, shell, and Code Mode patch failures remain eligible for a later successful trigger.
-- Parallel tool completion order cannot change the authored trigger.
-- Provider registration drift never causes a silent Sol request or overwrites a later provider owner.
-- Reload at every state reproduces the same epoch, status, continuation budget, and effective route.
-- Compaction before and after handoff never preserves stale Prewalk guidance, changes effective routing, or marks the handoff complete.
-- Explicit user model selection cancels without changing the user's selection.
-- Session replacement never restores a prior Luna route.
-- Stale Prewalk messages never enter effective context, while visible transcript and todo results remain.
+- No custom provider registration uses stock Pi successfully.
+- Missing Codex Conversion does not fail startup or configuration.
+- Whichever `todo` implementation Pi resolves first supplies the gate, and an inactive `todo` bypasses it.
+- Invalid pair, API, credentials, context limits, or reasoning leaves prior config untouched.
+- Cancelled configuration, failed configuration writes, and failed reset writes leave both the prior config and live run untouched.
+- Provider drift sends no misrouted request and overwrites no later owner.
+- Executor authorization or streaming failure never falls back to the planner.
+- Parallel tools and yielded command traces produce one deterministic trigger.
+- Reload at every state preserves one epoch and one route.
+- Normal compaction never resurrects the planning nudge after handoff or changes handoff state; continuation and checklist history remain ordinary input.
+- Native V2 characterization never reports unsupported behavior as compatible.
+- Explicit model selection and confirmed reconfiguration cancel safely.
 
 ---
 
 ## Definition of Done
 
-- The artifact's Product Contract, KTDs, implementation units, test matrix, and commands are internally consistent and trace every R1 through R28 requirement to executable work.
-- Stock Pi 0.82.1 loads the package with no patch, private import, sibling type mapping, persistent model handoff, synthetic model, updater, or compatibility fallback.
-- Current OMP prompt bytes and every applicable canonical behavior are covered, with every exclusion named and justified.
-- The bundled todo provides the plan trajectory and bounded reminders needed by Sol and Luna, while inactive-todo behavior still matches OMP.
-- Sol remains Pi's selected and saved model; actual post-gate requests and assistant identities are Luna until cancellation or session replacement.
-- Compact status, detailed status, audit entries, reload, cancellation, explicit user selection, and both failure routes remain truthful.
-- The provider wrapper composes with conversion 3.0.3, restores only its own stream, and never falls back to Sol after a Luna failure.
-- Mocked and real Agent-loop suites, installed RPC smoke, packaging checks, and the authenticated canary all pass through the required verification workflow.
-- The frozen initial three-arm study runs at least 20 tasks once per arm and publishes every result as directional evidence. The implementation may ship experimentally before that study, but it cannot make numeric performance or savings claims until R28's follow-up repetition requirement is satisfied.
-- README and current research documentation describe the extension-only architecture as authoritative, while historical plans remain untouched.
+- Stock Pi 0.83.0 runs Prewalk end to end with no Codex Conversion package installed.
+- Codex Conversion is absent from runtime, peer, install, config, and startup requirements.
+- Optional config-based provider streams and Codex Conversion 3.0.4 compose through public delegation without package-specific code before a normal release; the first standalone package may remain explicitly experimental while those independent tracks finish.
+- Sol-to-Luna remains the polished default and benchmark pair, while a configured same-provider/API Anthropic pair passes the real Agent-loop matrix.
+- Pi keeps the planner selected and saved; every executor request, transcript entry, usage record, status, and run-state snapshot reports the effective identity truthfully.
+- OMP prompt bytes and applicable behaviors are covered, and every adaptation or exclusion is documented.
+- Normal Pi compaction preserves OMP's message lifecycle without a custom summary or prompt-rehydration subsystem. Native V2 is accurately characterized and remains outside the supported contract until the required upstream surface exists.
+- Provider ownership, reload, cancellation, configuration, reasoning, help, status, and failure behavior pass deterministic verification.
+- Obsolete patch and updater machinery is removed.
+- Paid benchmark execution remains outside implementation completion; five attempts per task and arm gate a normal release verdict and public numeric claims.
 
 ---
 
-### Sources and Research
+## Ready for Implementation Checks
 
-- [OMP canonical revision](https://github.com/can1357/oh-my-pi/tree/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a), especially:
-  - [`packages/coding-agent/src/session/prewalk.ts`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/src/session/prewalk.ts)
-  - [`prewalk-plan.md`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/src/prompts/system/prewalk-plan.md)
-  - [`prewalk-continue.md`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/src/prompts/system/prewalk-continue.md)
-  - [`prewalk-checklist.md`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/src/prompts/system/prewalk-checklist.md)
-  - [`packages/coding-agent/test/agent-session-prewalk.test.ts`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/test/agent-session-prewalk.test.ts)
-  - [`packages/coding-agent/test/prewalk-startup-degradation.test.ts`](https://github.com/can1357/oh-my-pi/blob/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/coding-agent/test/prewalk-startup-degradation.test.ts)
-- [ThewindMom/pi-prewalk secondary revision](https://github.com/ThewindMom/pi-prewalk/tree/5f0a80432679867ff04cbcee20620b4a7168070b), especially `src/index.ts`, `src/prompts.ts`, `test/index.test.ts`, and `test/harness.ts`.
-- [Stencil's Prewalk research](https://stencil.so/blog/prewalk), used for benchmark categories and external reference results.
-- [OMP's metaharness](https://github.com/can1357/oh-my-pi/tree/8db0228f4d38ff5d41b30038b6d227b01ea0fc8a/packages/metaharness), used for the practical 20-task, one-attempt initial study shape and score, spend, and duration measures.
-- [OpenAI's SWE-bench Pro audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/), used to require independent task validation rather than trusting dataset membership.
-- [Anthropic's agent evaluation guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents), used to separate directional capability evidence from repeated reliability evidence and to prefer objective final-state grading.
-- [Anthropic's infrastructure-noise study](https://www.anthropic.com/engineering/infrastructure-noise), used to keep runtime resources, timeouts, and environments equal across arms.
-- [SWE-bench Pro open-source harness](https://github.com/scaleapi/SWE-bench_Pro-os), used as a source of candidate containerized coding tasks and evaluation mechanics, not as an automatically trusted corpus.
-- [Pi v0.82.1](https://github.com/badlogic/pi-mono/tree/v0.82.1), used to verify the supported extension surface.
-- [Pi's stock todo extension example at v0.82.1](https://github.com/badlogic/pi-mono/tree/v0.82.1/packages/coding-agent/examples/extensions/todo), used to ground public extension registration and normal tool-result persistence.
-- `extensions/prewalk.ts` and `src/core.ts`, which define the patched local behavior being replaced.
-- `docs/plans/2026-07-29-003-feat-faithful-prewalk-session-handoff-plan.md`, which records the earlier patched handoff direction.
-- `docs/plans/2026-07-30-001-feat-automated-pi-compatibility-plan.md`, which records patch-maintenance work excluded from this release.
+- **Complete:** Every observable standalone, optional-composition, configuration, lifecycle, status, compaction, fidelity, and validation behavior maps to a requirement and implementation unit.
+- **Consistent:** Stock Pi is the baseline everywhere. Codex Conversion is optional everywhere. Native V2 is never described as a core dependency or silently supported.
+- **Focused:** The plan includes same-provider/API configurability but defers cross-provider routing and upstream compaction work.
+- **Usable:** Paths are repo-relative, units are sequenced, acceptance examples are executable, and deterministic commands are explicit.
+
+---
+
+## Sources and Research
+
+- [OMP canonical revision](https://github.com/can1357/oh-my-pi/tree/4df68d60438423b384b2b47fb3d6835641624757)
+- [OMP Prewalk coordinator](https://github.com/can1357/oh-my-pi/blob/4df68d60438423b384b2b47fb3d6835641624757/packages/coding-agent/src/session/prewalk.ts)
+- [OMP Prewalk tests](https://github.com/can1357/oh-my-pi/blob/4df68d60438423b384b2b47fb3d6835641624757/packages/coding-agent/test/agent-session-prewalk.test.ts)
+- [ThewindMom/pi-prewalk secondary research](https://github.com/ThewindMom/pi-prewalk/tree/5f0a80432679867ff04cbcee20620b4a7168070b)
+- [Pi provider registration documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md#piregisterprovidername-config)
+- [Pi 0.83.0 provider composer](https://github.com/earendil-works/pi/blob/v0.83.0/packages/coding-agent/src/core/provider-composer.ts#L399-L498)
+- [Pi 0.83.0 provider registration semantics](https://github.com/earendil-works/pi/blob/v0.83.0/packages/coding-agent/src/core/model-runtime.ts#L541-L608)
+- [Pi 0.83.0 public model registry](https://github.com/earendil-works/pi/blob/v0.83.0/packages/coding-agent/src/core/model-registry.ts#L95-L143)
+- `upstream/pi/packages/ai/src/providers/openai-codex.ts`
+- `upstream/pi/packages/ai/src/providers/data/openai-codex.json`
+- [Codex Conversion 3.0.4 source at verified main revision](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/18c8366a0af0a88c25e5309ec634cda3157687ab/packages/pi-codex-conversion)
+- [Codex Conversion provider-overlay precedent](https://github.com/IgorWarzocha/howaboua-pi-stuff/blob/18c8366a0af0a88c25e5309ec634cda3157687ab/packages/pi-codex-conversion/src/providers/code-mode-proxy-provider.ts)
+- [Codex Conversion native compaction](https://github.com/IgorWarzocha/howaboua-pi-stuff/blob/18c8366a0af0a88c25e5309ec634cda3157687ab/packages/pi-codex-conversion/src/adapter/compaction/compaction.ts)
+- [Codex Conversion native compaction serializer](https://github.com/IgorWarzocha/howaboua-pi-stuff/blob/18c8366a0af0a88c25e5309ec634cda3157687ab/packages/pi-codex-conversion/src/adapter/compaction/serializer.ts)
+- [Pi compaction documentation](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md)
+- [Stencil Prewalk research](https://stencil.so/blog/prewalk)
+- [OpenAI coding-evaluation audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/)
+- [Anthropic agent evaluation guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+- `docs/research/2026-07-30-prewalk-extension-composition.md`
+- `docs/plans/2026-07-29-003-feat-faithful-prewalk-session-handoff-plan.md`
+- `docs/plans/2026-07-30-001-feat-automated-pi-compatibility-plan.md`

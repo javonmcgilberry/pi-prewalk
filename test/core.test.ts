@@ -1,19 +1,52 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_ANALYTICS_CONFIG } from "../src/analytics.js";
 import {
+	DEFAULT_EXECUTOR,
+	DEFAULT_PLANNER,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
 	PrewalkCoordinator,
 	parseConfig,
 } from "../src/core.js";
 
-describe("fixed phase-one config", () => {
-	it("accepts enabled only", () => {
-		expect(parseConfig({ enabled: true })).toEqual({ enabled: true });
+const config = {
+	enabled: true,
+	executor: { ...DEFAULT_EXECUTOR },
+};
+const planner = { ...DEFAULT_PLANNER, reasoning: "high" as const };
+
+describe("provider-neutral configuration", () => {
+	it("stores only executor defaults and rejects a persisted planner", () => {
+		expect(parseConfig(config)).toEqual({
+			...config,
+			analytics: DEFAULT_ANALYTICS_CONFIG,
+		});
+		expect(() => parseConfig({ ...config, planner: DEFAULT_PLANNER })).toThrow(
+			"Unknown Prewalk config field: planner.",
+		);
 		expect(PLANNER_MODEL_ID).toBe("gpt-5.6-sol");
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");
 	});
 
-	it("rejects generic model configuration", () => {
+	it("accepts explicitly disabled analytics", () => {
+		expect(
+			parseConfig({
+				...config,
+				analytics: { ...DEFAULT_ANALYTICS_CONFIG, enabled: false },
+			}),
+		).toMatchObject({ analytics: { enabled: false, catalogFallbackEnabled: false } });
+	});
+
+	it("rejects invalid analytics with an actionable error", () => {
+		expect(() =>
+			parseConfig({
+				...config,
+				analytics: { ...DEFAULT_ANALYTICS_CONFIG, recentReceiptCount: 0 },
+			}),
+		).toThrow("recentReceiptCount must be greater than zero");
+	});
+
+	it("rejects unknown configuration", () => {
 		expect(() => parseConfig({ enabled: true, target: "other/model" })).toThrow(
 			"Unknown Prewalk config field: target.",
 		);
@@ -23,7 +56,10 @@ describe("fixed phase-one config", () => {
 describe("OMP coordinator behavior", () => {
 	it("injects planning after the first automatic Sol turn", () => {
 		const coordinator = new PrewalkCoordinator();
-		expect(coordinator.arm("run", "epoch", "automatic", true)).toEqual({ type: "none" });
+		expect(coordinator.arm("run", "epoch", "automatic", true, planner, config)).toEqual({
+			type: "none",
+		});
+		expect(coordinator.run?.planner).toEqual(planner);
 		expect(
 			coordinator.onTurnEnd({
 				hasToolResults: false,
@@ -35,14 +71,14 @@ describe("OMP coordinator behavior", () => {
 
 	it("injects planning immediately for a manual arm", () => {
 		const coordinator = new PrewalkCoordinator();
-		expect(coordinator.arm("run", "epoch", "manual", true)).toEqual({
+		expect(coordinator.arm("run", "epoch", "manual", true, planner, config)).toEqual({
 			type: "send-planning",
 		});
 	});
 
 	it("waits for successful todo before accepting a mutation", () => {
 		const coordinator = new PrewalkCoordinator();
-		coordinator.arm("run", "epoch", "automatic", true);
+		coordinator.arm("run", "epoch", "automatic", true, planner, config);
 		coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false });
 
 		expect(
@@ -67,7 +103,7 @@ describe("OMP coordinator behavior", () => {
 
 	it("bypasses todo when the tool is inactive", () => {
 		const coordinator = new PrewalkCoordinator();
-		coordinator.arm("run", "epoch", "automatic", false);
+		coordinator.arm("run", "epoch", "automatic", false, planner, config);
 		expect(
 			coordinator.onTurnEnd({
 				hasToolResults: true,
@@ -82,7 +118,7 @@ describe("OMP coordinator behavior", () => {
 
 	it("bounds prose continuation and re-arms after tool progress", () => {
 		const coordinator = new PrewalkCoordinator();
-		coordinator.arm("run", "epoch", "automatic", true);
+		coordinator.arm("run", "epoch", "automatic", true, planner, config);
 		expect(coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false }).type).toBe(
 			"send-planning",
 		);
@@ -98,27 +134,27 @@ describe("OMP coordinator behavior", () => {
 		);
 	});
 
-	it("tracks Luna activation, completion, failure, and cancellation separately from selection", () => {
+	it("tracks executor activation, completion, failure, and cancellation separately from selection", () => {
 		const coordinator = new PrewalkCoordinator();
-		coordinator.arm("run", "epoch", "automatic", false);
+		coordinator.arm("run", "epoch", "automatic", false, planner, config);
 		coordinator.onTurnEnd({
 			hasToolResults: true,
 			todoSucceeded: false,
 			mutation: { toolCallId: "write", toolName: "write" },
 		});
-		coordinator.activateLuna();
-		expect(coordinator.run?.effectiveRoute).toBe("luna");
+		coordinator.activateExecutor();
+		expect(coordinator.run?.effectiveRoute).toBe("executor");
 		coordinator.completeHandoff();
 		expect(coordinator.run?.phase).toBe("completed");
 		coordinator.fail("provider_stream_failed", true);
-		expect(coordinator.run).toMatchObject({ phase: "failed", effectiveRoute: "luna" });
+		expect(coordinator.run).toMatchObject({ phase: "failed", effectiveRoute: "executor" });
 		coordinator.cancel(false);
 		expect(coordinator.run).toMatchObject({ phase: "cancelled", effectiveRoute: "selected" });
 	});
 
 	it("restores an existing live epoch without re-arming", () => {
 		const original = new PrewalkCoordinator();
-		original.arm("run", "epoch", "automatic", true);
+		original.arm("run", "epoch", "automatic", true, planner, config);
 		original.onTurnEnd({ hasToolResults: false, todoSucceeded: false });
 		const run = original.run;
 		if (!run) throw new Error("Expected run");

@@ -52,6 +52,7 @@ describe("shipped package contract", () => {
 			files: string[];
 			scripts: Record<string, string>;
 			dependencies: Record<string, string>;
+			peerDependencies?: Record<string, string>;
 			devDependencies: Record<string, string>;
 		};
 
@@ -71,7 +72,19 @@ describe("shipped package contract", () => {
 			]),
 		);
 		expect(pkg.files).not.toContain("updater");
+		const packedAnalyticsFiles = await Promise.all(
+			[
+				"src/analytics.ts",
+				"src/analytics-store.ts",
+				"src/analytics-report.ts",
+				"src/analytics-subagents.ts",
+			].map(async (file) => existsSync(resolve(root, file))),
+		);
+		expect(packedAnalyticsFiles).toEqual([true, true, true, true]);
 		expect(pkg.dependencies.tar).toBeUndefined();
+		expect(pkg.dependencies["@howaboua/pi-codex-conversion"]).toBeUndefined();
+		expect(pkg.dependencies["pi-subagents"]).toBeUndefined();
+		expect(pkg.peerDependencies?.["@howaboua/pi-codex-conversion"]).toBeUndefined();
 		expect(pkg.devDependencies).toMatchObject({
 			"@biomejs/biome": "2.3.5",
 			"@earendil-works/pi-agent-core": "0.82.1",
@@ -96,12 +109,11 @@ describe("shipped package contract", () => {
 		expect(JSON.stringify(tsconfig)).not.toContain("earendil-works-pi");
 	});
 
-	it("ships only the fixed phase-one enabled configuration", async () => {
+	it("ships a strict same-provider planner and executor configuration", async () => {
 		const example = JSON.parse(await text("prewalk.example.json"));
-		expect(example).toEqual({ enabled: true });
-		expect(parseConfig(example)).toEqual({ enabled: true });
-		for (const key of ["target", "thinkingLevel", "crossProviderPairs", "provider", "planner"]) {
-			expect(() => parseConfig({ enabled: true, [key]: "unsupported" })).toThrow(
+		expect(parseConfig(example)).toEqual(example);
+		for (const key of ["target", "thinkingLevel", "crossProviderPairs", "provider"]) {
+			expect(() => parseConfig({ ...example, [key]: "unsupported" })).toThrow(
 				`Unknown Prewalk config field: ${key}.`,
 			);
 		}

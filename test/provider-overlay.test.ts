@@ -10,6 +10,8 @@ import {
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
+	DEFAULT_EXECUTOR,
+	DEFAULT_PLANNER,
 	EXECUTOR_MODEL_ID,
 	EXECUTOR_PROVIDER,
 	PLANNER_MODEL_ID,
@@ -97,12 +99,12 @@ function setup() {
 	let route = false;
 	let primary = false;
 	const state: ProviderOverlayState = {
-		shouldRouteToLuna: () => route,
+		shouldRouteToExecutor: () => route,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
-		onLunaStreamStarted: vi.fn(),
-		onLunaStreamSucceeded: vi.fn(),
-		onLunaStreamFailed: vi.fn(),
+		onExecutorStreamStarted: vi.fn(),
+		onExecutorStreamSucceeded: vi.fn(),
+		onExecutorStreamFailed: vi.fn(),
 		onProviderDrift: vi.fn(),
 	};
 	const registry = {
@@ -128,7 +130,16 @@ function setup() {
 			}),
 		),
 	};
-	const overlay = createProviderOverlay(pi, registry, state);
+	const overlay = createProviderOverlay(
+		pi,
+		registry,
+		{ ...DEFAULT_PLANNER, reasoning: "high" },
+		{
+			enabled: true,
+			executor: { ...DEFAULT_EXECUTOR },
+		},
+		state,
+	);
 	const context: Context = { messages: [] };
 	return {
 		planner,
@@ -167,7 +178,7 @@ describe("provider overlay", () => {
 		await fixture.config()?.streamSimple?.(fixture.planner, fixture.context).result();
 
 		expect(fixture.delegatedModels).toEqual([fixture.planner]);
-		expect(fixture.state.onLunaStreamStarted).not.toHaveBeenCalled();
+		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
 	});
 
 	it("routes only a primary Agent-loop Sol request to Luna at low reasoning", async () => {
@@ -192,8 +203,8 @@ describe("provider overlay", () => {
 		]);
 		expect(result?.provider).toBe(EXECUTOR_PROVIDER);
 		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
-		expect(fixture.state.onLunaStreamStarted).toHaveBeenCalledOnce();
-		expect(fixture.state.onLunaStreamSucceeded).toHaveBeenCalledOnce();
+		expect(fixture.state.onExecutorStreamStarted).toHaveBeenCalledOnce();
+		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
 	});
 
 	it("leaves compaction and other auxiliary streams on Sol", async () => {
@@ -239,9 +250,9 @@ describe("provider overlay", () => {
 
 		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
 		expect(result?.stopReason).toBe("error");
-		expect(result?.errorMessage).toBe("Prewalk Luna provider stream failed.");
+		expect(result?.errorMessage).toBe("Prewalk executor provider stream failed.");
 		expect(result?.errorMessage).not.toContain("provider-secret");
-		expect(fixture.state.onLunaStreamFailed).toHaveBeenCalledWith("run-1");
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
 	});
 
 	it("does not activate Luna when executor authorization fails before delegation", async () => {
@@ -258,8 +269,8 @@ describe("provider overlay", () => {
 
 		expect(result?.stopReason).toBe("error");
 		expect(fixture.delegatedModels).toEqual([]);
-		expect(fixture.state.onLunaStreamStarted).not.toHaveBeenCalled();
-		expect(fixture.state.onLunaStreamFailed).toHaveBeenCalledWith("run-1");
+		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
 	});
 
 	it("terminalizes a delegated Luna iterator failure", async () => {
@@ -286,6 +297,6 @@ describe("provider overlay", () => {
 			.result();
 
 		expect(result?.stopReason).toBe("error");
-		expect(fixture.state.onLunaStreamFailed).toHaveBeenCalledWith("run-1");
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
 	});
 });

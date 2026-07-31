@@ -7,10 +7,12 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ToolCall,
+	type Usage,
 } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
+	type ExtensionAPI,
 	type ExtensionFactory,
 	ModelRuntime,
 	SessionManager,
@@ -18,7 +20,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
-import { EXECUTOR_MODEL_ID, PLANNER_MODEL_ID } from "../src/core.js";
+import { AnalyticsStore } from "../src/analytics-store.js";
+import {
+	SUBAGENT_DELEGATION_ANALYTICS_START_EVENT,
+	SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT,
+} from "../src/analytics-subagents.js";
+import { DEFAULT_EXECUTOR, EXECUTOR_MODEL_ID, PLANNER_MODEL_ID } from "../src/core.js";
 
 function model(id: string): Model<"openai-codex-responses"> {
 	return {
@@ -35,6 +42,23 @@ function model(id: string): Model<"openai-codex-responses"> {
 	};
 }
 
+function usage(cost: number, input = 10, output = 5): Usage {
+	return {
+		input,
+		output,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: input + output,
+		cost: {
+			input: cost / 2,
+			output: cost / 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: cost,
+		},
+	};
+}
+
 function response(selected: Model<"openai-codex-responses">, content: AssistantMessage["content"]) {
 	const stream = createAssistantMessageEventStream();
 	const message: AssistantMessage = {
@@ -43,14 +67,7 @@ function response(selected: Model<"openai-codex-responses">, content: AssistantM
 		api: selected.api,
 		provider: selected.provider,
 		model: selected.id,
-		usage: {
-			input: 10,
-			output: 5,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 15,
-			cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
-		},
+		usage: usage(2),
 		stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
 		timestamp: Date.now(),
 	};
@@ -79,7 +96,13 @@ beforeEach(async () => {
 	agentDir = path.join(root, "agent");
 	workDir = path.join(root, "work");
 	await Promise.all([mkdir(agentDir, { recursive: true }), mkdir(workDir, { recursive: true })]);
-	await writeFile(path.join(agentDir, "prewalk.json"), '{"enabled":true}\n');
+	await writeFile(
+		path.join(agentDir, "prewalk.json"),
+		`${JSON.stringify({
+			enabled: true,
+			executor: DEFAULT_EXECUTOR,
+		})}\n`,
+	);
 	await writeFile(path.join(workDir, "target.txt"), "before\n");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 });
@@ -90,11 +113,16 @@ afterEach(async () => {
 });
 
 describe("stock Pi Agent-loop integration", () => {
-	it("runs Sol planning through one mutation and continues as Luna without selecting Luna", async () => {
+	it("promotes one reconciling receipt with auxiliary and compaction attribution", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
 		let lunaContext: Context | undefined;
+		let prewalkEvents: ExtensionAPI["events"] | undefined;
+		const prewalkWithEventCapture: ExtensionFactory = (pi) => {
+			prewalkEvents = pi.events;
+			prewalkExtension(pi);
+		};
 		const conversion: ExtensionFactory = (pi) => {
 			pi.registerProvider("openai-codex", {
 				api: "openai-codex-responses",
@@ -155,7 +183,7 @@ describe("stock Pi Agent-loop integration", () => {
 			noContextFiles: true,
 			extensionFactories: [
 				{ name: "conversion", factory: conversion },
-				{ name: "prewalk", factory: prewalkExtension },
+				{ name: "prewalk", factory: prewalkWithEventCapture },
 			],
 		});
 		await loader.reload();
@@ -193,6 +221,151 @@ describe("stock Pi Agent-loop integration", () => {
 		]);
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
+		const analyticsStore = new AnalyticsStore(agentDir);
+		const journals = await analyticsStore.listUnfinishedJournals();
+		expect(journals).toHaveLength(1);
+		expect(journals[0]?.usage).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ role: "planner-primary", provider: "openai-codex" }),
+				expect.objectContaining({ role: "executor-primary", provider: "openai-codex" }),
+			]),
+		);
+
+		await session.extensionRunner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "auxiliary-usage",
+			toolName: "subagent-helper",
+			input: {},
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: undefined,
+			usage: usage(0.3, 3, 2),
+		});
+		await session.extensionRunner.emit({
+			type: "session_compact",
+			compactionEntry: {
+				type: "compaction",
+				id: "compact-1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				summary: "content omitted",
+				firstKeptEntryId: "entry-1",
+				tokensBefore: 100,
+				usage: usage(0.2, 2, 1),
+			},
+			fromExtension: false,
+			reason: "manual",
+			willRetry: false,
+		});
+
+		const rootSessionId = session.sessionId;
+		if (!prewalkEvents) throw new Error("Prewalk event bus was not captured.");
+		await session.extensionRunner.emit({
+			type: "tool_execution_start",
+			toolCallId: "delegation-analytics-test",
+			toolName: "subagent",
+			args: { tasks: [{ agent: "worker" }, { agent: "worker" }] },
+		});
+		const publishProjection = async (channel: string, value: unknown): Promise<void> => {
+			prewalkEvents?.emit(channel, value);
+			await analyticsStore.writeDelegationEvidence(value);
+		};
+		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, {
+			version: 1,
+			eventId: "child-terminal",
+			phase: "terminal",
+			rootSessionId,
+			parentSessionId: rootSessionId,
+			invocationId: "tool-direct",
+			delegationRunId: "delegation-direct",
+			childIndex: 0,
+			childSessionId: "child-session",
+			lifecycle: "completed",
+			observedAt: 1,
+			usage: [],
+		});
+		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, {
+			version: 1,
+			eventId: "nested-terminal",
+			phase: "terminal",
+			rootSessionId,
+			parentSessionId: "child-session",
+			invocationId: "tool-nested",
+			delegationRunId: "delegation-nested",
+			childIndex: 0,
+			childSessionId: "nested-session",
+			lifecycle: "completed",
+			observedAt: 2,
+			usage: [],
+		});
+		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_START_EVENT, {
+			version: 1,
+			eventId: "pending-child",
+			phase: "start",
+			rootSessionId,
+			parentSessionId: rootSessionId,
+			invocationId: "tool-pending",
+			delegationRunId: "delegation-pending",
+			childIndex: 1,
+			lifecycle: "running",
+			observedAt: 3,
+			usage: [],
+		});
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		const projected = await analyticsStore.listDelegationEvidence();
+		expect(projected).toHaveLength(3);
+		expect(projected.map((item) => item.parentSessionId)).toEqual(
+			expect.arrayContaining([rootSessionId, "child-session"]),
+		);
+		const taskTree = await analyticsStore.taskTree(rootSessionId);
+		expect(taskTree.unresolved).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ delegationRunId: "delegation-pending", reason: "pending" }),
+			]),
+		);
+		expect(taskTree.fallbackEvidence).toHaveLength(0);
+		expect(taskTree.unresolved).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					delegationRunId: "delegation-direct",
+					reason: "missing-usage",
+				}),
+				expect.objectContaining({
+					delegationRunId: "delegation-nested",
+					reason: "missing-usage",
+				}),
+			]),
+		);
+		expect(taskTree.actualCoverage).toBe("pending");
+		const command = session.extensionRunner.getCommand("prewalk");
+		if (!command) throw new Error("Prewalk command was not registered.");
+		await command.handler("stats task", session.extensionRunner.createCommandContext());
+		expect(await analyticsStore.listUnfinishedJournals()).toEqual([]);
+		const receipts = await analyticsStore.listReceipts();
+		expect(receipts).toHaveLength(1);
+		const [rootReceipt] = receipts;
+		expect(rootReceipt).toEqual(
+			expect.objectContaining({
+				sessionId: rootSessionId,
+				outcome: "succeeded",
+				actualCost: 10.5,
+			}),
+		);
+		expect(rootReceipt?.usage).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ role: "planner-primary" }),
+				expect.objectContaining({ role: "executor-primary" }),
+				expect.objectContaining({
+					role: "auxiliary",
+					cost: expect.objectContaining({ total: 0.3 }),
+				}),
+				expect.objectContaining({
+					role: "compaction",
+					cost: expect.objectContaining({ total: 0.2 }),
+				}),
+			]),
+		);
+		session.dispose();
 		const assistantModels = sessionManager
 			.getEntries()
 			.flatMap((entry) =>

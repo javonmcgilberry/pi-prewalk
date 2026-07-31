@@ -1,6 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { PrewalkRun, RunPhase } from "../src/core.js";
+import { DEFAULT_EXECUTOR, DEFAULT_PLANNER, type PrewalkRun, type RunPhase } from "../src/core.js";
 import { compactStatus, detailedStatus } from "../src/status.js";
 
 function selected(id = "gpt-5.6-sol"): Model<"openai-codex-responses"> {
@@ -19,13 +19,18 @@ function selected(id = "gpt-5.6-sol"): Model<"openai-codex-responses"> {
 }
 
 function run(phase: RunPhase): PrewalkRun {
-	const luna = phase === "active" || phase === "completed";
+	const executor = phase === "active" || phase === "completed";
 	return {
 		id: "run-1",
 		epoch: "epoch-1",
 		mode: "automatic",
 		phase,
-		effectiveRoute: luna ? "luna" : "sol",
+		effectiveRoute: executor ? "executor" : "planner",
+		planner: { ...DEFAULT_PLANNER, reasoning: "low" },
+		config: {
+			enabled: true,
+			executor: { ...DEFAULT_EXECUTOR },
+		},
 		planningPromptInjected: true,
 		continuePending: false,
 		todoActive: true,
@@ -35,27 +40,59 @@ function run(phase: RunPhase): PrewalkRun {
 
 describe("Prewalk status", () => {
 	it.each([
-		["armed", "prewalk: [5.6 Sol] / Luna"],
-		["ready", "prewalk: [5.6 Sol] / Luna (ready)"],
-		["active", "prewalk: 5.6 Sol / [Luna]"],
-		["completed", "prewalk: 5.6 Sol / [Luna]"],
-		["cancelled", "prewalk: [5.6 Sol] / Luna (cancelled)"],
-		["failed", "prewalk: [5.6 Sol] / Luna (failed)"],
+		["armed", "prewalk: [5.6 Sol · low] / Luna · low"],
+		[
+			"ready",
+			"prewalk: [5.6 Sol · low] / Luna · low (waiting for this agent's first code change)",
+		],
+		["handoff-pending", "prewalk: [5.6 Sol · low] / Luna · low (switching after this turn)"],
+		["active", "prewalk: 5.6 Sol · low / [Luna · low]"],
+		["completed", "prewalk: 5.6 Sol · low / [Luna · low]"],
+		["cancelled", "prewalk: [5.6 Sol · low] / Luna · low (cancelled)"],
+		["failed", "prewalk: [5.6 Sol · low] / Luna · low (failed)"],
 	] satisfies Array<[RunPhase, string]>)("renders %s", (phase, expected) => {
-		expect(compactStatus(run(phase), selected())).toBe(expected);
+		expect(compactStatus(run(phase), selected(), "low")).toBe(expected);
 	});
 
 	it("shows the selected Pi model after cross-model cancellation", () => {
 		expect(compactStatus(run("cancelled"), selected("gpt-5.4"))).toBe(
-			"prewalk: 5.6 Sol / Luna (cancelled; Pi: openai-codex/gpt-5.4)",
+			"prewalk: 5.6 Sol / Luna (cancelled; selected: openai-codex/gpt-5.4)",
 		);
 	});
 
 	it("keeps Luna marked on a delegated failure", () => {
 		const failed = run("failed");
-		failed.effectiveRoute = "luna";
-		failed.reasonCode = "luna-stream-failed";
-		expect(compactStatus(failed, selected())).toBe("prewalk: 5.6 Sol / [Luna] (failed)");
-		expect(detailedStatus(failed, selected())).toContain("reason=luna-stream-failed");
+		failed.effectiveRoute = "executor";
+		failed.reasonCode = "executor-stream-failed";
+		expect(compactStatus(failed, selected(), "low")).toBe(
+			"prewalk: 5.6 Sol · low / [Luna · low] (failed: executor stream failed)",
+		);
+		expect(detailedStatus(failed, selected(), "low")).toContain("reason=executor-stream-failed");
+	});
+
+	it("shows the pre-handoff failure reason in the compact status", () => {
+		const failed = run("failed");
+		failed.reasonCode = "configuration-invalid";
+		expect(compactStatus(failed, selected(), "low")).toBe(
+			"prewalk: [5.6 Sol · low] / Luna · low (failed: configuration invalid)",
+		);
+	});
+
+	it("shows delegated progress without overriding a local failure", () => {
+		expect(
+			compactStatus(run("ready"), selected(), "low", {
+				agent: "worker",
+				state: "running",
+			}),
+		).toContain("worker running its own Prewalk");
+
+		const failed = run("failed");
+		failed.reasonCode = "configuration-invalid";
+		expect(
+			compactStatus(failed, selected(), "low", {
+				agent: "worker",
+				state: "running",
+			}),
+		).toContain("failed: configuration invalid");
 	});
 });

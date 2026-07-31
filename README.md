@@ -1,11 +1,11 @@
 # Pi Prewalk
 
-Pi Prewalk is an extension-only Sol-to-Luna implementation of Oh My Pi's
-Prewalk flow. Pi keeps `openai-codex/gpt-5.6-sol` selected and saved. Sol plans,
-opens the todo gate, and makes the first successful mutation. The extension
-then routes primary Agent-loop requests through
-`openai-codex/gpt-5.6-luna` at low reasoning for the rest of that live session.
-A new or reopened session starts on Sol.
+Pi Prewalk is an extension-only implementation of Oh My Pi's Prewalk flow. The
+Pi-selected planner stays selected and saved while it plans, opens the todo
+gate, and makes the first successful mutation. The extension snapshots that
+model and reasoning when the epoch starts, then routes primary Agent-loop
+requests through a configured same-provider executor for the rest of that live
+session. A new or reopened session derives its planner from Pi again.
 
 This package uses stock Pi 0.82.1 public extension and provider APIs. It does not
 patch Pi, import private Pi modules, call `setModel()` for the handoff, create a
@@ -14,36 +14,38 @@ router model, or modify Pi settings.
 ## Requirements
 
 - `@earendil-works/pi-coding-agent` 0.82.1
-- `@howaboua/pi-codex-conversion` 3.0.3, loaded before Prewalk
-- Configured OpenAI Codex authorization
-- Both `openai-codex/gpt-5.6-sol` and
-  `openai-codex/gpt-5.6-luna` in Pi's public model registry
+- Configured authorization for the chosen provider
+- Two available models on the same provider and Pi API
 - No other extension owning the `todo` tool name
 
-Phase one deliberately fixes this model pair. Provider-agnostic pairs such as
-Opus-to-Sonnet are follow-up work.
+The default pair is Sol-to-Luna. Built-in same-provider pairs such as
+Opus-to-Sonnet use Pi's public provider stream.
 
 ## Install
 
 ```sh
 npm install
-pi install @howaboua/pi-codex-conversion
 pi install .
 ```
-
-The extension load order matters because Prewalk wraps the public
-`openai-codex` stream registered by the conversion package.
 
 Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 
 ```json
 {
-  "enabled": true
+  "enabled": true,
+  "executor": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "reasoning": "low"
+  }
 }
 ```
 
-The schema is strict. Model IDs, provider, and Luna reasoning are fixed in this
-release.
+The schema is strict. Run `/prewalk configure` to choose an executor compatible
+with Pi's currently selected planner and independent executor reasoning through
+Pi's native UI. Long model catalogs are shown eight at a time. A newly selected
+executor defaults to `low`; an existing executor keeps its saved level at the
+top of the picker. Prewalk never stores or changes the planner model.
 
 ## Behavior
 
@@ -61,26 +63,89 @@ retained. Hidden Prewalk messages are also excluded from compaction summaries.
 Luna-authored transcript messages keep Luna's real provider, model, usage, and
 stop reason.
 
-The compact status is based on `prewalk: 5.6 Sol / Luna`:
+The compact status shows both roles and reasoning levels:
 
-- `prewalk: [5.6 Sol] / Luna` while Sol is armed
-- `prewalk: [5.6 Sol] / Luna (ready)` after the todo gate
-- `prewalk: 5.6 Sol / [Luna]` after the handoff
+- `prewalk: [5.6 Sol · low] / Luna · low` while Sol is armed
+- `prewalk: [5.6 Sol · low] / Luna · low (waiting for first code change)` after the todo gate
+- `prewalk: [5.6 Sol · low] / Luna · low (switching after this turn)` after the handoff mutation
+- `prewalk: 5.6 Sol · low / [Luna · low]` after the handoff
 - Route-specific `(cancelled)` and `(failed)` states
 
 Pi's native selector continues to show Sol. Use `/prewalk status` for the run,
 gate, trigger, selected model, and stable failure reason.
+
+Prewalk does not require `pi-subagents`. When it is installed, every child Pi
+launch receives the active epoch's executor profile through pi-subagents'
+versioned public policy event. The accepted profile is enforced before spawn
+and forwarded to async, resumed, and nested descendants, so no child can regain
+the planner model and reasoning tuple. Without active Prewalk, pi-subagents
+keeps its normal model behavior. Without pi-subagents, Prewalk keeps its normal
+standalone lifecycle.
+
+A child that independently starts Prewalk and has the `todo` tool follows the
+full todo gate. A strict child allowlist that omits `todo` treats the gate as
+inactive and hands off after its first successful mutation. A child mutation
+never switches the parent.
+
+To give pi-subagents' built-in writer the full gate, preserve its normal tools
+and append `todo` to `subagents.agentOverrides.worker.tools`. Read-only agents do
+not need it.
+
+Shift+Tab follows the active Prewalk role. Before handoff it remains Pi's native
+Sol reasoning control. After handoff Prewalk consumes it and cycles Luna's live
+reasoning without changing Luna's saved baseline. Use `/prewalk configure` to
+change that baseline.
 
 Commands:
 
 - `/prewalk status`
 - `/prewalk run`
 - `/prewalk cancel`
+- `/prewalk configure`
+- `/prewalk help` or `/prewalk --help`
 - `/todos`
 
 An explicit Pi model selection cancels the route without changing the user's
 selection. `/reload` restores the current extension-owned run state. New,
-resumed, and forked sessions create a fresh Sol epoch when Sol is selected.
+resumed, and forked sessions create a fresh epoch from Pi's selected model and
+reasoning.
+
+## Personal savings analytics
+
+Analytics are enabled by default and remain local to the Pi agent directory at
+`prewalk/analytics`. Only allowlisted run metadata, token counts, Pi-reported
+costs, model pricing evidence, outcomes, and timestamps are stored. Prompts,
+responses, code, tool inputs/outputs, credentials, provider payloads, raw
+errors, and filesystem paths are never persisted or exported.
+
+Actual spend is the sum of Pi-reported attributable usage. Savings are a
+planner-only counterfactual: executor-priced cost for planner usage minus the
+planner's reported actual cost. Missing or incomplete rates produce
+`unavailable`; optional dated catalog fallback is labeled `catalog-estimated`.
+Negative savings are shown as estimated extra cost. Evidence labels distinguish
+`actual`, `estimated`, `catalog-estimated`, `unavailable`, `unfinished`, and
+`verified` benchmark values.
+
+Use `/prewalk stats` for lifetime, month, week, session, and recent receipts;
+`/prewalk stats task` for the root task tree and descendant coverage;
+`/prewalk stats --successful` for successful runs; `receipt <run-id>` for
+calculation detail; `export <path>` for JSONL; and `reset` after confirmation to
+rotate to an empty generation. Export uses exclusive creation: an existing
+filename is never changed and the command tells you to choose a new filename.
+A reset during a run excludes that prior-generation run; collection resumes on
+the next run. `/prewalk configure` controls collection and catalog fallback.
+
+Catalog fallback is opt-in and honest: stock Pi exposes the active model's
+public `Model.cost`, but does not expose independent catalog provenance or an
+effective date. Prewalk therefore does not invent catalog evidence; when that
+metadata is unavailable, the estimate remains `unavailable`.
+
+Verified benchmark reports are imported as a separate, fingerprinted evidence
+summary and never enter personal totals. Delegation task trees consume only the
+optional versioned, content-free `pi-subagents` projection. Child receipts take
+precedence over matching fallback usage, while pending, partial, and unresolved
+overlap are labeled separately. Stock Pi works without `pi-codex-conversion`,
+`pi-subagents`, or any provider extension.
 
 ## Verification
 
