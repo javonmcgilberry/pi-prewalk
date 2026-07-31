@@ -80,21 +80,14 @@ Pi's native selector continues to show Sol. Use `/prewalk status` for the run,
 gate, trigger, selected model, and stable failure reason.
 
 Prewalk does not require `pi-subagents`. When it is installed, every child Pi
-launch receives the active epoch's executor profile through pi-subagents'
-versioned public policy event. The accepted profile is enforced before spawn
-and forwarded to async, resumed, and nested descendants, so no child can regain
-the planner model and reasoning tuple. Without active Prewalk, pi-subagents
-keeps its normal model behavior. Without pi-subagents, Prewalk keeps its normal
-standalone lifecycle.
-
-A child that independently starts Prewalk and has the `todo` tool follows the
-full todo gate. A strict child allowlist that omits `todo` treats the gate as
-inactive and hands off after its first successful mutation. A child mutation
-never switches the parent.
-
-To give pi-subagents' built-in writer the full gate, preserve its normal tools
-and append `todo` to `subagents.agentOverrides.worker.tools`. Read-only agents do
-not need it.
+launch is validated through Pi's public mutable `tool_call` event. Omitted
+profiles default to the active epoch's executor, and broader overrides are
+blocked before the tool executes. The accepted versioned policy is inherited by
+child processes, where the child Prewalk instance applies the same ceiling to
+nested launches without starting another automatic Prewalk epoch. Upstream
+pi-subagents remains unchanged. Without active Prewalk, pi-subagents keeps its
+normal model behavior. Without pi-subagents, Prewalk keeps its normal standalone
+lifecycle.
 
 Shift+Tab follows the active Prewalk role. Before handoff it remains Pi's native
 Sol reasoning control. After handoff Prewalk consumes it and cycles Luna's live
@@ -150,11 +143,11 @@ effective date. Prewalk therefore does not invent catalog evidence; when that
 metadata is unavailable, the estimate remains `unavailable`.
 
 Verified benchmark reports are imported as a separate, fingerprinted evidence
-summary and never enter personal totals. Delegation task trees consume only the
-optional versioned, content-free `pi-subagents` projection. Child receipts take
-precedence over matching fallback usage, while pending, partial, and unresolved
-overlap are labeled separately. Stock Pi works without `pi-codex-conversion`,
-`pi-subagents`, or any provider extension.
+summary and never enter personal totals. Delegation task trees project standard
+public subagent tool results into versioned, content-free evidence. Child
+receipts take precedence over matching fallback usage, while missing async or
+nested evidence remains pending or incomplete. Stock Pi works without
+`pi-codex-conversion`, `pi-subagents`, or any provider extension.
 
 ## Verification
 

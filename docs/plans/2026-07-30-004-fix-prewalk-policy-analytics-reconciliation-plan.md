@@ -4,20 +4,28 @@ type: fix
 date: 2026-07-30
 topic: prewalk-policy-analytics-reconciliation
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: implementation-ready
+artifact_readiness: implemented-with-architecture-correction
 product_contract_source: ce-plan-bootstrap
 execution: code
 ---
 
 # Reconcile Prewalk Planner Authority, Analytics, and Subagent Policy
 
+> **2026-07-31 architecture correction:** The implementation must not modify or replace
+> `pi-subagents`. Prewalk owns the complete optional integration through stock Pi's public,
+> mutable `tool_call` event, observes standard `tool_result` details for analytics, and carries
+> one strict Prewalk-owned policy snapshot to child processes for nested enforcement. The
+> canonical and installed upstream `pi-subagents` package remains unchanged. This correction
+> supersedes every requirement and implementation unit below that assigns policy or analytics
+> production code to the `pi-subagents` repository.
+
 ## Goal Capsule
 
 - **Objective:** Make Pi's selected runtime model and reasoning authoritative for every new Prewalk epoch, finish the observation-only analytics work from Plan 003, and add a separate pi-subagents execution-profile ceiling that prevents expensive planner-profile fan-out.
-- **Authority order:** The Pi runtime owns the planner profile. The active Prewalk epoch snapshots the selected model and initial reasoning, follows Pi reasoning changes until handoff, and supplies executor defaults. pi-subagents enforces the accepted inherited and dynamic execution-profile ceilings before any child launch.
+- **Authority order:** The Pi runtime owns the planner profile. The active Prewalk epoch snapshots the selected model and initial reasoning, follows Pi reasoning changes until handoff, and Prewalk rewrites or rejects subagent launch arguments at Pi's public pre-execution boundary.
 - **Execution order:** Correct Plan 002 and its implementation first, complete Plan 003 analytics second, then add the separate launch-policy contract.
 - **Compatibility boundary:** Prewalk remains independently installable, the Pi setup continues to pin it as a Git submodule, and neither extension imports or requires the other.
-- **Failure boundary:** If an active ceiling cannot resolve an authenticated, supported child profile below the planner, pi-subagents rejects the launch before creating child artifacts, sessions, processes, or provider requests.
+- **Failure boundary:** If an active ceiling cannot resolve a supported child profile below the planner, Prewalk blocks the tool call before `pi-subagents` creates child artifacts, sessions, processes, or provider requests.
 - **Tail ownership:** This plan ends with one combined correctness and reliability review, one consolidated fix pass, and final comprehensive verification. It does not commit, push, publish, or open a pull request.
 
 ---
@@ -30,9 +38,9 @@ execution: code
 
 Prewalk must treat the model and reasoning already selected in Pi as the planner for each new epoch. Prewalk configuration owns the executor model and executor reasoning only. The executor inherits the same session after the OMP handoff gate, while Pi's selected model remains unchanged.
 
-Analytics observes that lifecycle without choosing models or changing routing. Session receipts remain useful when pi-subagents is absent. When pi-subagents is present, its versioned content-free delegation projection supplies direct and nested child identity, lifecycle, and child-only usage evidence for task-tree reporting.
+Analytics observes that lifecycle without choosing models or changing routing. Session receipts remain useful when pi-subagents is absent. When its tool is present, Prewalk consumes the standard public tool result details and records versioned content-free fallback evidence. Missing asynchronous or nested terminal evidence stays explicitly pending or incomplete rather than being guessed.
 
-Launch control is separate from analytics. During an active Prewalk epoch, pi-subagents requests a versioned execution-profile policy through Pi's public in-process event bus, intersects it with any inherited ceiling, resolves the child profile centrally, and propagates the accepted snapshot to descendants.
+Launch control is separate from analytics. During an active Prewalk epoch, Prewalk mutates the public `subagent` tool input to the configured executor profile or blocks a broader override. A strict Prewalk-owned environment snapshot is inherited by child Pi processes, where the independently loaded Prewalk extension applies the same ceiling to nested launches without starting another automatic Prewalk.
 
 ### Problem Frame
 
@@ -46,8 +54,8 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 
 - A1. **Pi user:** Selects the planner model and reasoning, configures Prewalk's executor defaults, and expects delegated work to respect the cheaper execution boundary.
 - A2. **Pi host:** Owns selected model and reasoning, supported model metadata, authentication, lifecycle events, and the public extension event bus.
-- A3. **Prewalk:** Snapshots the planner profile per epoch, performs the OMP-faithful handoff, records local analytics, and optionally answers execution-policy requests while its epoch is active.
-- A4. **pi-subagents:** Publishes delegation analytics, requests and enforces execution-profile policy, launches children, and propagates accepted ceilings.
+- A3. **Prewalk:** Snapshots the planner profile per epoch, performs the OMP-faithful handoff, records local analytics, and enforces its optional subagent policy through Pi's public tool lifecycle.
+- A4. **pi-subagents:** Remains the unmodified upstream extension that validates the rewritten public arguments, launches children, and returns its normal result details.
 - A5. **Child and descendant agents:** Run with an effective profile that satisfies every inherited and active ceiling.
 
 ### Key Decisions
@@ -63,7 +71,7 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 **Planner and handoff authority**
 
 - R1. A new Prewalk epoch must snapshot Pi's currently selected model and reasoning as its initial planner profile. The planner model remains fixed for that epoch unless a model change cancels it.
-- R2. Persisted Prewalk configuration must contain enabled state, executor model, executor reasoning, analytics configuration, and any approved reset profile, but no planner selection.
+- R2. Persisted Prewalk configuration must contain executor model, executor reasoning, analytics configuration, and any approved reset profile, but no activation or planner selection. Automatic activation is session-only.
 - R3. Before handoff, Shift+Tab must remain Pi's normal planner-reasoning control and update the epoch's current planner reasoning. After handoff, Prewalk must consume Shift+Tab and cycle only the active epoch's executor reasoning. Shift+Tab must never change a model.
 - R4. An explicit Pi model change may cancel an active epoch, but the next epoch must derive its planner from the newly selected runtime model.
 - R5. Status, audit records, receipts, reload state, and provider routing must use the epoch's host-owned planner state rather than a persisted planner. Reload restores routing only when the selected model and current planner reasoning match the latest valid epoch record.
@@ -80,22 +88,22 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 - R10. Analytics must remain observation-only: it must not select a model, change reasoning, route a request, create a provider request, or delay the provider stream.
 - R11. Reset must rotate to a clean generation immediately, preserve retryable cleanup state when prior managed artifacts remain, and report incomplete cleanup until verification succeeds.
 - R12. Task-tree aggregation must deduplicate only matching usage-slice evidence keys and must label pending, fallback-backed, overlap-unresolved, unsupported, and incomplete coverage explicitly.
-- R13. Prewalk must consume delegation evidence only through the versioned public event projection. Its real event listener must accept authenticated direct and nested descendants across parallel and successive invocations without tests writing evidence directly into storage.
-- R14. pi-subagents must publish foreground start before completion, child-only progress and terminal evidence, and durable active or terminal replay across reload for foreground and asynchronous launches. Later same-lineage evidence may add identity or usage but must not regress lifecycle certainty or replace a known child identity.
-- R15. Delegation analytics must remain additive, content-free, independent of launch control, and behaviorally invisible when no consumer is installed.
+- R13. Prewalk must consume delegation evidence through Pi's public `tool_execution_start` and `tool_result` events and the standard pi-subagents result shape, without importing the package or reading child session files.
+- R14. Direct terminal results supply child-only usage. Async launches remain pending until a public terminal result is observed, and nested usage unavailable from that result is reported as incomplete.
+- R15. Delegation analytics must remain content-free, independent of launch control, and behaviorally invisible when the `subagent` tool is absent.
 
 **Execution-profile policy**
 
-- R16. pi-subagents must define a strict versioned before-spawn execution-profile contract over Pi's public in-process event bus. Absent responders preserve existing pi-subagents behavior.
-- R17. An active Prewalk epoch must answer policy requests with its immutable planner identity, executor default, allowed model set, maximum reasoning, epoch identity, and source. Prewalk must not import pi-subagents.
-- R18. pi-subagents must intersect every dynamic response with the inherited accepted ceiling, choose the Prewalk executor profile by default, reject the exact planner model-and-reasoning tuple, and allow explicit overrides only when they narrow the accepted policy.
-- R19. Policy resolution must happen before fallback selection and before any artifact, session, child process, or provider request. If no authenticated supported profile satisfies the ceiling, the launch must fail with an actionable error and must not choose an arbitrary model.
-- R20. Foreground, asynchronous, parallel, chain, dynamic-fanout, Delegation v1/v2, resumed, recovered, and nested launches must use the same central resolution. Descendants must inherit the accepted snapshot and cannot regain a broader profile.
-- R21. Prewalk-only and pi-subagents-only operation must retain existing behavior. Reload must not revive a stale Prewalk epoch, while resume of an existing child must retain the ceiling accepted for that child.
+- R16. Prewalk must define a strict versioned execution-profile snapshot and apply it only when an active epoch or inherited snapshot exists. Upstream pi-subagents remains unchanged.
+- R17. Prewalk must mutate the public `subagent` tool input before execution, defaulting every single, parallel, chain, and dynamic child to the configured executor model and reasoning.
+- R18. Explicit overrides may use only the configured executor model at the default or lower allowed reasoning. The exact planner tuple and every broader or different model must be blocked.
+- R19. Policy resolution must finish in `tool_call` before pi-subagents creates an artifact, session, child process, or provider request. Unavailable policy fails with an actionable error and never chooses an arbitrary model.
+- R20. The accepted snapshot must be inherited by child processes so their independently loaded Prewalk extension applies the same rule to nested launches. Child sessions must not start another automatic Prewalk.
+- R21. Prewalk-only and pi-subagents-only operation retain existing behavior. Reload cannot revive a stale root epoch, while a live inherited child snapshot remains immutable for nested launches.
 
 **Reliability and scope**
 
-- R22. Keep deterministic condition-based test synchronization. Remove broad integration-suite serialization, unjustified timeout inflation, the broad quiet-child polling window, and the unrelated production startup retry-window increase.
+- R22. Keep deterministic condition-based synchronization in Prewalk tests and do not introduce timing changes in upstream pi-subagents.
 - R23. Preserve existing dirty work and the staged Prewalk submodule architecture. Do not modify installed package caches, generated files, or manually maintained changelog output.
 - R24. Keep all work local and unpublished unless the user separately authorizes staging, commit, push, publication, or a pull request.
 
@@ -116,19 +124,19 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 - F3. **Observe a delegated task tree**
   - **Trigger:** pi-subagents starts, updates, or finishes a child.
   - **Actors:** A3, A4, A5
-  - **Steps:** pi-subagents publishes versioned content-free lineage and child-only usage evidence; Prewalk validates and journals it; task-tree reporting joins receipts and matching fallback slices.
+  - **Steps:** Prewalk observes the public subagent tool lifecycle, projects standard result details into versioned content-free evidence, and joins receipts and matching fallback slices.
   - **Outcome:** Totals are complete only when evidence proves completeness, with unresolved coverage visible.
 
 - F4. **Constrain a child launch**
-  - **Trigger:** pi-subagents is about to resolve a child model and reasoning while a Prewalk epoch is active.
+  - **Trigger:** Pi is about to execute the public subagent tool while a Prewalk epoch is active.
   - **Actors:** A2, A3, A4
-  - **Steps:** pi-subagents emits a synchronous versioned policy request, validates every response, intersects responses with inherited policy, resolves one allowed authenticated profile, and records the accepted snapshot in launch context.
+  - **Steps:** Prewalk validates and atomically rewrites every launch profile through Pi's mutable `tool_call` event, then exposes the accepted snapshot through the child environment inherited by ordinary process launch.
   - **Outcome:** No child provider request can use the forbidden planner tuple.
 
 - F5. **Propagate and restore policy**
   - **Trigger:** A constrained child launches a nested child or resumes after reload.
   - **Actors:** A3, A4, A5
-  - **Steps:** pi-subagents decodes the inherited snapshot, intersects any active local response, persists the accepted identity with recovery state, and rejects stale or broader data.
+  - **Steps:** The child Prewalk instance decodes the immutable inherited snapshot, suppresses a second automatic epoch, and applies the same public `tool_call` validation to nested launches. Root reload derives policy only from a live epoch.
   - **Outcome:** Nested and resumed work cannot escape the root ceiling.
 
 ### Acceptance Examples
@@ -177,12 +185,12 @@ pi-subagents currently has no model-and-reasoning ceiling tied to an active Prew
 
 - KTD1. **Construct a host-owned epoch profile.** Build the run from Pi's selected model and initial reasoning plus the persisted executor defaults. Keep the planner model fixed, update current planner reasoning only from Pi's pre-handoff reasoning event, and carry both through audit, status, reload, provider, and analytics records. Configuration parsing rejects the old planner-bearing shape rather than carrying a fallback. Governs R1 through R5.
 - KTD2. **Keep OMP adaptation narrow.** Preserve prompt bytes and coordinator transitions. Context and compaction projection distinguish the planning nudge from continuation and checklist messages, and stock provider fallback remains the default lane. Governs R6 through R9.
-- KTD3. **Authenticate a delegation tree, not one immediate parent.** Prewalk keeps a bounded invocation registry, establishes each root invocation and accepted delegation run, then validates descendant parent-child continuity and stable child identities across replay rather than requiring every event's parent to equal the root parent. Out-of-order descendants remain pending until an admitted parent appears. Governs R13 and R14.
-- KTD4. **Persist foreground and async projection uniformly.** pi-subagents publishes start at launch time and stores current projection state in a content-free durable record that both foreground and async reload paths can replay. A later same-lineage record may add child identity, usage, or stronger terminal certainty when its observation is newer, but cannot regress lifecycle or replace a known identity. Governs R12 through R15.
-- KTD5. **Use a separate synchronous event-bus policy request.** pi-subagents emits `pi-subagents:execution-profile-policy:request:v1` with a version, unique request ID, session and launch identity, and an owned `respond(source, policy)` collector callback. The collector accepts at most one response per validated source and at most 16 responses while `EventBus.emit()` is on the stack, closes immediately when `emit()` returns, rejects late or duplicate responses, sorts accepted responses by source before deterministic intersection, and treats no response as no dynamic ceiling. Prewalk registers through public `events.on()`, retains the returned disposer, answers only for the matching active epoch, and disposes the handler on extension reload or shutdown. Any malformed response fails the launch closed. The wire contract contains no task text or analytics fields. Governs R16 and R17.
+- KTD3. **Observe the standard tool lifecycle.** Prewalk keeps a bounded invocation registry from public `tool_execution_start` events and projects standard `tool_result` details into content-free terminal or pending evidence. Unsupported nested or asynchronous gaps remain explicit instead of triggering private file reads or a package patch. Governs R13 and R14.
+- KTD4. **Keep upstream pi-subagents untouched.** Prewalk optionally recognizes the public `subagent` tool name and documented input/result shapes. No package import, custom producer event, installed-cache edit, or maintained fork is part of the runtime. Governs R13 through R17.
+- KTD5. **Use Pi's mutable tool-call boundary.** Prewalk validates and rewrites `event.input` synchronously during `tool_call`, which Pi guarantees affects actual execution. A malformed or broader request is blocked before the tool runs. Governs R16 and R17.
 - KTD6. **Represent policy as explicit allowed profiles.** The accepted snapshot contains the planner tuple, a default child profile, an allowlist of provider/model profiles with maximum reasoning, source, epoch, and version. The initial Prewalk response allows its configured executor and lower supported reasoning only. This avoids speculative price comparison. Governs R18 and R19.
-- KTD7. **Enforce before fallback and spawn.** One shared resolver filters candidate models and reasoning before launch construction. All launch modes consume its result rather than applying policy independently after selection. The exact planner tuple is always rejected even if malformed policy attempts to include it. Governs R18 through R20.
-- KTD8. **Propagate monotonically.** Serialize the accepted snapshot into supported child launch context, validate it on entry, intersect it with any local dynamic response, and retain the accepted snapshot in resume and recovery state. Invalid inherited state fails closed. Governs R20 and R21.
+- KTD7. **Enforce before the tool executes.** One Prewalk resolver validates single, parallel, chain, and dynamic inputs atomically, so a rejected sibling cannot leave partial mutations. The exact planner tuple is always rejected. Governs R18 through R20.
+- KTD8. **Propagate a Prewalk-owned snapshot.** Serialize the accepted snapshot in one strict environment value inherited by child processes. The child Prewalk extension disables its automatic planning loop and uses the immutable snapshot only to constrain nested `subagent` calls. Governs R20 and R21.
 - KTD9. **Separate reliability fixes by mechanism.** Keep condition polling that observes a real state transition. Remove serialization and widened time thresholds unless a focused reproduced failure proves a distinct product defect. Governs R22 and R23.
 
 ### High-Level Technical Design
@@ -193,34 +201,29 @@ flowchart TB
   C["Prewalk executor configuration"] --> E
   E --> H["OMP coordinator and provider handoff"]
   E --> A["Observation-only analytics"]
-  E --> R["Policy response while epoch active"]
-  S["pi-subagents before-spawn resolver"] --> Q["Public policy request"]
-  Q --> R
-  I["Inherited ceiling"] --> S
-  R --> S
-  S --> V{"Allowed authenticated profile?"}
-  V -->|yes| L["Create launch artifacts and child"]
-  V -->|no| F["Fail before launch"]
+  E --> R["Prewalk tool-call policy"]
+  T["Public subagent tool call"] --> R
+  I["Inherited ceiling"] --> R
+  R --> V{"Allowed executor profile?"}
+  V -->|yes| L["Rewrite arguments, then launch"]
+  V -->|no| F["Block before tool execution"]
   L --> N["Forward accepted ceiling to descendants"]
 ```
 
 ```mermaid
 sequenceDiagram
-  participant PS as pi-subagents
-  participant EB as Pi event bus
+  participant Pi as Pi tool lifecycle
   participant PW as Prewalk
-  participant MR as Model registry
+  participant PS as upstream pi-subagents
   participant CP as Child process
-  PS->>EB: execution-profile request v1
-  EB->>PW: synchronous request
-  PW-->>EB: active epoch policy
-  EB-->>PS: collected responses
-  PS->>PS: validate and intersect inherited policy
-  PS->>MR: resolve allowed authenticated profile
+  Pi->>PW: mutable tool_call
+  PW->>PW: validate and rewrite every launch profile
   alt allowed
-    PS->>CP: launch with accepted snapshot
+    PW-->>Pi: continue with executor profile
+    Pi->>PS: execute ordinary tool input
+    PS->>CP: launch with inherited environment
   else unavailable or forbidden
-    PS-->>PS: actionable pre-launch failure
+    PW-->>Pi: block with actionable error
   end
 ```
 
@@ -239,10 +242,10 @@ stateDiagram-v2
 ### Sequencing
 
 1. Correct the planner/configuration contract and OMP boundaries before analytics consumes the new epoch identity.
-2. Complete pi-subagents delegation projection before relying on it for task-tree accounting.
+2. Complete Prewalk's projection of standard pi-subagents results before relying on it for task-tree accounting.
 3. Finish Prewalk task-tree and cleanup behavior against the stable projection.
 4. Add execution-profile policy only after Plan 003 analytics is accepted, keeping the contracts in separate modules and tests.
-5. Remove unrelated timing workarounds, run comprehensive checks, review the complete diff once, apply one consolidated fix pass, and run final verification.
+5. Run comprehensive checks, review the complete diff once, apply one consolidated fix pass, and run final verification.
 
 ### Risks and Mitigations
 
@@ -301,29 +304,11 @@ stateDiagram-v2
   5. Prompt digests and every applicable OMP parity fixture remain unchanged.
 - **Verification:** Real Agent-loop composition and focused provider, context, compaction, status, and parity tests prove the narrow adaptation.
 
-### U3. Complete the public delegation analytics projection
+### U3. Rejected pi-subagents analytics producer
 
-- **Target repo:** `pi-subagents`
-- **Goal:** Publish timely, durable, content-free direct and nested child lifecycle evidence for Plan 003.
-- **Requirements:** R12 through R15, AE5, AE6
-- **Dependencies:** U2
-- **Files:** `src/shared/types.ts`, `src/runs/shared/delegation-analytics.ts`, `src/runs/foreground/subagent-executor.ts`, `src/runs/background/async-execution.ts`, `src/runs/background/async-job-tracker.ts`, `src/runs/background/async-resume.ts`, `src/extension/index.ts`, `test/unit/delegation-analytics-contract.test.ts`, `test/integration/delegation-analytics-events.test.ts`, `test/integration/async-job-tracker.test.ts`
-- **Approach:**
-  1. Emit foreground start when launch identity exists rather than after results return.
-  2. Persist current foreground and async projection state in one bounded content-free format and replay active or terminal state after reload.
-  3. Preserve root, immediate parent, delegation run, child index, resolved child session, lifecycle, and child-only usage keys through nested launches, parallel siblings, successive invocations, and convergent terminal updates.
-  4. Keep the deterministic `waitForCondition` cleanup test improvement.
-- **Execution note:** Build one failing public-event composition test for foreground start-before-terminal, then extend the same contract to replay and nesting.
-- **Patterns to follow:** `src/runs/shared/capability-ceiling.ts` version validation and the existing async delegation projection.
-- **Test scenarios:**
-  1. Foreground single and parallel children emit start before terminal with stable lineage.
-  2. Chain and nested children retain root identity and name their immediate parent.
-  3. Async lifecycle progresses to terminal with child-only usage and replays after reload.
-  4. Foreground active and terminal state replays after reload without task, output, path, or raw error content.
-  5. A newer same-lineage terminal record may add a resolved child identity and usage, while a stale or running record cannot regress it.
-  6. Failed, interrupted, timed-out, stopped, and incomplete children never invent usage.
-  7. Existing orchestration result shapes remain unchanged.
-- **Verification:** Unit contract and concurrent integration tests prove timing, lineage, replay, privacy, and additive behavior.
+- **Status:** Rejected and replaced.
+- **Target repo:** None. The upstream `pi-subagents` source and installed package stay unchanged.
+- **Replacement:** U4 projects ordinary upstream `tool_execution_start` and `tool_result` data through `src/analytics-subagents.ts`. Terminal or nested evidence that the public result cannot prove stays pending or incomplete.
 
 ### U4. Finish Plan 003 analytics behavior
 
@@ -350,54 +335,49 @@ stateDiagram-v2
   7. Storage and reporting failures do not change selected model, reasoning, route, or provider-request count.
 - **Verification:** Focused store, report, adapter, command, extension, and real Agent-loop tests satisfy every remaining Plan 003 acceptance case.
 
-### U5. Add the execution-profile ceiling
+### U5. Add the Prewalk-owned execution-profile ceiling
 
-- **Target repos:** `pi-subagents`, then `pi-prewalk`
+- **Target repo:** `pi-prewalk`
 - **Goal:** Enforce the active Prewalk executor boundary across every pi-subagents launch path and descendant.
 - **Requirements:** R16 through R21, AE8 through AE11
 - **Dependencies:** U4
-- **Files:** `src/api/execution-profile-ceiling.ts`, `src/runs/shared/execution-profile-ceiling.ts`, `src/runs/shared/model-fallback.ts`, `src/runs/shared/pi-args.ts`, `src/runs/foreground/execution.ts`, `src/runs/foreground/subagent-executor.ts`, `src/runs/foreground/chain-execution.ts`, `src/runs/background/async-execution.ts`, `src/runs/background/async-resume.ts`, `src/runs/background/subagent-runner.ts`, `src/shared/types.ts`, `src/extension/index.ts`, `test/unit/execution-profile-ceiling.test.ts`, `test/integration/execution-profile-policy.test.ts`; in Prewalk: `src/subagent-execution-policy.ts`, `extensions/prewalk.ts`, `test/subagent-execution-policy.test.ts`, `test/agent-loop.test.ts`, `README.md`
+- **Files:** `src/execution-profile-policy.ts`, `src/subagent-policy.ts`, `extensions/prewalk.ts`, `test/execution-profile-policy.test.ts`, `test/subagent-policy.test.ts`, `test/extension.test.ts`, `test/agent-loop.test.ts`, `README.md`
 - **Approach:**
-  1. Define and export the strict versioned request, response, accepted snapshot, validation, intersection, and serialization contracts in pi-subagents.
-  2. Request dynamic policy over Pi's public event bus and combine it with inherited policy before model fallback and launch construction.
-  3. Make every foreground, async, parallel, chain, dynamic, delegation, resume, and recovery path consume the shared resolved profile.
-  4. Propagate the accepted snapshot through supported child environment, launch-contract digest, async status, recovery descriptors, and resume state. Resume intersects the persisted snapshot with any current inherited ceiling before process creation.
-  5. Add an independent Prewalk responder that answers only for the matching active epoch and duplicates the minimal wire schema without importing pi-subagents.
+  1. Define a strict versioned Prewalk execution-profile snapshot and reject invalid inherited data.
+  2. Observe Pi's mutable public `tool_call` event and atomically default or validate single, parallel, chain, dynamic, delegation, and resume arguments before tool execution.
+  3. Block a forbidden or unavailable profile before pi-subagents can create artifacts, sessions, processes, or provider requests.
+  4. Publish the accepted snapshot in the child process environment only for the duration of the tool execution. A child Prewalk instance enforces that inherited ceiling on nested launches and does not start a second automatic epoch.
+  5. Keep upstream pi-subagents untouched and preserve its behavior when no Prewalk epoch or inherited snapshot exists.
 - **Execution note:** Begin with a failing real-composition test in which Sol/high would currently launch an ordinary child as Sol/high, and assert that no provider request uses that tuple.
-- **Patterns to follow:** Session-scoped registration, intersection, encoding, and nested propagation in `src/runs/shared/capability-ceiling.ts` and `src/runs/shared/pi-args.ts`.
+- **Patterns to follow:** OMP's extension-only composition and Pi's documented mutable `tool_call` lifecycle.
 - **Test scenarios:**
-  1. No responder preserves existing pi-subagents behavior.
+  1. No active Prewalk policy preserves existing pi-subagents behavior.
   2. Active Prewalk defaults an override-free child to the configured executor profile.
   3. An allowed lower-reasoning override succeeds, while a forbidden model or reasoning fails before launch.
   4. No authenticated supported allowed profile produces an actionable pre-launch failure with zero provider requests.
-  5. Foreground, async, parallel, chain, dynamic-fanout, Delegation v1, and Delegation v2 resolve the same effective policy before artifacts or provider requests.
-  6. Resume retains the original accepted ceiling even after the active epoch changes.
+  5. Foreground, async, parallel, chain, dynamic-fanout, and delegation-shaped inputs resolve the same effective policy before tool execution.
+  6. Resume executes with the inherited ceiling still present.
   7. Nested children inherit and may narrow but never broaden the root ceiling.
-  8. Reload clears stale Prewalk responders and does not revive a cancelled epoch.
+  8. Reload clears stale root epochs and preserves only a valid inherited child snapshot.
   9. Prewalk-only operation and pi-subagents-only operation remain unchanged.
 - **Verification:** Public-interface unit and real-composition tests prove effective model and reasoning, policy identity, propagation, failure timing, and zero forbidden requests.
 
-### U6. Remove unrelated timing workarounds and verify the complete system
+### U6. Verify the complete system
 
-- **Target repos:** `pi-subagents`, `pi-prewalk`, and the Pi setup
-- **Goal:** Restore meaningful concurrency coverage, confirm packaging boundaries, and complete one bounded review and verification tail.
+- **Target repos:** `pi-prewalk` and the Pi setup
+- **Goal:** Confirm the public composition and packaging boundaries, then complete one bounded review and verification tail.
 - **Requirements:** R22 through R24
 - **Dependencies:** U1 through U5
-- **Files:** `package.json`, `src/runs/shared/subagent-startup-retry.ts`, `test/integration/async-execution.test.ts`, `test/integration/parallel-execution.test.ts`, `test/integration/single-execution.test.ts`, `test/integration/async-job-tracker.test.ts`; in Prewalk: `package.json`, `README.md`, `prewalk.example.json`; in the Pi setup: `.gitmodules`, `README.md`, `setup.sh`, `scripts/check.sh`
+- **Files:** In Prewalk: `package.json`, `README.md`, `prewalk.example.json`; in the Pi setup: `.gitmodules`, `README.md`, `setup.sh`, `scripts/check.sh`
 - **Approach:**
-  1. Restore concurrent integration execution and the original production startup retry classification.
-  2. Remove widened timing thresholds and broad polling introduced only to pass Plan 003 verification, retaining condition-based synchronization tied to observable state.
-  3. Confirm the Pi setup still pins and installs the independent Prewalk checkout without modifying installed caches.
-  4. Run each repository's comprehensive checks once, conduct one combined read-only correctness and reliability review, apply accepted findings in one consolidated pass, and run final verification.
-- **Execution note:** If restoring a threshold reproduces a real defect, preserve the failing case and fix the lifecycle synchronization rather than raising the threshold again.
-- **Patterns to follow:** Existing concurrent integration scripts and `waitForCondition` helpers.
+  1. Confirm the Pi setup pins and installs the independent Prewalk checkout while retaining the upstream pi-subagents package selector.
+  2. Run Prewalk's comprehensive checks once, conduct one combined read-only correctness and reliability review, apply accepted findings in one consolidated pass, and run final verification.
+- **Execution note:** Treat any unrelated pi-subagents fork or timing changes as out of scope and inactive.
+- **Patterns to follow:** Existing Prewalk verification and Pi setup checks.
 - **Test scenarios:**
-  1. Integration tests pass under normal concurrency without shared projection contamination.
-  2. Timeout-specific tests still exercise actual timeout behavior at bounded values.
-  3. Startup retry classification remains strict and unrelated model failures are not retried.
-  4. Pi setup dry-run resolves the pinned Prewalk submodule and leaves installed caches untouched.
-  5. Package dry-runs include runtime policy and analytics modules but exclude local journals, projections, and exports.
-- **Verification:** Comprehensive Prewalk, pi-subagents, real-session, package, and Pi setup checks pass before and after the consolidated review fix pass.
+  1. Pi setup dry-run resolves the pinned Prewalk submodule, selects upstream pi-subagents, and leaves installed caches untouched.
+  2. Package dry-runs include runtime policy and analytics modules but exclude local journals, projections, and exports.
+- **Verification:** Comprehensive Prewalk, real-session, package, and Pi setup checks pass before and after the consolidated review fix pass.
 
 ---
 
@@ -408,13 +388,12 @@ All test invocations must use the repository's `run-tests-on-request` skill.
 | Gate | Repository | Coverage | Done signal |
 |---|---|---|---|
 | Focused planner and OMP | `pi-prewalk` | Config, core, audit, status, provider, context, compaction, extension, Agent loop | Runtime planner authority and OMP boundaries pass |
-| Focused delegation analytics | `pi-subagents` | Contract, foreground timing, nested lineage, async and foreground replay | Public projection is timely, durable, and content-free |
+| Focused delegation analytics | `pi-prewalk` | Standard tool lifecycle projection, direct usage, nested incomplete coverage | Public projection is durable and content-free |
 | Focused Prewalk analytics | `pi-prewalk` | Ledger, reset, report, adapter, command, task tree | Plan 003 gaps pass through public surfaces |
-| Focused execution policy | Both extension repos | Contract, intersection, serialization, fallback, every launch mode, real composition | No forbidden provider request and nested ceilings remain monotonic |
-| Comprehensive pi-subagents | `pi-subagents` | Unit, integration under normal concurrency, E2E and real-session checks | All required suites pass without broad serialization |
+| Focused execution policy | `pi-prewalk` | Contract, serialization, every public launch shape, inherited composition | No forbidden provider request and nested ceilings remain monotonic |
 | Comprehensive Prewalk | `pi-prewalk` | Lint, typecheck, unit, Agent loop, smoke RPC, package dry-run, diff validation | All required suites and packaging checks pass |
 | Pi setup | Pi setup | Shell and JSON validation, submodule/install dry-run, secret boundary | Setup checks pass without installed-cache changes |
-| Combined review | Both extension repos and Pi setup | Complete diff against this plan | No unresolved correctness or reliability blocker |
+| Combined review | Prewalk and Pi setup | Complete diff against this plan | No unresolved correctness or reliability blocker |
 | Final verification | All affected repositories | Affected focused checks followed by comprehensive checks | Exact final results recorded |
 
 ---
@@ -431,7 +410,7 @@ All test invocations must use the repository's `run-tests-on-request` skill.
 - Every pi-subagents launch path enforces and propagates the active execution-profile ceiling before launch.
 - The forbidden planner tuple never reaches a provider in composition tests.
 - Both extensions still work independently.
-- Broad test serialization, unjustified timeout inflation, and the unrelated startup retry expansion are absent, while deterministic condition synchronization remains.
+- Deterministic Prewalk test synchronization remains, and upstream pi-subagents contains no changes from this plan.
 - Required focused, comprehensive, review, and final verification gates pass.
 - The Prewalk submodule architecture remains intact.
 - No installed cache, generated file, commit, push, publication, pull request, or release state is changed.

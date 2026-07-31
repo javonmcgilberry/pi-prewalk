@@ -17,7 +17,7 @@ deepened: 2026-07-30
 - **Objective:** Give each Prewalk user a trustworthy local ledger of actual spend and estimated savings across sessions, with inspectable receipts or explicitly labeled fallback evidence behind every aggregate and receipt precedence where overlap is proven.
 - **Product authority:** Pi-reported usage and cost are authoritative for actual spend. Counterfactual estimates and benchmark-verified results remain visibly distinct.
 - **Privacy boundary:** Analytics stay local and retain numeric operational data only.
-- **Execution profile:** Build the complete confirmed analytics scope in seven dependency-ordered implementation units across Prewalk and the related `pi-subagents` repository. Invoke the `run-tests-on-request` skill for implementation verification.
+- **Execution profile:** Build the complete confirmed analytics scope in Prewalk while treating the standard upstream `pi-subagents` tool contract as an optional public input. Invoke the `run-tests-on-request` skill for implementation verification.
 - **Tail ownership:** The final unit owns real Pi Agent-loop coverage, packaging, documentation, and cleanup of abandoned implementation attempts.
 - **Open blockers:** None at planning time. U2 and U4 task-tree work wait for U7 to publish the versioned public delegation projection, while session-only analytics can proceed independently. Missing trustworthy pricing produces an unavailable estimate instead of blocking collection.
 
@@ -283,8 +283,8 @@ flowchart TB
 - Public catalog pricing can change, so a catalog estimate requires source and effective-date visibility.
 - The Prewalk run lifecycle provides a stable identity and terminal outcome for receipt finalization.
 - Controlled benchmark evidence remains the only authority for the verified label.
-- `pi-subagents` 0.37.2 tool-result details do not expose enough stable lineage or asynchronous terminal evidence to implement R25 through R28 safely.
-- The related `pi-subagents` repository must publish the versioned delegation projection in U7 before Prewalk enables task-tree financial aggregation.
+- Standard pi-subagents tool results expose direct-child run identity and usage. Evidence absent from those public results, including unresolved asynchronous completion and incomplete nested breakdowns, must remain pending or incomplete.
+- The upstream pi-subagents source and installed package remain unchanged.
 - A child receipt may be absent because the child did not load Prewalk, did not reach a durable boundary, or crashed. Fallback metadata can recover actual spend but cannot create a session-counterfactual estimate.
 
 ### Sources and Research
@@ -367,11 +367,11 @@ Prompts, assistant content, code, tool inputs and outputs, raw errors, headers, 
 
 The compact Prewalk footer remains focused on routing state. Analytics detail belongs in command output and `/prewalk --help`, so long-term totals do not recreate the footer overflow the extension already addressed.
 
-#### KTD10. Reconcile task trees through versioned child-only lineage evidence
+#### KTD10. Reconcile task trees through versioned child-only evidence
 
 Current-session remains an exact Pi session filter. A separate task-tree query starts from a root session and walks content-free ancestry fields across direct and nested descendants.
 
-The related `pi-subagents` extension will publish a versioned projection for direct and nested child start and terminal events. Each record contains root, parent, and child session IDs, delegation run ID, child index, lifecycle state, child-only usage slices, and stable usage-slice evidence keys. The child receives the same lineage at launch so its journal and later receipt can persist matching identifiers.
+Prewalk projects Pi's public subagent tool lifecycle and standard result details into versioned evidence. Each supported record contains locally observed root and parent session IDs, delegation run ID, child index, lifecycle state, child-only usage slices, and stable usage-slice evidence keys. Fields not proven by the public result, such as a child Pi session ID or a complete nested usage breakdown, are omitted and reported as incomplete.
 
 Prewalk binds the parent and root identities to its locally owned journal and the locally observed delegation invocation. It rejects lineage that conflicts with those facts. Matching prefers shared child identity, then shared child index within the same root, parent, and delegation run. Evidence with no common identifier remains unlinked.
 
@@ -379,7 +379,7 @@ A child receipt supersedes fallback evidence only when their usage-slice evidenc
 
 #### KTD11. Keep delegation integration optional, versioned, and fail-closed
 
-Prewalk will discover the public delegation projection through the supported extension event bus without importing `pi-subagents` or reading its artifacts. The projection replays active and terminal descendant state after reload so asynchronous completion can converge without another status command.
+Prewalk observes Pi's supported `tool_execution_start` and `tool_result` events without importing `pi-subagents` or reading its artifacts. Direct terminal results converge when upstream returns complete standard details. Asynchronous or nested state that never reaches a standard terminal result remains explicitly pending or incomplete.
 
 Prewalk accepts financial evidence only from explicitly supported contract versions. Tokens must be finite nonnegative integers, costs must be finite nonnegative numbers, and component totals must reconcile before persistence. Invalid, unauthenticated, unsupported, or aggregate-only evidence contributes only a content-free coverage reason.
 
@@ -390,7 +390,7 @@ Stock Pi and every existing receipt view continue to work without `pi-subagents`
 ```mermaid
 flowchart LR
     E["Pi public events"] --> C["Usage attribution"]
-    D["Versioned delegation event projection"] --> Q["Authenticated lineage and child-only evidence"]
+    D["Standard subagent tool results"] --> Q["Validated child-only evidence"]
     P["Prewalk run state"] --> C
     C --> J["Per-run journal"]
     J --> R["Immutable receipt"]
@@ -485,7 +485,7 @@ Unknown arguments fail with compact usage guidance. Disabling analytics stops fu
 
 ### Sequencing and Ownership
 
-U1 establishes the domain and configuration contract. U7 then publishes the delegation protocol in the related `pi-subagents` repository. U2 and U3 may begin after U1, but U2's delegation adapter and U4's task-tree integration require U7. U4 depends on U2 and U3. U5 depends on U1 and the existing benchmark verifier. U6 is the integration and release tail and depends on U4, U5, and U7.
+U1 establishes the domain and configuration contract. U2 and U3 may begin after U1. U7 implements the optional public-result adapter in Prewalk and feeds U4's task-tree integration. U4 depends on U2, U3, and U7. U5 depends on U1 and the existing benchmark verifier. U6 is the integration and release tail and depends on U4, U5, and U7.
 
 ```mermaid
 flowchart LR
@@ -510,7 +510,7 @@ flowchart LR
 - Do not add a native storage package or remote telemetry SDK.
 - Make writes owner-readable only and atomic. Never construct temporary names from untrusted run identifiers without validation.
 - Use one canonical source for each usage class to prevent duplicate attribution.
-- Consume delegation evidence only through the versioned public event projection and never import, read private files from, or require `pi-subagents`.
+- Consume delegation evidence only through Pi's public tool lifecycle and the standard upstream `pi-subagents` result shape. Never import the package, read child session files, or require a fork.
 - Keep fallback evidence actual-only and replace only usage slices whose authoritative child receipt carries matching evidence keys.
 - Treat all financial output as local operational evidence, not a provider invoice.
 
@@ -518,7 +518,7 @@ flowchart LR
 
 - **Extension lifecycle:** Analytics observes the existing arm, handoff, reload, cancellation, failure, and session-replacement boundaries. It must not add a transition to Prewalk's routing state machine or delay a provider stream.
 - **Pi event handling:** New listeners consume final usage evidence only. Failures in analytics persistence or reporting surface as analytics failures and must not corrupt the transcript, change the selected model, or cancel an otherwise valid Prewalk route.
-- **Delegation:** An optional public event projection adds authenticated ancestry, asynchronous lifecycle state, and child-only fallback actual spend. It does not change subagent orchestration, Pi's native footer, or the meaning of current-session.
+- **Delegation:** Optional observation of public `subagent` tool starts and results adds direct child fallback spend. Missing async or nested terminal evidence remains explicitly pending or incomplete. It does not change subagent orchestration, Pi's native footer, or the meaning of current-session.
 - **Persistent state:** The generation manifest, active journals, finalized receipts, content-free delegation evidence, and verified benchmark summary are the only new durable state. No aggregate cache is authoritative, so every report is derived from the same validated evidence.
 - **Commands and UI:** `/prewalk stats`, configuration fields, reset confirmation, export, and help extend the human command surface. They make no model request and expose no new model-callable tool.
 - **Provider composition:** Attribution reads the terminal provider and model identity Pi records after all provider wrappers run. No analytics branch detects or imports a provider extension by package name.
@@ -804,11 +804,13 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 
 **Dependencies:** U4, U5, and U7.
 
-### U7. Publish the versioned delegation analytics projection
+### U7. Observe upstream delegation results in Prewalk
 
-**Target repo:** The related `pi-subagents` source repository. Paths in this unit are relative to that repository and must never be applied to the installed package under Pi's agent directory.
+**Architecture correction:** The original producer work in `pi-subagents` is withdrawn. The upstream source and installed package must remain unchanged.
 
-**Goal:** Give Prewalk and other local extensions a supported content-free stream of direct and nested child identity, lifecycle, and child-only usage without exposing task content or requiring package imports.
+**Target repo:** `pi-prewalk`.
+
+**Goal:** Project standard public tool results into content-free direct-child lifecycle and usage evidence without exposing task content or requiring package imports.
 
 **Requirements:** R17, R18, and R24 through R28.
 
@@ -816,21 +818,19 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 
 **Files:**
 
-- `src/shared/types.ts`
-- `src/runs/foreground/subagent-executor.ts`
-- `src/runs/background/async-execution.ts`
-- `src/runs/background/async-resume.ts`
-- `test/unit/delegation-analytics-contract.test.ts`
-- `test/integration/delegation-analytics-events.test.ts`
+- `src/analytics-subagents.ts`
+- `extensions/prewalk.ts`
+- `test/analytics-subagents.test.ts`
+- `test/extension.test.ts`
 
 **Approach:**
 
-1. Define a versioned public extension-bus projection for direct and nested child start, progress, and terminal events.
-2. Inject root session ID, parent session ID, delegation run ID, and child index into the child launch context, then publish the resolved child session ID once available.
-3. Publish child-only categorized usage slices with stable evidence keys and never publish run-level aggregate usage as a child slice.
-4. Replay active and terminal projection state after parent or consumer reload so asynchronous completion converges without a status command.
-5. Exclude task text, output, prompts, artifact paths, session-file paths, errors, and tool payloads from the projection.
-6. Keep the protocol additive to normal `pi-subagents` results and orchestration behavior.
+1. Record a bounded invocation identity from public `tool_execution_start`.
+2. Project ordinary `tool_result.details.results[].usage` into versioned child-only fallback slices.
+3. Keep async launches pending until a public terminal result is observed.
+4. Mark nested usage unavailable from the public result as incomplete instead of reading child session files.
+5. Exclude task text, output, prompts, artifact paths, session-file paths, errors, and raw tool payloads from durable evidence.
+6. Keep observation additive and leave upstream pi-subagents behavior unchanged.
 
 **Test Scenarios:**
 
@@ -842,7 +842,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 - Projection records contain no task text, output, prompts, paths, raw errors, or provider payloads.
 - Existing `subagent`, `subagent_wait`, and orchestration results remain behaviorally unchanged.
 
-**Verification:** Run `npm run test:unit`, `npm run test:integration`, and `npm run test:all` in the related repository through the `run-tests-on-request` skill.
+**Verification:** Run the focused analytics adapter and extension tests, then the Prewalk repository's comprehensive verification through the `run-tests-on-request` skill.
 
 **Dependencies:** U1 defines the consumer contract that this projection must satisfy. U2 and U4 task-tree work wait for this unit.
 
@@ -869,12 +869,6 @@ Run these repository commands through the required testing skill:
 4. `npm run test:agent-loop`
 5. `npm run smoke:rpc`
 6. `npm pack --dry-run`
-
-For U7 in the related `pi-subagents` repository, run:
-
-1. `npm run test:unit`
-2. `npm run test:integration`
-3. `npm run test:all`
 
 The authenticated provider canary is optional supporting evidence for analytics because all required collection and calculation behavior is deterministic from Pi lifecycle records. It must not become a release gate or require `pi-codex-conversion`.
 

@@ -1,10 +1,7 @@
 import type { ModelThinkingLevel, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { PlannerProfile, PrewalkRun } from "./core.js";
-import { isRecord } from "./guards.js";
 
 export const EXECUTION_PROFILE_POLICY_VERSION = 1;
-export const EXECUTION_PROFILE_POLICY_REQUEST_EVENT =
-	"pi-subagents:execution-profile-policy:request:v1";
 
 export interface ExecutionProfile {
 	provider: string;
@@ -30,7 +27,6 @@ export type ExecutionProfilePolicy =
 			reason: "executor-matches-planner" | "executor-reasoning-not-lower-than-planner";
 	  });
 
-const REQUEST_FIELDS = new Set(["version", "requestId", "sessionId", "launchId", "respond"]);
 const PLANNER_REASONING_LEVELS: readonly ModelThinkingLevel[] = [
 	"off",
 	"minimal",
@@ -48,10 +44,6 @@ const EXECUTOR_REASONING_LEVELS: readonly ThinkingLevel[] = [
 	"xhigh",
 	"max",
 ];
-
-function safeIdentifier(value: unknown): value is string {
-	return typeof value === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value);
-}
 
 function isActiveEpoch(run: PrewalkRun): boolean {
 	return run.phase !== "cancelled" && run.phase !== "failed";
@@ -99,28 +91,4 @@ export function executionProfilePolicy(run: PrewalkRun): ExecutionProfilePolicy 
 		},
 		allowedProfiles,
 	};
-}
-
-export function respondToExecutionProfilePolicyRequest(
-	value: unknown,
-	run: PrewalkRun | undefined,
-	sessionId: string,
-): boolean {
-	if (
-		!run ||
-		!isRecord(value) ||
-		Object.keys(value).some((key) => !REQUEST_FIELDS.has(key)) ||
-		value.version !== EXECUTION_PROFILE_POLICY_VERSION ||
-		!safeIdentifier(value.requestId) ||
-		!safeIdentifier(value.sessionId) ||
-		value.sessionId !== sessionId ||
-		!safeIdentifier(value.launchId) ||
-		typeof value.respond !== "function"
-	) {
-		return false;
-	}
-	const policy = executionProfilePolicy(run);
-	if (!policy) return false;
-	value.respond("prewalk", policy);
-	return true;
 }

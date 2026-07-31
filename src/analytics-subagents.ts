@@ -205,3 +205,176 @@ export function isTerminalDelegation(evidence: DelegationEvidence): boolean {
 
 export type DelegationAnalyticsProtocol = DelegationAnalyticsEvent;
 export type DelegationAnalyticsLifecycleValue = DelegationLifecycle;
+
+export interface DelegationResultProjectionInput {
+	rootSessionId: string;
+	parentSessionId: string;
+	invocationId: string;
+	childCount: number;
+	details: unknown;
+	isError: boolean;
+	observedAt?: number;
+}
+
+function resultLifecycle(
+	value: Record<string, unknown>,
+	isError: boolean,
+): DelegationAnalyticsLifecycle {
+	if (value.timedOut === true) return "timed-out";
+	if (value.stopped === true) return "stopped";
+	if (value.interrupted === true) return "interrupted";
+	if (value.detached === true) return "running";
+	if (isError || value.exitCode !== 0 || nonEmptyString(value.error)) return "failed";
+	return "completed";
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function nonNegative(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+		? value
+		: undefined;
+}
+
+function boundedId(value: string, limit = 80): string {
+	return value.slice(0, limit);
+}
+
+function projectedUsage(
+	value: Record<string, unknown>,
+	delegationRunId: string,
+	childIndex: number,
+): DelegationUsageSlice[] {
+	if (!isRecord(value.usage)) return [];
+	const inputTokens = nonNegativeInteger(value.usage.input);
+	const outputTokens = nonNegativeInteger(value.usage.output);
+	const cacheReadTokens = nonNegativeInteger(value.usage.cacheRead);
+	const cacheWriteTokens = nonNegativeInteger(value.usage.cacheWrite);
+	const turns = nonNegativeInteger(value.usage.turns);
+	const costUsd = nonNegative(value.usage.cost);
+	if (
+		inputTokens === undefined ||
+		outputTokens === undefined ||
+		cacheReadTokens === undefined ||
+		cacheWriteTokens === undefined ||
+		turns === undefined ||
+		costUsd === undefined
+	) {
+		return [];
+	}
+	return [
+		{
+			evidenceKey: `subagent:${boundedId(delegationRunId, 220)}:${childIndex}`,
+			category: "child",
+			inputTokens,
+			outputTokens,
+			cacheReadTokens,
+			cacheWriteTokens,
+			totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+			turns,
+			costUsd,
+		},
+	];
+}
+
+function eventId(
+	invocationId: string,
+	delegationRunId: string,
+	childIndex: number,
+	phase: DelegationAnalyticsPhase,
+	observedAt: number,
+): string {
+	return `${boundedId(invocationId)}.${boundedId(delegationRunId)}.${childIndex}.${phase}.${observedAt}`;
+}
+
+function nestedRunIds(results: unknown[]): string[] {
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	const visit = (value: unknown, depth: number): void => {
+		if (!isRecord(value) || depth > 32 || ids.length >= 1024) return;
+		const id = nonEmptyString(value.id);
+		if (id && !seen.has(id)) {
+			seen.add(id);
+			ids.push(id);
+		}
+		if (Array.isArray(value.children)) {
+			for (const child of value.children) visit(child, depth + 1);
+		}
+		if (Array.isArray(value.steps)) {
+			for (const step of value.steps) {
+				if (!isRecord(step) || !Array.isArray(step.children)) continue;
+				for (const child of step.children) visit(child, depth + 1);
+			}
+		}
+	};
+	for (const result of results) {
+		if (!isRecord(result) || !Array.isArray(result.children)) continue;
+		for (const child of result.children) visit(child, 0);
+	}
+	return ids;
+}
+
+export function projectDelegationToolResult(
+	input: DelegationResultProjectionInput,
+): DelegationEvidence[] {
+	const observedAt = input.observedAt ?? Date.now();
+	const details = isRecord(input.details) ? input.details : undefined;
+	const delegationRunId =
+		nonEmptyString(details?.runId) ?? nonEmptyString(details?.asyncId) ?? input.invocationId;
+	const results = details && Array.isArray(details.results) ? details.results : [];
+	const count = Math.max(1, results.length || input.childCount);
+	const evidence: DelegationEvidence[] = [];
+	for (let childIndex = 0; childIndex < count; childIndex += 1) {
+		const result = results[childIndex];
+		const record = isRecord(result) ? result : undefined;
+		const lifecycle = record
+			? resultLifecycle(record, input.isError)
+			: input.isError
+				? "failed"
+				: "running";
+		const phase = lifecycle === "running" ? "start" : "terminal";
+		evidence.push({
+			schemaVersion: DELEGATION_ANALYTICS_VERSION,
+			eventId: eventId(input.invocationId, delegationRunId, childIndex, phase, observedAt),
+			phase,
+			rootSessionId: input.rootSessionId,
+			parentSessionId: input.parentSessionId,
+			invocationId: input.invocationId,
+			delegationRunId,
+			childIndex,
+			lifecycle,
+			observedAt,
+			usage: record ? projectedUsage(record, delegationRunId, childIndex) : [],
+		});
+	}
+	let nestedChildIndex = evidence.length;
+	for (const nestedRunId of nestedRunIds(results)) {
+		evidence.push({
+			schemaVersion: DELEGATION_ANALYTICS_VERSION,
+			eventId: eventId(
+				input.invocationId,
+				nestedRunId,
+				nestedChildIndex,
+				"terminal",
+				observedAt,
+			),
+			phase: "terminal",
+			rootSessionId: input.rootSessionId,
+			parentSessionId: input.parentSessionId,
+			invocationId: input.invocationId,
+			delegationRunId: nestedRunId,
+			childIndex: nestedChildIndex,
+			lifecycle: "incomplete",
+			observedAt,
+			usage: [],
+		});
+		nestedChildIndex += 1;
+	}
+	return evidence;
+}

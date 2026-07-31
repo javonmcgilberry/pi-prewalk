@@ -3,6 +3,7 @@ import {
 	delegationEvidenceKey,
 	mergeDelegationEvidence,
 	parseDelegationAnalyticsEvent,
+	projectDelegationToolResult,
 } from "../src/analytics-subagents.js";
 
 const event = (phase: "start" | "progress" | "terminal", lifecycle: string = "running") => ({
@@ -33,6 +34,163 @@ const event = (phase: "start" | "progress" | "terminal", lifecycle: string = "ru
 });
 
 describe("delegation analytics adapter", () => {
+	it("projects upstream pi-subagents result details without a package event producer", () => {
+		expect(
+			projectDelegationToolResult({
+				rootSessionId: "root",
+				parentSessionId: "parent",
+				invocationId: "tool-call",
+				childCount: 1,
+				details: {
+					runId: "run",
+					results: [
+						{
+							agent: "reviewer",
+							exitCode: 0,
+							usage: {
+								input: 10,
+								output: 5,
+								cacheRead: 20,
+								cacheWrite: 1,
+								cost: 0.25,
+								turns: 2,
+							},
+						},
+					],
+				},
+				isError: false,
+				observedAt: 100,
+			}),
+		).toEqual([
+			{
+				schemaVersion: 1,
+				eventId: "tool-call.run.0.terminal.100",
+				phase: "terminal",
+				rootSessionId: "root",
+				parentSessionId: "parent",
+				invocationId: "tool-call",
+				delegationRunId: "run",
+				childIndex: 0,
+				lifecycle: "completed",
+				observedAt: 100,
+				usage: [
+					{
+						evidenceKey: "subagent:run:0",
+						category: "child",
+						inputTokens: 10,
+						outputTokens: 5,
+						cacheReadTokens: 20,
+						cacheWriteTokens: 1,
+						totalTokens: 36,
+						turns: 2,
+						costUsd: 0.25,
+					},
+				],
+			},
+		]);
+	});
+
+	it("keeps async launches pending until a terminal public result is observed", () => {
+		expect(
+			projectDelegationToolResult({
+				rootSessionId: "root",
+				parentSessionId: "parent",
+				invocationId: "tool-call",
+				childCount: 2,
+				details: { asyncId: "async-run", results: [] },
+				isError: false,
+				observedAt: 100,
+			}).map((item) => ({
+				childIndex: item.childIndex,
+				phase: item.phase,
+				lifecycle: item.lifecycle,
+			})),
+		).toEqual([
+			{ childIndex: 0, phase: "start", lifecycle: "running" },
+			{ childIndex: 1, phase: "start", lifecycle: "running" },
+		]);
+	});
+
+	it("marks nested summaries without complete usage as incomplete", () => {
+		const projected = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "tool-call",
+			childCount: 1,
+			details: {
+				runId: "run",
+				results: [
+					{
+						agent: "reviewer",
+						exitCode: 0,
+						usage: {
+							input: 10,
+							output: 5,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.25,
+							turns: 2,
+						},
+						children: [
+							{
+								id: "nested-run",
+								state: "complete",
+								children: [{ id: "nested-grandchild", state: "complete" }],
+							},
+						],
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+
+		expect(projected).toHaveLength(3);
+		expect(projected[1]).toMatchObject({
+			delegationRunId: "nested-run",
+			childIndex: 1,
+			phase: "terminal",
+			lifecycle: "incomplete",
+			usage: [],
+		});
+		expect(projected[2]).toMatchObject({
+			delegationRunId: "nested-grandchild",
+			childIndex: 2,
+			phase: "terminal",
+			lifecycle: "incomplete",
+			usage: [],
+		});
+	});
+
+	it("does not project fractional token or turn counts", () => {
+		const [projected] = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "tool-call",
+			childCount: 1,
+			details: {
+				runId: "run",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1.5,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+
+		expect(projected?.usage).toEqual([]);
+	});
+
 	it("accepts content-free terminal child evidence", () => {
 		const parsed = parseDelegationAnalyticsEvent(event("terminal", "completed"));
 		expect(parsed.childSessionId).toBe("child");

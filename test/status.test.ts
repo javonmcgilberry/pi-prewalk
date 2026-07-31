@@ -91,13 +91,13 @@ describe("Prewalk status", () => {
 		);
 	});
 
-	it("shows delegated progress without overriding a local failure", () => {
+	it("keeps delegation details out of the compact footer", () => {
 		expect(
 			compactStatus(run("ready"), selected(), "low", {
 				agent: "worker",
 				state: "running",
 			}),
-		).toContain("worker running its own Prewalk");
+		).toBe("prewalk: [5.6 Sol · low] / Luna · low (waiting for this agent's first code change)");
 
 		const failed = run("failed");
 		failed.reasonCode = "configuration-invalid";

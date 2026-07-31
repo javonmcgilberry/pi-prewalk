@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
 	readFile as readFileAsync,
 	rename as renameFile,
@@ -34,13 +34,7 @@ import {
 	renderTaskTreeReport,
 } from "../src/analytics-report.js";
 import { AnalyticsStore } from "../src/analytics-store.js";
-import {
-	parseDelegationAnalyticsEvent,
-	SUBAGENT_DELEGATION_ANALYTICS_PROGRESS_EVENT,
-	SUBAGENT_DELEGATION_ANALYTICS_REPLAY_REQUEST_EVENT,
-	SUBAGENT_DELEGATION_ANALYTICS_START_EVENT,
-	SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT,
-} from "../src/analytics-subagents.js";
+import { projectDelegationToolResult } from "../src/analytics-subagents.js";
 import {
 	type AuditEventKind,
 	createAuditRecord,
@@ -66,13 +60,19 @@ import {
 	REASONING_LEVELS,
 } from "../src/core.js";
 import {
-	EXECUTION_PROFILE_POLICY_REQUEST_EVENT,
-	respondToExecutionProfilePolicyRequest,
+	type ExecutionProfilePolicy,
+	executionProfilePolicy,
 } from "../src/execution-profile-policy.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
 import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
+import {
+	applyExecutionProfilePolicy,
+	decodeExecutionProfilePolicy,
+	encodeExecutionProfilePolicy,
+	PREWALK_EXECUTION_PROFILE_POLICY_ENV,
+} from "../src/subagent-policy.js";
 import {
 	applyTodoOperation,
 	hasActionableTodo,
@@ -86,7 +86,7 @@ const STATUS_KEY = "prewalk";
 const PREWALK_TODO_REMINDER_MESSAGE_TYPE = "prewalk-todo-reminder";
 const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
 const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
-const MAX_CHILD_SESSION_BYTES = 16 * 1024 * 1024;
+const PREWALK_DELEGATION_POLICY_TYPE = "prewalk-delegation-policy-v1";
 const PREWALK_COMMANDS = [
 	"status",
 	"stats",
@@ -162,6 +162,8 @@ interface EvaluationState {
 	decision?: "continue" | "bypass";
 	invalid: boolean;
 }
+
+const ASSESSMENT_READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
 const prompts = loadPrompts();
 
@@ -328,50 +330,36 @@ function delegatedAgent(value: unknown): string {
 
 function delegatedChildCount(value: unknown): number {
 	if (!isRecord(value)) return 1;
-	if (Array.isArray(value.tasks)) return Math.max(1, value.tasks.length);
+	const requestedCount = (item: unknown): number => {
+		if (!isRecord(item) || typeof item.count !== "number" || !Number.isSafeInteger(item.count)) {
+			return 1;
+		}
+		return Math.max(1, item.count);
+	};
+	if (Array.isArray(value.tasks)) {
+		return Math.max(
+			1,
+			value.tasks.reduce((count, item) => count + requestedCount(item), 0),
+		);
+	}
 	if (Array.isArray(value.chain)) {
 		return Math.max(
 			1,
 			value.chain.reduce((count, step) => {
 				if (!isRecord(step)) return count + 1;
-				return count + (Array.isArray(step.parallel) ? step.parallel.length : 1);
+				return (
+					count +
+					(Array.isArray(step.parallel)
+						? step.parallel.reduce(
+								(parallelCount, item) => parallelCount + requestedCount(item),
+								0,
+							)
+						: 1)
+				);
 			}, 0),
 		);
 	}
 	return 1;
-}
-
-function latestChildPrewalkRun(sessionFile: unknown): PrewalkRun | undefined {
-	if (typeof sessionFile !== "string" || !path.isAbsolute(sessionFile)) return undefined;
-	const agentRoot = path.resolve(getAgentDir());
-	const resolved = path.resolve(sessionFile);
-	if (resolved !== agentRoot && !resolved.startsWith(`${agentRoot}${path.sep}`)) return undefined;
-	try {
-		if (statSync(resolved).size > MAX_CHILD_SESSION_BYTES) return undefined;
-		const lines = readFileSync(resolved, "utf8").split("\n");
-		for (let index = lines.length - 1; index >= 0; index -= 1) {
-			const line = lines[index]?.trim();
-			if (!line) continue;
-			let value: unknown;
-			try {
-				value = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (
-				!isRecord(value) ||
-				value.type !== "custom" ||
-				value.customType !== PREWALK_AUDIT_TYPE
-			) {
-				continue;
-			}
-			const record = parseAuditRecord(value.data);
-			return record ? runFromAudit(record) : undefined;
-		}
-	} catch {
-		return undefined;
-	}
-	return undefined;
 }
 
 function delegationFromResult(
@@ -386,33 +374,28 @@ function delegationFromResult(
 			...(isError ? { reason: "subagent-tool-failed" } : {}),
 		};
 	}
-	let completed: DelegationStatus | undefined;
 	for (const value of details.results) {
 		if (!isRecord(value)) continue;
 		const agent = delegatedAgent(value);
-		const childRun = latestChildPrewalkRun(value.sessionFile);
-		if (childRun?.phase === "failed") {
+		if (
+			value.timedOut === true ||
+			value.stopped === true ||
+			value.interrupted === true ||
+			(typeof value.exitCode === "number" && value.exitCode !== 0) ||
+			typeof value.error === "string"
+		) {
 			return {
 				agent,
 				state: "failed",
-				reason: childRun.reasonCode ?? "unknown",
-			};
-		}
-		if (childRun) {
-			completed = {
-				agent,
-				state: "completed",
-				route: childRun.effectiveRoute === "executor" ? "executor" : "planner",
+				reason: value.timedOut === true ? "timed-out" : "subagent-tool-failed",
 			};
 		}
 	}
-	return (
-		completed ?? {
-			agent: fallbackAgent,
-			state: isError ? "failed" : "completed",
-			...(isError ? { reason: "subagent-tool-failed" } : {}),
-		}
-	);
+	return {
+		agent: fallbackAgent,
+		state: isError ? "failed" : "completed",
+		...(isError ? { reason: "subagent-tool-failed" } : {}),
+	};
 }
 
 function acceptsMutationEvidence(run: PrewalkRun | undefined): boolean {
@@ -443,29 +426,64 @@ function latestAutoModeRecord(ctx: ExtensionContext) {
 	return undefined;
 }
 
+function delegationPolicies(ctx: ExtensionContext): Map<string, ExecutionProfilePolicy> {
+	const records = new Map<string, ExecutionProfilePolicy>();
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (
+			entry?.type !== "custom" ||
+			entry.customType !== PREWALK_DELEGATION_POLICY_TYPE ||
+			!isRecord(entry.data) ||
+			Object.keys(entry.data).length !== 4 ||
+			entry.data.version !== 1 ||
+			entry.data.sessionId !== ctx.sessionManager.getSessionId() ||
+			typeof entry.data.runId !== "string" ||
+			!entry.data.runId.trim()
+		) {
+			continue;
+		}
+		const policyValue = decodeExecutionProfilePolicy(JSON.stringify(entry.data.policy));
+		if (policyValue?.status === "available") records.set(entry.data.runId, policyValue);
+	}
+	return records;
+}
+
+function matchingDelegationPolicy(
+	input: Record<string, unknown>,
+	records: Map<string, ExecutionProfilePolicy>,
+): ExecutionProfilePolicy | undefined {
+	const requested =
+		typeof input.id === "string"
+			? input.id.trim()
+			: typeof input.runId === "string"
+				? input.runId.trim()
+				: "";
+	if (!requested) return undefined;
+	const exact = records.get(requested);
+	if (exact) return exact;
+	const matches = [...records].filter(([runId]) => runId.startsWith(requested));
+	return matches.length === 1 ? matches[0]?.[1] : undefined;
+}
+
 export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
 	const mutations = new MutationTurnBuffer();
 	const evaluationMutations = new MutationTurnBuffer();
 	const todoReminder = new TodoReminder();
 	const analyticsStore = new AnalyticsStore(getAgentDir());
+	const hasInheritedExecutionProfilePolicy =
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] !== undefined;
+	const inheritedExecutionProfilePolicy = decodeExecutionProfilePolicy(
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV],
+	);
+	const originalExecutionProfilePolicyEnvironment =
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
+	const policyToolCalls = new Map<string, ExecutionProfilePolicy>();
+	let persistedDelegationPolicies = new Map<string, ExecutionProfilePolicy>();
 	let activeSessionId: string | undefined;
 	let autoEnabled = false;
 	let lastOutcome: "bypassed" | "completed" | undefined;
 	let pendingAdmission = false;
 	let evaluation: EvaluationState | undefined;
-	let removeExecutionProfilePolicyListener: (() => void) | undefined;
-	const ensureExecutionProfilePolicyListener = (): void => {
-		if (removeExecutionProfilePolicyListener || !pi.events) return;
-		removeExecutionProfilePolicyListener = pi.events.on(
-			EXECUTION_PROFILE_POLICY_REQUEST_EVENT,
-			(value) => {
-				if (!activeSessionId) return;
-				respondToExecutionProfilePolicyRequest(value, coordinator.run, activeSessionId);
-			},
-		);
-	};
-	ensureExecutionProfilePolicyListener();
 	let overlay: ProviderOverlay | undefined;
 	let primaryAgentStream = false;
 	let todoPhases: TodoPhase[] = [];
@@ -522,51 +540,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		parentSessionId: string;
 		childCount: number;
 		delegationRunId?: string;
-		childSessionIds: Map<number, string>;
+		policy?: ExecutionProfilePolicy;
 	};
 	const delegationInvocations: DelegationInvocation[] = [];
-
-	const recordDelegationEvent = (value: unknown): void => {
-		try {
-			const evidence = parseDelegationAnalyticsEvent(value);
-			const invocation = delegationInvocations.find(
-				(candidate) => candidate.toolCallId === evidence.invocationId,
-			);
-			if (!invocation) return;
-			if (
-				invocation.delegationRunId !== undefined &&
-				invocation.delegationRunId !== evidence.delegationRunId
-			)
-				return;
-			invocation.delegationRunId = evidence.delegationRunId;
-			if (
-				evidence.rootSessionId !== invocation.rootSessionId ||
-				evidence.parentSessionId !== invocation.parentSessionId ||
-				evidence.childIndex >= invocation.childCount
-			)
-				return;
-			if (invocation.delegationRunId !== evidence.delegationRunId) return;
-			const priorChild = invocation.childSessionIds.get(evidence.childIndex);
-			if (
-				priorChild !== undefined &&
-				evidence.childSessionId !== undefined &&
-				priorChild !== evidence.childSessionId
-			)
-				return;
-			if (evidence.childSessionId !== undefined)
-				invocation.childSessionIds.set(evidence.childIndex, evidence.childSessionId);
-			void enqueueAnalytics(async () => {
-				await analyticsStore.writeDelegationEvidence(value);
-			}).catch(() => undefined);
-		} catch {
-			// Optional delegation evidence fails closed without affecting routing.
-		}
-	};
-	if (pi.events !== undefined) {
-		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_START_EVENT, recordDelegationEvent);
-		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_PROGRESS_EVENT, recordDelegationEvent);
-		pi.events.on(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, recordDelegationEvent);
-	}
 
 	const updateStatus = (ctx: ExtensionContext): void => {
 		const nextStatus = compactStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation, {
@@ -899,6 +875,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			| typeof PREWALK_CONTINUE_MESSAGE_TYPE
 			| typeof PREWALK_CHECKLIST_MESSAGE_TYPE,
 		ctx: ExtensionContext,
+		triggerTurn = false,
 	): Promise<void> => {
 		const run = coordinator.run;
 		if (!run) return;
@@ -921,12 +898,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				display: false,
 				details: { runId: run.id },
 			},
-			{ deliverAs: "steer" },
+			triggerTurn ? { triggerTurn: true } : { deliverAs: "steer" },
 		);
 		audit(prompt.event, ctx);
 	};
 
-	const startRun = async (mode: "automatic" | "manual", ctx: ExtensionContext): Promise<void> => {
+	const startRun = async (
+		mode: "automatic" | "manual",
+		ctx: ExtensionContext,
+		triggerTurn = false,
+	): Promise<void> => {
 		try {
 			const config = await readConfig();
 			if (todoConflict) throw new Error("todo-conflict");
@@ -959,7 +940,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			todoReminder.reset();
 			audit("armed", ctx);
 			if (action.type === "send-planning") {
-				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, triggerTurn);
 			}
 		} catch (error) {
 			const reason =
@@ -1285,6 +1266,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (command === "auto") {
+				if (hasInheritedExecutionProfilePolicy) {
+					ctx.ui.notify(
+						"Prewalk automatic mode is disabled inside a constrained child session.",
+						"error",
+					);
+					return;
+				}
 				if (autoEnabled) {
 					ctx.ui.notify("Prewalk automatic mode is already enabled for this session.", "info");
 					return;
@@ -1314,7 +1302,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		activeSessionId = ctx.sessionManager.getSessionId();
-		ensureExecutionProfilePolicyListener();
+		policyToolCalls.clear();
+		persistedDelegationPolicies = delegationPolicies(ctx);
 		primaryAgentStream = false;
 		delegation = undefined;
 		delegationInvocations.length = 0;
@@ -1341,9 +1330,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 			return { consume: true };
 		});
-		pi.events?.emit(SUBAGENT_DELEGATION_ANALYTICS_REPLAY_REQUEST_EVENT, {
-			sessionId: ctx.sessionManager.getSessionId(),
-		});
 		const todoTool = pi.getAllTools().find((tool) => tool.name === "todo");
 		todoConflict =
 			todoTool !== undefined && !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
@@ -1356,7 +1342,10 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		todoReminder.reset();
 		if (event.reason === "reload") {
 			const autoMode = latestAutoModeRecord(ctx);
-			autoEnabled = autoMode?.sessionId === activeSessionId && autoMode.enabled;
+			autoEnabled =
+				!hasInheritedExecutionProfilePolicy &&
+				autoMode?.sessionId === activeSessionId &&
+				autoMode.enabled;
 			const record = latestAuditRecord(ctx);
 			if (evaluation) {
 				restoreEvaluationTools();
@@ -1437,6 +1426,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			return { action: "continue" };
 		}
 		if (
+			hasInheritedExecutionProfilePolicy ||
 			!autoEnabled ||
 			coordinator.run ||
 			evaluation ||
@@ -1464,8 +1454,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		activeSessionId = undefined;
-		removeExecutionProfilePolicyListener?.();
-		removeExecutionProfilePolicyListener = undefined;
+		policyToolCalls.clear();
+		persistedDelegationPolicies.clear();
+		if (!inheritedExecutionProfilePolicy) {
+			if (originalExecutionProfilePolicyEnvironment === undefined) {
+				delete process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
+			} else {
+				process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] =
+					originalExecutionProfilePolicyEnvironment;
+			}
+		}
 		primaryAgentStream = false;
 		delegation = undefined;
 		pendingAdmission = false;
@@ -1527,9 +1525,10 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (current.decision === "continue" && !current.invalid) {
 				pi.setActiveTools([...current.toolSlate.filter((name) => name !== "todo"), "todo"]);
 				evaluation = undefined;
-				await startRun("automatic", ctx);
+				await startRun("automatic", ctx, true);
 				const action = coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false });
-				if (action.type === "send-planning") await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+				if (action.type === "send-planning")
+					await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, true);
 				updateStatus(ctx);
 			} else {
 				restoreEvaluationTools();
@@ -1543,7 +1542,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (!run) return;
 		const action = coordinator.requestContinuation(hasActionableTodo(todoPhases));
 		if (action.type === "send-continuation") {
-			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
+			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
 			return;
 		}
 		await finalizeAnalytics(run.phase === "failed" ? "failed" : "succeeded");
@@ -1555,6 +1554,48 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		todoReminder.reset();
 		deactivatePrewalkTools();
 		updateStatus(ctx);
+	});
+
+	pi.on("tool_call", (event) => {
+		if (evaluation && !ASSESSMENT_READ_ONLY_TOOLS.has(event.toolName)) {
+			evaluation.invalid = true;
+			return { block: true, reason: "Prewalk assessment only allows read-only inspection." };
+		}
+		if (event.toolName !== "subagent") return;
+		if (hasInheritedExecutionProfilePolicy && !inheritedExecutionProfilePolicy) {
+			return {
+				block: true,
+				reason: "Prewalk rejected an invalid inherited execution-profile policy.",
+			};
+		}
+		const action = typeof event.input.action === "string" ? event.input.action : undefined;
+		if (action && action !== "resume") return;
+		const resumePolicy =
+			action === "resume"
+				? matchingDelegationPolicy(event.input, persistedDelegationPolicies)
+				: undefined;
+		const activePolicy =
+			resumePolicy ??
+			inheritedExecutionProfilePolicy ??
+			(coordinator.run ? executionProfilePolicy(coordinator.run) : undefined);
+		if (action === "resume" && !resumePolicy && activePolicy) {
+			return {
+				block: true,
+				reason: "Prewalk cannot prove the original execution-profile policy for this resume.",
+			};
+		}
+		if (!activePolicy) return;
+		if (!isRecord(event.input)) {
+			return {
+				block: true,
+				reason: "Prewalk could not validate the subagent launch arguments.",
+			};
+		}
+		const applied = applyExecutionProfilePolicy(event.input, activePolicy);
+		if (!applied.ok) return { block: true, reason: applied.reason };
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] =
+			encodeExecutionProfilePolicy(activePolicy);
+		policyToolCalls.set(event.toolCallId, activePolicy);
 	});
 
 	pi.on("tool_execution_update", (event) => {
@@ -1578,7 +1619,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				rootSessionId: process.env.PI_SUBAGENT_ROOT_SESSION_ID ?? parentSessionId,
 				parentSessionId,
 				childCount: delegatedChildCount(event.args),
-				childSessionIds: new Map(),
+				policy: policyToolCalls.get(event.toolCallId),
 			});
 			if (delegationInvocations.length > 64) delegationInvocations.shift();
 		}
@@ -1590,6 +1631,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName === "subagent" && policyToolCalls.delete(event.toolCallId)) {
+			if (!inheritedExecutionProfilePolicy && policyToolCalls.size === 0) {
+				if (originalExecutionProfilePolicyEnvironment === undefined) {
+					delete process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
+				} else {
+					process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] =
+						originalExecutionProfilePolicyEnvironment;
+				}
+			}
+		}
 		if (evaluation) {
 			evaluationMutations.recordResult({
 				toolCallId: event.toolCallId,
@@ -1616,6 +1667,43 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			}
 		}
 		if (event.toolName === "subagent") {
+			const invocation = delegationInvocations.find(
+				(candidate) => candidate.toolCallId === event.toolCallId,
+			);
+			if (invocation) {
+				const evidence = projectDelegationToolResult({
+					rootSessionId: invocation.rootSessionId,
+					parentSessionId: invocation.parentSessionId,
+					invocationId: invocation.toolCallId,
+					childCount: invocation.childCount,
+					details: event.details,
+					isError: event.isError,
+				});
+				const primaryDelegationRunId = evidence[0]?.delegationRunId;
+				if (primaryDelegationRunId) invocation.delegationRunId = primaryDelegationRunId;
+				for (const item of evidence) {
+					const { schemaVersion, ...eventValue } = item;
+					await enqueueAnalytics(async () => {
+						await analyticsStore.writeDelegationEvidence({
+							...eventValue,
+							version: schemaVersion,
+						});
+					}).catch(() => undefined);
+				}
+				if (
+					invocation.policy?.status === "available" &&
+					invocation.delegationRunId &&
+					!persistedDelegationPolicies.has(invocation.delegationRunId)
+				) {
+					persistedDelegationPolicies.set(invocation.delegationRunId, invocation.policy);
+					pi.appendEntry(PREWALK_DELEGATION_POLICY_TYPE, {
+						version: 1,
+						sessionId: invocation.parentSessionId,
+						runId: invocation.delegationRunId,
+						policy: invocation.policy,
+					});
+				}
+			}
 			delegation = delegationFromResult(
 				event.details,
 				event.isError,
@@ -1698,10 +1786,22 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("model_select", async (event, ctx) => {
-		if (event.source === "restore" || !coordinator.run || coordinator.run.phase === "cancelled") {
+		if (event.source === "restore") return;
+		if (evaluation) {
+			restoreEvaluationTools();
+			evaluation = undefined;
+			pendingAdmission = false;
+			evaluationMutations.resetForRun();
+			updateStatus(ctx);
 			return;
 		}
-		await cancel(isPlannerSelected(event.model, coordinator.run.planner), ctx);
+		const run = coordinator.run;
+		if (!run || run.phase === "cancelled") return;
+		await cancel(isPlannerSelected(event.model, run.planner), ctx);
+		coordinator.reset();
+		deactivatePrewalkTools();
+		lastOutcome = undefined;
+		updateStatus(ctx);
 	});
 
 	pi.on("thinking_level_select", (event, ctx) => {

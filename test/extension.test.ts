@@ -15,10 +15,6 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 import {
-	SUBAGENT_DELEGATION_ANALYTICS_START_EVENT,
-	SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT,
-} from "../src/analytics-subagents.js";
-import {
 	DEFAULT_EXECUTOR,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
@@ -26,7 +22,7 @@ import {
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_PLAN_MESSAGE_TYPE,
 } from "../src/core.js";
-import { EXECUTION_PROFILE_POLICY_REQUEST_EVENT } from "../src/execution-profile-policy.js";
+import { PREWALK_EXECUTION_PROFILE_POLICY_ENV } from "../src/subagent-policy.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 
@@ -383,6 +379,7 @@ let agentDir: string;
 beforeEach(async () => {
 	agentDir = await mkdtemp(path.join(tmpdir(), "prewalk-extension-"));
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	delete process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
 	await writeFile(
 		path.join(agentDir, "prewalk.json"),
 		`${JSON.stringify({
@@ -393,6 +390,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	delete process.env.PI_CODING_AGENT_DIR;
+	delete process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
 	await rm(agentDir, { recursive: true, force: true });
 });
 
@@ -484,7 +482,48 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.activeTools()).toEqual(["read", "edit", "todo"]);
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+	});
+
+	it("blocks non-read-only tools before assessment execution while permitting inspection", async () => {
+		const inspected = createHarness();
+		prewalkExtension(inspected.pi);
+		await beginAutomaticAssessment(
+			inspected,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		expect(
+			await inspected.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "read-1",
+				toolName: "read",
+				input: { path: "src/core.ts" },
+			}),
+		).toEqual([undefined]);
+		await inspected.tools
+			.get("prewalk_assess")
+			?.execute("assessment-1", { decision: "continue" });
+
+		for (const toolName of ["edit", "bash", "todo", "subagent"]) {
+			const blocked = createHarness();
+			prewalkExtension(blocked.pi);
+			await beginAutomaticAssessment(
+				blocked,
+				"Build an end-to-end feature across multiple concerns",
+			);
+			expect(
+				await blocked.emit("tool_call", {
+					type: "tool_call",
+					toolCallId: `${toolName}-1`,
+					toolName,
+					input: {},
+				}),
+			).toEqual([expect.objectContaining({ block: true })]);
+			await expect(
+				blocked.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
+			).rejects.toThrow("inactive");
+		}
 	});
 
 	it("quietly bypasses a completed approved plan and restores the exact tool slate", async () => {
@@ -774,29 +813,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toContain("switching after this turn");
 	});
 
-	it("surfaces a delegated child Prewalk failure over the parent's waiting state", async () => {
-		const child = createHarness({
-			foreignTodo: {
-				name: "todo",
-				label: "Foreign todo",
-				description: "Foreign todo",
-				parameters: {},
-				execute: vi.fn(),
-			} as unknown as ToolDefinition,
-		});
-		prewalkExtension(child.pi);
-		await child.emit("session_start", { type: "session_start", reason: "startup" });
-		await child.commands.get("prewalk")?.("run", child.context);
-		const childSession = path.join(agentDir, "child-session.jsonl");
-		await writeFile(
-			childSession,
-			child.entries
-				.map((entry) =>
-					JSON.stringify({ type: "custom", customType: entry.customType, data: entry.data }),
-				)
-				.join("\n"),
-		);
-
+	it("keeps delegation progress in explicit status instead of the compact footer", async () => {
 		const parent = createHarness();
 		prewalkExtension(parent.pi);
 		await parent.emit("session_start", { type: "session_start", reason: "startup" });
@@ -813,7 +830,9 @@ describe("Prewalk extension harness", () => {
 			toolName: "subagent",
 			args: { agent: "worker" },
 		});
-		expect(parent.statuses.at(-1)).toContain("worker running its own Prewalk");
+		expect(parent.statuses.at(-1)).not.toContain("worker");
+		await parent.commands.get("prewalk")?.("status", parent.context);
+		expect(parent.notifications.at(-1)).toContain("delegation=worker running");
 		await parent.emit("tool_result", {
 			type: "tool_result",
 			toolCallId: "subagent-1",
@@ -823,14 +842,27 @@ describe("Prewalk extension harness", () => {
 			isError: false,
 			details: {
 				mode: "single",
-				results: [{ agent: "worker", sessionFile: childSession }],
+				runId: "run",
+				results: [
+					{
+						agent: "worker",
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.01,
+							turns: 1,
+						},
+					},
+				],
 			},
 		});
 
-		expect(parent.statuses.at(-1)).toContain("worker Prewalk failed: todo conflict");
+		expect(parent.statuses.at(-1)).not.toContain("worker");
 		await parent.commands.get("prewalk")?.("status", parent.context);
-		expect(parent.notifications.at(-1)).toContain("delegation=worker failed");
-		expect(parent.notifications.at(-1)).toContain("delegation reason=todo-conflict");
+		expect(parent.notifications.at(-1)).toContain("delegation=worker completed");
 	});
 
 	it("keeps evidence from serial delegation invocations in one task tree", async () => {
@@ -845,41 +877,30 @@ describe("Prewalk extension harness", () => {
 				toolName: "subagent",
 				args: { agent: "reviewer", task: `task-${index}` },
 			});
-			const lineage = {
-				version: 1,
-				rootSessionId: "session-extension-test",
-				parentSessionId: "session-extension-test",
-				invocationId: `tool-${index}`,
-				delegationRunId: `run-${index}`,
-				childIndex: 0,
-				childSessionId: `child-${index}`,
-				observedAt: index + 1,
-			};
-			harness.emitBus(SUBAGENT_DELEGATION_ANALYTICS_START_EVENT, {
-				...lineage,
-				eventId: `start-${index}`,
-				phase: "start",
-				lifecycle: "running",
-				usage: [],
-			});
-			harness.emitBus(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, {
-				...lineage,
-				eventId: `terminal-${index}`,
-				phase: "terminal",
-				lifecycle: "completed",
-				usage: [
-					{
-						evidenceKey: `usage-${index}`,
-						category: "child",
-						inputTokens: 1,
-						outputTokens: 1,
-						cacheReadTokens: 0,
-						cacheWriteTokens: 0,
-						totalTokens: 2,
-						turns: 1,
-						costUsd,
-					},
-				],
+			await harness.emit("tool_result", {
+				type: "tool_result",
+				toolCallId: `tool-${index}`,
+				toolName: "subagent",
+				input: { agent: "reviewer", task: `task-${index}` },
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				details: {
+					runId: `run-${index}`,
+					results: [
+						{
+							agent: "reviewer",
+							exitCode: 0,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								turns: 1,
+								cost: costUsd,
+							},
+						},
+					],
+				},
 			});
 		}
 
@@ -1182,45 +1203,186 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toBe("prewalk: [gpt-5.4 · high] / Luna · low");
 	});
 
-	it("answers pi-subagents policy requests only for the active session and epoch", async () => {
+	it("enforces the active executor profile through Pi's public tool-call boundary", async () => {
 		const harness = createHarness();
 		harness.context.thinkingLevel = "high";
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const respond = vi.fn();
+		const input: Record<string, unknown> = { agent: "reviewer", task: "Review" };
 
-		harness.emitBus(EXECUTION_PROFILE_POLICY_REQUEST_EVENT, {
-			version: 1,
-			requestId: "request",
-			sessionId: "session-extension-test",
-			launchId: "launch",
-			respond,
-		});
-
-		expect(respond).toHaveBeenCalledWith(
-			"prewalk",
-			expect.objectContaining({
-				epoch: expect.any(String),
-				status: "available",
-				defaultProfile: {
-					provider: "openai-codex",
-					model: "gpt-5.6-luna",
-					reasoning: "low",
-				},
+		expect(
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "subagent-1",
+				toolName: "subagent",
+				input,
 			}),
-		);
+		).toEqual([undefined]);
+		expect(input).toMatchObject({
+			model: "openai-codex/gpt-5.6-luna",
+			thinking: "low",
+		});
+		expect(process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV]).toContain('"model":"gpt-5.6-luna"');
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "subagent-1",
+			toolName: "subagent",
+			input,
+			content: [],
+			details: {},
+			isError: false,
+		});
+		expect(process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV]).toBeUndefined();
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
-		respond.mockClear();
-		harness.emitBus(EXECUTION_PROFILE_POLICY_REQUEST_EVENT, {
-			version: 1,
-			requestId: "request-2",
-			sessionId: "session-extension-test",
-			launchId: "launch-2",
-			respond,
+		const afterCancel: Record<string, unknown> = { agent: "reviewer", task: "Review" };
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "subagent-2",
+			toolName: "subagent",
+			input: afterCancel,
 		});
-		expect(respond).not.toHaveBeenCalled();
+		expect(afterCancel).toEqual({ agent: "reviewer", task: "Review" });
+	});
+
+	it("inherits the root policy in a child without starting another automatic Prewalk", async () => {
+		const root = createHarness();
+		root.context.thinkingLevel = "high";
+		prewalkExtension(root.pi);
+		await root.emit("session_start", { type: "session_start", reason: "startup" });
+		await root.commands.get("prewalk")?.("run", root.context);
+		const policyInput: Record<string, unknown> = { agent: "reviewer", task: "Review" };
+		await root.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "root-subagent",
+			toolName: "subagent",
+			input: policyInput,
+		});
+		const inherited = process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV];
+		expect(inherited).toBeDefined();
+
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] = inherited;
+		const child = createHarness();
+		prewalkExtension(child.pi);
+		await child.emit("session_start", { type: "session_start", reason: "startup" });
+		await child.commands.get("prewalk")?.("auto", child.context);
+		await child.emit("input", {
+			type: "input",
+			text: "Build an end-to-end feature across multiple concerns",
+			source: "interactive",
+		});
+		expect(
+			await child.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "Build an end-to-end feature across multiple concerns",
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			}),
+		).toEqual([undefined]);
+
+		const nestedInput: Record<string, unknown> = { agent: "tester", task: "Test" };
+		await child.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "nested-subagent",
+			toolName: "subagent",
+			input: nestedInput,
+		});
+		expect(nestedInput).toMatchObject({
+			model: "openai-codex/gpt-5.6-luna",
+			thinking: "low",
+		});
+	});
+
+	it("restores the original policy when a constrained child is resumed after reload", async () => {
+		const harness = createHarness();
+		harness.context.thinkingLevel = "high";
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const launch: Record<string, unknown> = { agent: "reviewer", task: "Review" };
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "launch",
+			toolName: "subagent",
+			input: launch,
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "launch",
+			toolName: "subagent",
+			args: launch,
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "launch",
+			toolName: "subagent",
+			input: launch,
+			content: [],
+			isError: false,
+			details: {
+				runId: "original-run",
+				results: [
+					{
+						agent: "reviewer",
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.01,
+							turns: 1,
+						},
+					},
+				],
+			},
+		});
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		harness.setBranch(
+			harness.entries.map((entry) => ({
+				type: "custom",
+				customType: entry.customType,
+				data: entry.data,
+			})),
+		);
+		await harness.emit("session_start", { type: "session_start", reason: "reload" });
+		const resume: Record<string, unknown> = { action: "resume", id: "original-run" };
+
+		expect(
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "resume",
+				toolName: "subagent",
+				input: resume,
+			}),
+		).toEqual([undefined]);
+		expect(process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV]).toContain('"model":"gpt-5.6-luna"');
+		expect(resume).toEqual({ action: "resume", id: "original-run" });
+	});
+
+	it("fails closed when a child receives an invalid inherited policy", async () => {
+		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] = '{"version":2}';
+		const child = createHarness();
+		prewalkExtension(child.pi);
+		await child.emit("session_start", { type: "session_start", reason: "startup" });
+		const input: Record<string, unknown> = { agent: "tester", task: "Test" };
+
+		expect(
+			await child.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "nested-subagent",
+				toolName: "subagent",
+				input,
+			}),
+		).toEqual([
+			{
+				block: true,
+				reason: "Prewalk rejected an invalid inherited execution-profile policy.",
+			},
+		]);
+		expect(input).toEqual({ agent: "tester", task: "Test" });
 	});
 
 	it("uses Shift+Tab for the active Luna route without changing the saved baseline", async () => {
@@ -1411,6 +1573,8 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("Finish verification");
 
 		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		const firstReminderCount = harness.messages.filter(
 			(message) => message.customType === "prewalk-todo-reminder",
 		).length;
@@ -1636,13 +1800,75 @@ describe("Prewalk extension harness", () => {
 			source: "user",
 			model: explicitSelection.executor,
 		});
-		expect(explicitSelection.statuses.at(-1)).toBe(
-			"prewalk: 5.6 Sol / Luna (cancelled; selected: openai-codex/gpt-5.6-luna)",
-		);
+		expect(explicitSelection.statuses.at(-1)).toBe("prewalk: manual");
 		expect(explicitSelection.entries.at(-1)?.data).toMatchObject({
 			event: "cancelled",
 			effectiveRoute: "selected",
 		});
+		expect(explicitSelection.providerConfig()?.streamSimple).toBe(explicitSelection.baseStream);
+	});
+
+	it("disarms evaluation on model selection and keeps automatic mode ready", async () => {
+		const evaluation = createHarness({ activeTools: ["read", "todo", "edit"] });
+		prewalkExtension(evaluation.pi);
+		await beginAutomaticAssessment(
+			evaluation,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await evaluation.emit("model_select", {
+			type: "model_select",
+			source: "user",
+			model: evaluation.executor,
+		});
+		expect(evaluation.activeTools()).toEqual(["read", "edit"]);
+		expect(evaluation.statuses.at(-1)).toBe("prewalk: auto-ready");
+		await evaluation.emit("input", {
+			type: "input",
+			text: "Build an end-to-end feature across multiple concerns",
+			source: "interactive",
+		});
+		const assessment = await evaluation.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "Build an end-to-end feature across multiple concerns",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		expect(assessment).toEqual([
+			expect.objectContaining({
+				message: expect.objectContaining({ customType: "prewalk-assess" }),
+			}),
+		]);
+
+		const active = createHarness();
+		prewalkExtension(active.pi);
+		await active.emit("session_start", { type: "session_start", reason: "startup" });
+		await active.commands.get("prewalk")?.("auto", active.context);
+		await active.commands.get("prewalk")?.("run", active.context);
+		await active.emit("model_select", {
+			type: "model_select",
+			source: "user",
+			model: active.executor,
+		});
+		expect(active.providerConfig()?.streamSimple).toBe(active.baseStream);
+		expect(active.activeTools()).toEqual(["edit", "write", "bash"]);
+		expect(active.statuses.at(-1)).toBe("prewalk: auto-ready");
+		await active.emit("input", {
+			type: "input",
+			text: "Build an end-to-end feature across multiple concerns",
+			source: "interactive",
+		});
+		expect(
+			await active.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "Build an end-to-end feature across multiple concerns",
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			}),
+		).toEqual([
+			expect.objectContaining({
+				message: expect.objectContaining({ customType: "prewalk-assess" }),
+			}),
+		]);
 	});
 
 	it("scrubs hidden guidance after cancellation and from compaction", async () => {

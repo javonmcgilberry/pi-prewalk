@@ -12,6 +12,10 @@ describe("automatic Prewalk admission", () => {
 		["Install the Figma skill", "bypass"],
 		["Explain how the quoted request 'implement a migration' would work", "bypass"],
 		["Diagnose the SSL failure without changing anything", "bypass"],
+		[
+			"Don't change anything. Implement the approved migration plan with the existing docs.",
+			"bypass",
+		],
 		["Configure the executor reasoning to medium", "bypass"],
 		["Run git status", "bypass"],
 		["Change the button label in one file", "bypass"],

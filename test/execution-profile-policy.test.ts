@@ -1,9 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DEFAULT_EXECUTOR, DEFAULT_PLANNER, type PrewalkRun } from "../src/core.js";
-import {
-	EXECUTION_PROFILE_POLICY_REQUEST_EVENT,
-	respondToExecutionProfilePolicyRequest,
-} from "../src/execution-profile-policy.js";
+import { executionProfilePolicy } from "../src/execution-profile-policy.js";
 
 function run(
 	plannerReasoning: PrewalkRun["planner"]["reasoning"] = "high",
@@ -28,25 +25,7 @@ function run(
 
 describe("Prewalk execution-profile policy", () => {
 	it("publishes a versioned executor default and exact cheaper allowlist", () => {
-		const respond = vi.fn();
-
-		expect(
-			respondToExecutionProfilePolicyRequest(
-				{
-					version: 1,
-					requestId: "request",
-					sessionId: "session",
-					launchId: "launch",
-					respond,
-				},
-				run(),
-				"session",
-			),
-		).toBe(true);
-		expect(EXECUTION_PROFILE_POLICY_REQUEST_EVENT).toBe(
-			"pi-subagents:execution-profile-policy:request:v1",
-		);
-		expect(respond).toHaveBeenCalledWith("prewalk", {
+		expect(executionProfilePolicy(run())).toEqual({
 			version: 1,
 			policyId: "epoch",
 			epoch: "epoch",
@@ -77,21 +56,7 @@ describe("Prewalk execution-profile policy", () => {
 	});
 
 	it("fails closed when the configured executor is not below the planner", () => {
-		const respond = vi.fn();
-
-		respondToExecutionProfilePolicyRequest(
-			{
-				version: 1,
-				requestId: "request",
-				sessionId: "session",
-				launchId: "launch",
-				respond,
-			},
-			run("low", "low"),
-			"session",
-		);
-
-		expect(respond).toHaveBeenCalledWith("prewalk", {
+		expect(executionProfilePolicy(run("low", "low"))).toEqual({
 			version: 1,
 			policyId: "epoch",
 			epoch: "epoch",
@@ -105,24 +70,10 @@ describe("Prewalk execution-profile policy", () => {
 		});
 	});
 
-	it("does not answer after the epoch is cancelled", () => {
-		const respond = vi.fn();
+	it("does not expose policy after the epoch is cancelled", () => {
 		const cancelled = run();
 		cancelled.phase = "cancelled";
 
-		expect(
-			respondToExecutionProfilePolicyRequest(
-				{
-					version: 1,
-					requestId: "request",
-					sessionId: "session",
-					launchId: "launch",
-					respond,
-				},
-				cancelled,
-				"session",
-			),
-		).toBe(false);
-		expect(respond).not.toHaveBeenCalled();
+		expect(executionProfilePolicy(cancelled)).toBeUndefined();
 	});
 });

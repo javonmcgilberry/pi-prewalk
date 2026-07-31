@@ -12,7 +12,6 @@ import {
 import {
 	createAgentSession,
 	DefaultResourceLoader,
-	type ExtensionAPI,
 	type ExtensionFactory,
 	ModelRuntime,
 	SessionManager,
@@ -21,10 +20,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 import { AnalyticsStore } from "../src/analytics-store.js";
-import {
-	SUBAGENT_DELEGATION_ANALYTICS_START_EVENT,
-	SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT,
-} from "../src/analytics-subagents.js";
 import { DEFAULT_EXECUTOR, EXECUTOR_MODEL_ID, PLANNER_MODEL_ID } from "../src/core.js";
 
 function model(id: string): Model<"openai-codex-responses"> {
@@ -117,11 +112,6 @@ describe("stock Pi Agent-loop integration", () => {
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
 		let lunaContext: Context | undefined;
-		let prewalkEvents: ExtensionAPI["events"] | undefined;
-		const prewalkWithEventCapture: ExtensionFactory = (pi) => {
-			prewalkEvents = pi.events;
-			prewalkExtension(pi);
-		};
 		const conversion: ExtensionFactory = (pi) => {
 			pi.registerProvider("openai-codex", {
 				api: "openai-codex-responses",
@@ -183,7 +173,7 @@ describe("stock Pi Agent-loop integration", () => {
 			noContextFiles: true,
 			extensionFactories: [
 				{ name: "conversion", factory: conversion },
-				{ name: "prewalk", factory: prewalkWithEventCapture },
+				{ name: "prewalk", factory: prewalkExtension },
 			],
 		});
 		await loader.reload();
@@ -251,83 +241,69 @@ describe("stock Pi Agent-loop integration", () => {
 		});
 
 		const rootSessionId = session.sessionId;
-		if (!prewalkEvents) throw new Error("Prewalk event bus was not captured.");
 		await session.extensionRunner.emit({
 			type: "tool_execution_start",
-			toolCallId: "delegation-analytics-test",
+			toolCallId: "tool-direct",
 			toolName: "subagent",
-			args: { tasks: [{ agent: "worker" }, { agent: "worker" }] },
+			args: { agent: "worker", task: "delegate" },
 		});
-		const publishProjection = async (channel: string, value: unknown): Promise<void> => {
-			prewalkEvents?.emit(channel, value);
-			await analyticsStore.writeDelegationEvidence(value);
-		};
-		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, {
-			version: 1,
-			eventId: "child-terminal",
-			phase: "terminal",
-			rootSessionId,
-			parentSessionId: rootSessionId,
-			invocationId: "tool-direct",
-			delegationRunId: "delegation-direct",
-			childIndex: 0,
-			childSessionId: "child-session",
-			lifecycle: "completed",
-			observedAt: 1,
-			usage: [],
+		await session.extensionRunner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "tool-direct",
+			toolName: "subagent",
+			input: { agent: "worker", task: "delegate" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: {
+				runId: "delegation-direct",
+				results: [
+					{
+						agent: "worker",
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [{ id: "delegation-nested", state: "complete" }],
+					},
+				],
+			},
 		});
-		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_TERMINAL_EVENT, {
-			version: 1,
-			eventId: "nested-terminal",
-			phase: "terminal",
-			rootSessionId,
-			parentSessionId: "child-session",
-			invocationId: "tool-nested",
-			delegationRunId: "delegation-nested",
-			childIndex: 0,
-			childSessionId: "nested-session",
-			lifecycle: "completed",
-			observedAt: 2,
-			usage: [],
+		await session.extensionRunner.emit({
+			type: "tool_execution_start",
+			toolCallId: "tool-pending",
+			toolName: "subagent",
+			args: { agent: "worker", task: "async", async: true },
 		});
-		await publishProjection(SUBAGENT_DELEGATION_ANALYTICS_START_EVENT, {
-			version: 1,
-			eventId: "pending-child",
-			phase: "start",
-			rootSessionId,
-			parentSessionId: rootSessionId,
-			invocationId: "tool-pending",
-			delegationRunId: "delegation-pending",
-			childIndex: 1,
-			lifecycle: "running",
-			observedAt: 3,
-			usage: [],
+		await session.extensionRunner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "tool-pending",
+			toolName: "subagent",
+			input: { agent: "worker", task: "async", async: true },
+			content: [{ type: "text", text: "started" }],
+			isError: false,
+			details: { asyncId: "delegation-pending", results: [] },
 		});
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		const projected = await analyticsStore.listDelegationEvidence();
 		expect(projected).toHaveLength(3);
-		expect(projected.map((item) => item.parentSessionId)).toEqual(
-			expect.arrayContaining([rootSessionId, "child-session"]),
-		);
+		expect(projected.every((item) => item.parentSessionId === rootSessionId)).toBe(true);
 		const taskTree = await analyticsStore.taskTree(rootSessionId);
 		expect(taskTree.unresolved).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ delegationRunId: "delegation-pending", reason: "pending" }),
-			]),
-		);
-		expect(taskTree.fallbackEvidence).toHaveLength(0);
-		expect(taskTree.unresolved).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					delegationRunId: "delegation-direct",
-					reason: "missing-usage",
-				}),
 				expect.objectContaining({
 					delegationRunId: "delegation-nested",
 					reason: "missing-usage",
 				}),
 			]),
 		);
+		expect(taskTree.fallbackEvidence).toHaveLength(1);
+		expect(taskTree.fallbackEvidence[0]?.delegationRunId).toBe("delegation-direct");
 		expect(taskTree.actualCoverage).toBe("pending");
 		const command = session.extensionRunner.getCommand("prewalk");
 		if (!command) throw new Error("Prewalk command was not registered.");
@@ -373,5 +349,80 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(lunaContextText).toContain(JSON.stringify(checklistPrompt).slice(1, -1));
 		expect(lunaContextText).not.toContain(JSON.stringify(planPrompt).slice(1, -1));
 		expect(lunaContextText).not.toContain(JSON.stringify(continuePrompt).slice(1, -1));
+	});
+
+	it("launches automatic assessment and its one continuation through Pi's public runtime", async () => {
+		const planner = model(PLANNER_MODEL_ID);
+		const executor = model(EXECUTOR_MODEL_ID);
+		const calls: string[] = [];
+		const conversion: ExtensionFactory = (pi) => {
+			pi.registerProvider("openai-codex", {
+				api: "openai-codex-responses",
+				baseUrl: "https://example.test",
+				apiKey: "integration-token",
+				oauth: {
+					name: "OpenAI Codex",
+					login: async () => ({ access: "token", refresh: "refresh", expires: 1 }),
+					refreshToken: async (credentials) => credentials,
+					getApiKey: (credentials) => credentials.access,
+				},
+				models: [planner, executor],
+				streamSimple: (selected) => {
+					calls.push(selected.id);
+					const solCall = calls.filter((id) => id === PLANNER_MODEL_ID).length;
+					if (solCall === 1) {
+						return response(planner, [
+							toolCall("assessment-1", "prewalk_assess", { decision: "continue" }),
+						]);
+					}
+					if (solCall === 2) {
+						return response(planner, [
+							toolCall("todo-1", "todo", {
+								op: "init",
+								list: [{ phase: "Implement", items: ["Finish the task"] }],
+							}),
+						]);
+					}
+					return response(planner, [{ type: "text", text: "Continuation complete." }]);
+				},
+			});
+		};
+		const settings = SettingsManager.create(workDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: workDir,
+			agentDir,
+			settingsManager: settings,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			extensionFactories: [
+				{ name: "conversion", factory: conversion },
+				{ name: "prewalk", factory: prewalkExtension },
+			],
+		});
+		await loader.reload();
+		const runtime = await ModelRuntime.create({
+			authPath: path.join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const { session } = await createAgentSession({
+			cwd: workDir,
+			agentDir,
+			modelRuntime: runtime,
+			model: planner,
+			resourceLoader: loader,
+			settingsManager: settings,
+			sessionManager: SessionManager.inMemory(workDir),
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await session.bindExtensions({});
+		await session.prompt("/prewalk auto");
+		await session.waitForIdle();
+		await session.prompt("Build an end-to-end feature across multiple concerns.");
+		await session.waitForIdle();
+
+		expect(calls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
+		session.dispose();
 	});
 });

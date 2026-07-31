@@ -23,7 +23,7 @@ export function compactStatus(
 	run: PrewalkRun | undefined,
 	selectedModel: Model<Api> | undefined,
 	_plannerReasoning = "off",
-	delegation?: DelegationStatus,
+	_delegation?: DelegationStatus,
 	session?: SessionStatus,
 ): string | undefined {
 	if (!run) {
@@ -47,23 +47,6 @@ export function compactStatus(
 			return `prewalk: ${planner} / ${executor} (cancelled)`;
 		case "failed":
 			return `prewalk: ${planner} / ${executor} (failed${run.reasonCode ? `: ${run.reasonCode.replaceAll("-", " ")}` : ""})`;
-	}
-	if (run.effectiveRoute !== "executor" && delegation) {
-		const agent = delegation.agent;
-		if (delegation.state === "failed") {
-			const reason = delegation.reason ? `: ${delegation.reason.replaceAll("-", " ")}` : "";
-			return `prewalk: ${planner} / ${executor} (${agent} Prewalk failed${reason})`;
-		}
-		if (delegation.state === "running") {
-			return `prewalk: ${planner} / ${executor} (${agent} running its own Prewalk)`;
-		}
-		if (delegation.route === "executor") {
-			return `prewalk: ${planner} / ${executor} (${agent} completed via executor)`;
-		}
-		if (delegation.route === "planner") {
-			return `prewalk: ${planner} / ${executor} (${agent} completed before handoff)`;
-		}
-		return `prewalk: ${planner} / ${executor} (${agent} completed; child route unavailable)`;
 	}
 	if (run.phase === "ready") {
 		return `prewalk: ${planner} / ${executor} (waiting for this agent's first code change)`;
