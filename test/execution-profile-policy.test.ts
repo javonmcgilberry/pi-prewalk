@@ -17,7 +17,6 @@ function run(
 		effectiveRoute: "executor",
 		planner: { ...DEFAULT_PLANNER, reasoning: plannerReasoning },
 		config: {
-			enabled: true,
 			executor: { ...DEFAULT_EXECUTOR, reasoning: executorReasoning },
 		},
 		planningPromptInjected: true,

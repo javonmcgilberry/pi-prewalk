@@ -10,19 +10,21 @@ import {
 } from "../src/core.js";
 
 const config = {
-	enabled: true,
 	executor: { ...DEFAULT_EXECUTOR },
 };
 const planner = { ...DEFAULT_PLANNER, reasoning: "high" as const };
 
 describe("provider-neutral configuration", () => {
-	it("stores only executor defaults and rejects a persisted planner", () => {
+	it("stores executor and analytics settings and rejects persisted activation", () => {
 		expect(parseConfig(config)).toEqual({
 			...config,
 			analytics: DEFAULT_ANALYTICS_CONFIG,
 		});
 		expect(() => parseConfig({ ...config, planner: DEFAULT_PLANNER })).toThrow(
 			"Unknown Prewalk config field: planner.",
+		);
+		expect(() => parseConfig({ ...config, enabled: true })).toThrow(
+			"Unknown Prewalk config field: enabled.",
 		);
 		expect(PLANNER_MODEL_ID).toBe("gpt-5.6-sol");
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");
@@ -47,7 +49,7 @@ describe("provider-neutral configuration", () => {
 	});
 
 	it("rejects unknown configuration", () => {
-		expect(() => parseConfig({ enabled: true, target: "other/model" })).toThrow(
+		expect(() => parseConfig({ executor: DEFAULT_EXECUTOR, target: "other/model" })).toThrow(
 			"Unknown Prewalk config field: target.",
 		);
 	});
@@ -116,22 +118,17 @@ describe("OMP coordinator behavior", () => {
 		});
 	});
 
-	it("bounds prose continuation and re-arms after tool progress", () => {
+	it("allows one continuation only after todo ownership and actionable work", () => {
 		const coordinator = new PrewalkCoordinator();
 		coordinator.arm("run", "epoch", "automatic", true, planner, config);
 		expect(coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false }).type).toBe(
 			"send-planning",
 		);
-		expect(coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false }).type).toBe(
-			"send-continuation",
-		);
-		expect(coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false }).type).toBe(
-			"none",
-		);
-		coordinator.onTurnEnd({ hasToolResults: true, todoSucceeded: false });
-		expect(coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false }).type).toBe(
-			"send-continuation",
-		);
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
+		coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: true });
+		expect(coordinator.requestContinuation(false)).toEqual({ type: "none" });
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "send-continuation" });
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
 	});
 
 	it("tracks executor activation, completion, failure, and cancellation separately from selection", () => {

@@ -28,7 +28,6 @@ function run(phase: RunPhase): PrewalkRun {
 		effectiveRoute: executor ? "executor" : "planner",
 		planner: { ...DEFAULT_PLANNER, reasoning: "low" },
 		config: {
-			enabled: true,
 			executor: { ...DEFAULT_EXECUTOR },
 		},
 		planningPromptInjected: true,
@@ -39,6 +38,20 @@ function run(phase: RunPhase): PrewalkRun {
 }
 
 describe("Prewalk status", () => {
+	it("separates auto readiness from the last task outcome", () => {
+		expect(
+			compactStatus(undefined, selected(), "low", undefined, {
+				mode: "auto-ready",
+				lastOutcome: "bypassed",
+			}),
+		).toBe("prewalk: auto-ready; last bypassed");
+		expect(
+			compactStatus(undefined, selected(), "low", undefined, {
+				mode: "manual",
+				lastOutcome: "completed",
+			}),
+		).toBe("prewalk: manual; last completed");
+	});
 	it.each([
 		["armed", "prewalk: [5.6 Sol · low] / Luna · low"],
 		[

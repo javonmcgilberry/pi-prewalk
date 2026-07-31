@@ -109,6 +109,7 @@ function createHarness(
 		foreignTodo?: ToolDefinition;
 		availableModels?: Model<"openai-codex-responses">[];
 		selectedModel?: Model<"openai-codex-responses">;
+		sessionId?: string;
 		todoVisible?: boolean;
 		activeTools?: string[];
 	} = {},
@@ -134,6 +135,8 @@ function createHarness(
 	const delegated: Model<"openai-codex-responses">[] = [];
 	const delegatedOptions: Array<{ reasoning?: string } | undefined> = [];
 	const delegatedContexts: Array<{ messages: unknown[] }> = [];
+	const activeToolUpdates: string[][] = [];
+	let activeTools = options.activeTools ?? ["todo", "edit", "write", "bash"];
 	let terminalInputHandler:
 		| ((data: string) => { consume?: boolean; data?: string } | undefined)
 		| undefined;
@@ -206,7 +209,11 @@ function createHarness(
 						},
 					],
 		),
-		getActiveTools: vi.fn(() => options.activeTools ?? ["todo", "edit", "write", "bash"]),
+		getActiveTools: vi.fn(() => [...activeTools]),
+		setActiveTools: vi.fn((toolNames: string[]) => {
+			activeTools = [...toolNames];
+			activeToolUpdates.push([...toolNames]);
+		}),
 		registerProvider: vi.fn((_name: string, config: ProviderConfig) => {
 			providerConfig = config;
 		}),
@@ -256,7 +263,7 @@ function createHarness(
 		},
 		hasUI: true,
 		sessionManager: {
-			getSessionId: () => "session-extension-test",
+			getSessionId: () => options.sessionId ?? "session-extension-test",
 			getBranch: () => branch,
 			buildContextEntries: () => [],
 		},
@@ -278,7 +285,7 @@ function createHarness(
 		baseStream,
 		handlers,
 		commands,
-		tools,
+		tools: tools as Map<string, any>,
 		messages,
 		messageOptions,
 		entries,
@@ -287,6 +294,8 @@ function createHarness(
 		delegated,
 		delegatedOptions,
 		delegatedContexts,
+		activeTools: () => [...activeTools],
+		activeToolUpdates,
 		terminalInput: (data: string) => terminalInputHandler?.(data),
 		emit,
 		emitBus: (channel: string, data: unknown) => {
@@ -307,6 +316,7 @@ function createHarness(
 
 async function reachHandoff(harness: ReturnType<typeof createHarness>) {
 	await harness.emit("session_start", { type: "session_start", reason: "startup" });
+	await harness.commands.get("prewalk")?.("run", harness.context);
 	await harness.emit("turn_end", {
 		type: "turn_end",
 		turnIndex: 0,
@@ -345,6 +355,18 @@ async function reachHandoff(harness: ReturnType<typeof createHarness>) {
 	});
 }
 
+async function beginAutomaticAssessment(harness: ReturnType<typeof createHarness>, text: string) {
+	await harness.emit("session_start", { type: "session_start", reason: "startup" });
+	await harness.commands.get("prewalk")?.("auto", harness.context);
+	await harness.emit("input", { type: "input", text, source: "interactive" });
+	return harness.emit("before_agent_start", {
+		type: "before_agent_start",
+		prompt: text,
+		systemPrompt: "system",
+		systemPromptOptions: {},
+	});
+}
+
 function auditBranch(harness: ReturnType<typeof createHarness>) {
 	return harness.entries.map((entry, index) => ({
 		type: "custom",
@@ -364,7 +386,6 @@ beforeEach(async () => {
 	await writeFile(
 		path.join(agentDir, "prewalk.json"),
 		`${JSON.stringify({
-			enabled: true,
 			executor: DEFAULT_EXECUTOR,
 		})}\n`,
 	);
@@ -390,6 +411,285 @@ describe("Prewalk extension harness", () => {
 		expect("setModel" in harness.pi).toBe(false);
 	});
 
+	it("starts manual, then preserves automatic mode only across a same-session reload", async () => {
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(first.providerConfig()?.streamSimple).toBe(first.baseStream);
+		expect(first.entries).toEqual([]);
+		expect(first.messages).toEqual([]);
+		await first.commands.get("prewalk")?.("auto", first.context);
+		expect(first.entries.at(-1)).toEqual({
+			customType: "prewalk-auto-mode",
+			data: { schemaVersion: 1, sessionId: "session-extension-test", enabled: true },
+		});
+
+		const restored = createHarness();
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+		await restored.commands.get("prewalk")?.("auto", restored.context);
+		expect(restored.notifications.at(-1)).toContain("already enabled");
+		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
+
+		for (const reason of ["startup", "new", "resume", "fork"]) {
+			const newSession = createHarness({ sessionId: `${reason}-session` });
+			newSession.setBranch(auditBranch(first));
+			prewalkExtension(newSession.pi);
+			await newSession.emit("session_start", { type: "session_start", reason });
+			await newSession.commands.get("prewalk")?.("auto", newSession.context);
+			expect(newSession.notifications.at(-1)).toContain("enabled for this session");
+		}
+	});
+
+	it("cancels automatic mode without starting a run", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("auto", harness.context);
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+
+		expect(harness.entries.at(-1)).toEqual({
+			customType: "prewalk-auto-mode",
+			data: { schemaVersion: 1, sessionId: "session-extension-test", enabled: false },
+		});
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+		expect(harness.messages).toEqual([]);
+	});
+
+	it("evaluates substantial work across turns before queuing the full plan", async () => {
+		const harness = createHarness({ activeTools: ["read", "todo", "edit"] });
+		prewalkExtension(harness.pi);
+		const beforeStart = await beginAutomaticAssessment(
+			harness,
+			"Fix the cross-cutting production bug with reproduction and regression protection",
+		);
+
+		expect(beforeStart).toEqual([
+			expect.objectContaining({
+				message: expect.objectContaining({ customType: "prewalk-assess" }),
+			}),
+		]);
+		expect(harness.activeTools()).toEqual(["read", "edit", "prewalk_assess"]);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: {},
+			toolResults: [],
+		});
+		expect(harness.messages).toEqual([]);
+		await harness.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.activeTools()).toEqual(["read", "edit", "todo"]);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+	});
+
+	it("quietly bypasses a completed approved plan and restores the exact tool slate", async () => {
+		const harness = createHarness({ activeTools: ["read", "todo", "grep"] });
+		prewalkExtension(harness.pi);
+		await beginAutomaticAssessment(
+			harness,
+			"Implement the approved migration plan in docs/plans/cam-1.md",
+		);
+		await harness.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "bypass" });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.activeTools()).toEqual(["read", "grep"]);
+		expect(harness.messages).toEqual([]);
+		expect(harness.entries.filter((entry) => entry.customType === "prewalk-audit")).toEqual([]);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+	});
+
+	it("fails closed for missing, duplicate, late, and mutation-invalid assessment decisions", async () => {
+		const missing = createHarness();
+		prewalkExtension(missing.pi);
+		await beginAutomaticAssessment(
+			missing,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await missing.emit("agent_settled", { type: "agent_settled" });
+		expect(missing.messages).toEqual([]);
+		const malformed = createHarness();
+		prewalkExtension(malformed.pi);
+		await beginAutomaticAssessment(
+			malformed,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await expect(
+			malformed.tools
+				.get("prewalk_assess")
+				?.execute("assessment-1", { decision: "invalid" } as never),
+		).rejects.toThrow("invalid");
+		await malformed.emit("agent_settled", { type: "agent_settled" });
+		expect(malformed.messages).toEqual([]);
+
+		const duplicate = createHarness();
+		prewalkExtension(duplicate.pi);
+		await beginAutomaticAssessment(
+			duplicate,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await duplicate.tools
+			.get("prewalk_assess")
+			?.execute("assessment-1", { decision: "continue" });
+		await expect(
+			duplicate.tools.get("prewalk_assess")?.execute("assessment-2", { decision: "bypass" }),
+		).rejects.toThrow("inactive");
+		await duplicate.emit("agent_settled", { type: "agent_settled" });
+		await expect(
+			duplicate.tools.get("prewalk_assess")?.execute("assessment-3", { decision: "continue" }),
+		).rejects.toThrow("inactive");
+
+		const mutated = createHarness();
+		prewalkExtension(mutated.pi);
+		await beginAutomaticAssessment(
+			mutated,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await mutated.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			args: {},
+		});
+		await mutated.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await mutated.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} }],
+			},
+			toolResults: [],
+		});
+		await expect(
+			mutated.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
+		).rejects.toThrow("inactive");
+		await mutated.emit("agent_settled", { type: "agent_settled" });
+		expect(mutated.messages).toEqual([]);
+	});
+
+	it("allows read-only exec inspection but ignores failed mutation attempts during assessment", async () => {
+		const inspected = createHarness();
+		prewalkExtension(inspected.pi);
+		await beginAutomaticAssessment(
+			inspected,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await inspected.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "exec-1",
+			toolName: "exec_command",
+			input: { cmd: "rg -n prewalk src" },
+			content: [],
+			isError: false,
+			details: { exit_code: 0 },
+		});
+		await inspected.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		await inspected.tools
+			.get("prewalk_assess")
+			?.execute("assessment-1", { decision: "continue" });
+		await inspected.emit("agent_settled", { type: "agent_settled" });
+		expect(inspected.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+
+		const failed = createHarness();
+		prewalkExtension(failed.pi);
+		await beginAutomaticAssessment(
+			failed,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await failed.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: true,
+			details: {},
+		});
+		await failed.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		await failed.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" });
+		await failed.emit("agent_settled", { type: "agent_settled" });
+		expect(failed.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+	});
+
+	it("cancels and reloads an evaluation without allowing a later decision to revive it", async () => {
+		const cancelled = createHarness({ activeTools: ["read", "todo", "edit"] });
+		prewalkExtension(cancelled.pi);
+		await beginAutomaticAssessment(
+			cancelled,
+			"Build an end-to-end feature across multiple concerns",
+		);
+		await cancelled.commands.get("prewalk")?.("cancel", cancelled.context);
+		expect(cancelled.activeTools()).toEqual(["read", "edit"]);
+		await expect(
+			cancelled.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
+		).rejects.toThrow("inactive");
+
+		const first = createHarness({ activeTools: ["read", "todo", "edit"] });
+		prewalkExtension(first.pi);
+		await beginAutomaticAssessment(first, "Build an end-to-end feature across multiple concerns");
+		const restored = createHarness({ activeTools: ["read", "edit", "prewalk_assess"] });
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+		expect(restored.activeTools()).toEqual(["read", "edit"]);
+		expect(restored.messages).toEqual([]);
+	});
+
+	it("ignores extension and streaming input while automatic mode is ready", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("auto", harness.context);
+		for (const event of [
+			{ type: "input", text: "Build an end-to-end feature", source: "extension" },
+			{
+				type: "input",
+				text: "Build an end-to-end feature",
+				source: "interactive",
+				streamingBehavior: "steer",
+			},
+			{
+				type: "input",
+				text: "Build an end-to-end feature",
+				source: "rpc",
+				streamingBehavior: "followUp",
+			},
+		]) {
+			await harness.emit("input", event);
+			await harness.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: event.text,
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			});
+		}
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
+		expect(harness.messages).toEqual([]);
+	});
+
 	it("preserves a foreign todo owner and fails before arming", async () => {
 		const foreignTodo = {
 			name: "todo",
@@ -402,6 +702,16 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-1",
+			toolName: "todo",
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
 
 		expect(harness.tools.get("todo")).toBe(foreignTodo);
 		expect(harness.notifications.at(-1)).toBe("Prewalk failed: todo-conflict.");
@@ -420,6 +730,16 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-1",
+			toolName: "todo",
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -449,7 +769,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "handoff-triggered",
 			phase: "handoff-pending",
-			todoActive: false,
+			todoActive: true,
 		});
 		expect(harness.statuses.at(-1)).toContain("switching after this turn");
 	});
@@ -466,6 +786,7 @@ describe("Prewalk extension harness", () => {
 		});
 		prewalkExtension(child.pi);
 		await child.emit("session_start", { type: "session_start", reason: "startup" });
+		await child.commands.get("prewalk")?.("run", child.context);
 		const childSession = path.join(agentDir, "child-session.jsonl");
 		await writeFile(
 			childSession,
@@ -479,6 +800,7 @@ describe("Prewalk extension harness", () => {
 		const parent = createHarness();
 		prewalkExtension(parent.pi);
 		await parent.emit("session_start", { type: "session_start", reason: "startup" });
+		await parent.commands.get("prewalk")?.("run", parent.context);
 		await parent.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -638,6 +960,7 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		vi.mocked(harness.context.ui.confirm)
 			.mockResolvedValueOnce(false)
 			.mockResolvedValueOnce(true);
@@ -652,7 +975,6 @@ describe("Prewalk extension harness", () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
 			`${JSON.stringify({
-				enabled: true,
 				executor: DEFAULT_EXECUTOR,
 				analytics: {
 					enabled: false,
@@ -666,12 +988,13 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.statuses.at(-1)).toContain("[5.6 Sol");
 		await harness.commands.get("prewalk")?.("stats", harness.context);
 		expect(harness.notifications.at(-1)).toContain("Lifetime: 0 receipts");
 	});
 
-	it("configures an executor for Pi's selected planner and starts a manual run", async () => {
+	it("configures an executor without starting Prewalk work", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		vi.mocked(harness.context.ui.select)
@@ -684,7 +1007,6 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.("configure", harness.context);
 
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toEqual({
-			enabled: true,
 			executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
 			analytics: {
 				enabled: true,
@@ -693,7 +1015,9 @@ describe("Prewalk extension harness", () => {
 				schemaVersion: 1,
 			},
 		});
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messages).toEqual([]);
+		expect(harness.entries).toEqual([]);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		expect(harness.notifications.at(-1)).toContain("configuration saved");
 		expect("setModel" in harness.pi).toBe(false);
 	});
@@ -704,7 +1028,6 @@ describe("Prewalk extension harness", () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
 			`${JSON.stringify({
-				enabled: true,
 				executor: {
 					provider: DEFAULT_EXECUTOR.provider,
 					model: "another-executor",
@@ -745,20 +1068,15 @@ describe("Prewalk extension harness", () => {
 		expect(firstPage?.[1].at(-1)).toBe("Next page →");
 	});
 
-	it("arms without a request, plans after Sol's first turn, then routes Luna", async () => {
+	it("starts a manual run, then routes Luna after the first mutation", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.delegated).toEqual([]);
 		expect(harness.statuses.at(-1)).toBe("prewalk: [5.6 Sol · low] / Luna · low");
 
-		await harness.emit("turn_end", {
-			type: "turn_end",
-			turnIndex: 0,
-			message: { role: "assistant", content: [] },
-			toolResults: [],
-		});
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 
 		await harness.emit("tool_result", {
@@ -851,9 +1169,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 
 		expect(harness.entries.at(-1)?.data).toMatchObject({
-			event: "armed",
+			event: "plan-injected",
 			planner: {
 				provider: "openai-codex",
 				model: "gpt-5.4",
@@ -868,6 +1187,7 @@ describe("Prewalk extension harness", () => {
 		harness.context.thinkingLevel = "high";
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		const respond = vi.fn();
 
 		harness.emitBus(EXECUTION_PROFILE_POLICY_REQUEST_EVENT, {
@@ -928,6 +1248,7 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 
 		expect(harness.terminalInput("\u001b[Z")).toBeUndefined();
 		harness.context.thinkingLevel = "medium";
@@ -1023,19 +1344,21 @@ describe("Prewalk extension harness", () => {
 		harness.setProviderConfig(undefined);
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 
 		expect(harness.notifications).toEqual([]);
 		expect(harness.entries.at(-1)?.data).toMatchObject({
-			event: "armed",
-			phase: "armed",
+			event: "plan-injected",
+			phase: "planning",
 		});
 		expect(harness.providerConfig()?.streamSimple).toBeTypeOf("function");
 	});
 
-	it("shows restored todo state and sends one bounded completion reminder", async () => {
+	it("shows restored todo state without turn-driven completion reminders", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -1091,16 +1414,12 @@ describe("Prewalk extension harness", () => {
 		const firstReminderCount = harness.messages.filter(
 			(message) => message.customType === "prewalk-todo-reminder",
 		).length;
-		expect(firstReminderCount).toBe(1);
-		expect(harness.messageOptions.at(-1)).toEqual({
-			triggerTurn: true,
-			deliverAs: "followUp",
-		});
+		expect(firstReminderCount).toBe(0);
 
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(
 			harness.messages.filter((message) => message.customType === "prewalk-todo-reminder"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 	});
 
 	it("restores a completed Luna run on reload without adding an arm or request", async () => {
@@ -1128,6 +1447,7 @@ describe("Prewalk extension harness", () => {
 		const failed = createHarness();
 		prewalkExtension(failed.pi);
 		await failed.emit("session_start", { type: "session_start", reason: "startup" });
+		await failed.commands.get("prewalk")?.("run", failed.context);
 		expect(failed.statuses.at(-1)).toBe(
 			"prewalk: [5.6 Sol · low] / Luna · low (failed: configuration invalid)",
 		);
@@ -1135,7 +1455,6 @@ describe("Prewalk extension harness", () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
 			`${JSON.stringify({
-				enabled: true,
 				executor: DEFAULT_EXECUTOR,
 			})}\n`,
 		);
@@ -1156,6 +1475,7 @@ describe("Prewalk extension harness", () => {
 		const planning = createHarness();
 		prewalkExtension(planning.pi);
 		await planning.emit("session_start", { type: "session_start", reason: "startup" });
+		await planning.commands.get("prewalk")?.("run", planning.context);
 		await planning.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -1204,6 +1524,7 @@ describe("Prewalk extension harness", () => {
 		const first = createHarness();
 		prewalkExtension(first.pi);
 		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.commands.get("prewalk")?.("run", first.context);
 		await first.commands.get("prewalk")?.("cancel", first.context);
 
 		const restored = createHarness();
@@ -1219,10 +1540,11 @@ describe("Prewalk extension harness", () => {
 		expect(restored.entries).toEqual([]);
 	});
 
-	it("persists a re-armed continuation across reload", async () => {
+	it("does not re-arm continuation from arbitrary tool results across reload", async () => {
 		const first = createHarness();
 		prewalkExtension(first.pi);
 		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.commands.get("prewalk")?.("run", first.context);
 		await first.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -1254,8 +1576,8 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 		expect(first.entries.at(-1)?.data).toMatchObject({
-			event: "progress",
-			continuePending: true,
+			event: "plan-injected",
+			continuePending: false,
 		});
 
 		const restored = createHarness();
@@ -1269,13 +1591,14 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 
-		expect(restored.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(restored.messages).toEqual([]);
 	});
 
 	it("restores the conversion provider when a live run is cancelled", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
@@ -1290,12 +1613,13 @@ describe("Prewalk extension harness", () => {
 			type: "session_start",
 			reason: "startup",
 		});
+		await restoredSelection.commands.get("prewalk")?.("run", restoredSelection.context);
 		await restoredSelection.emit("model_select", {
 			type: "model_select",
 			source: "restore",
 			model: restoredSelection.executor,
 		});
-		expect(restoredSelection.entries.at(-1)?.data).toMatchObject({ event: "armed" });
+		expect(restoredSelection.entries.at(-1)?.data).toMatchObject({ event: "plan-injected" });
 
 		const explicitSelection = createHarness();
 		prewalkExtension(explicitSelection.pi);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyTodoOperation, latestTodoPhases, type TodoPhase, TodoReminder } from "../src/todo.js";
+import {
+	applyTodoOperation,
+	hasActionableTodo,
+	latestTodoPhases,
+	type TodoPhase,
+	TodoReminder,
+} from "../src/todo.js";
 
 function initialized(): TodoPhase[] {
 	return applyTodoOperation([], {
@@ -12,6 +18,17 @@ function initialized(): TodoPhase[] {
 }
 
 describe("todo operations", () => {
+	it("treats only pending and in-progress tasks as actionable", () => {
+		expect(
+			hasActionableTodo([{ name: "work", tasks: [{ content: "next", status: "pending" }] }]),
+		).toBe(true);
+		expect(
+			hasActionableTodo([{ name: "work", tasks: [{ content: "blocked", status: "blocked" }] }]),
+		).toBe(false);
+		expect(
+			hasActionableTodo([{ name: "work", tasks: [{ content: "done", status: "completed" }] }]),
+		).toBe(false);
+	});
 	it("initializes phases and auto-starts one task", () => {
 		const result = applyTodoOperation([], {
 			op: "init",

@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "..");
 const expectedHashes = new Map([
-	["prewalk-plan.md", "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"],
-	["prewalk-continue.md", "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0"],
-	["prewalk-checklist.md", "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"],
+	["prewalk-plan.md", "349513aa69d05e492d3657df49489e32486d303ea09464929af31d466b13b9c8"],
+	["prewalk-continue.md", "d8e402a29942139df021a6f1ec78a4b1e18fa72dbd1c538b851555846847335d"],
+	["prewalk-checklist.md", "910cddca1c6bb446cb65dd7d5580cfc1989088cb14ff35b42e3a4fed5b44dfc2"],
 ]);
 
 async function bytes(path: string): Promise<Buffer> {

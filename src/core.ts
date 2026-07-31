@@ -26,7 +26,6 @@ export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 
 export interface PrewalkConfig {
-	enabled: boolean;
 	executor: ExecutorConfig;
 	analytics?: AnalyticsConfig;
 }
@@ -91,7 +90,7 @@ export type CoordinatorAction =
 	| { type: "send-continuation" }
 	| { type: "handoff"; trigger: MutationTrigger };
 
-const CONFIG_KEYS = new Set(["enabled", "executor", "analytics"]);
+const CONFIG_KEYS = new Set(["executor", "analytics"]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
 export const REASONING_LEVELS: readonly ThinkingLevel[] = [
 	"minimal",
@@ -118,9 +117,6 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config field: ${unknownKeys.join(", ")}.`);
 	}
-	if (typeof value.enabled !== "boolean") {
-		throw new Error("Prewalk config enabled must be boolean.");
-	}
 	const executor = parseModelConfig(value.executor, "executor", EXECUTOR_KEYS);
 	if (!isRecord(value.executor) || !isReasoningLevel(value.executor.reasoning)) {
 		throw new Error("Prewalk config executor.reasoning is invalid.");
@@ -130,7 +126,6 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
 			: parseAnalyticsConfig(value.analytics);
 	return {
-		enabled: value.enabled,
 		executor: { ...executor, reasoning: value.executor.reasoning },
 		analytics,
 	};
@@ -172,7 +167,7 @@ function createRun(
 		planner: structuredClone(planner),
 		config: structuredClone(config),
 		planningPromptInjected: mode === "manual",
-		continuePending: mode === "manual",
+		continuePending: false,
 		todoActive,
 		todoSeen: false,
 	};
@@ -222,13 +217,6 @@ export class PrewalkCoordinator {
 
 		if (evidence.todoSucceeded) run.todoSeen = true;
 
-		if (run.planningPromptInjected && evidence.hasToolResults) {
-			run.continuePending = true;
-		} else if (run.continuePending) {
-			run.continuePending = false;
-			return { type: "send-continuation" };
-		}
-
 		const gateOpen = run.todoSeen || !run.todoActive;
 		if (gateOpen && evidence.mutation) {
 			run.phase = "handoff-pending";
@@ -238,13 +226,19 @@ export class PrewalkCoordinator {
 
 		if (!run.planningPromptInjected) {
 			run.planningPromptInjected = true;
-			run.continuePending = true;
 			run.phase = gateOpen ? "ready" : "planning";
 			return { type: "send-planning" };
 		}
 
 		run.phase = gateOpen ? "ready" : "planning";
 		return { type: "none" };
+	}
+
+	requestContinuation(actionableTodo: boolean): CoordinatorAction {
+		const run = this.#run;
+		if (!run || !run.todoSeen || !actionableTodo || run.continuePending) return { type: "none" };
+		run.continuePending = true;
+		return { type: "send-continuation" };
 	}
 
 	activateExecutor(): void {

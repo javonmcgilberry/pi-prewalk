@@ -5,7 +5,9 @@ Pi-selected planner stays selected and saved while it plans, opens the todo
 gate, and makes the first successful mutation. The extension snapshots that
 model and reasoning when the epoch starts, then routes primary Agent-loop
 requests through a configured same-provider executor for the rest of that live
-session. A new or reopened session derives its planner from Pi again.
+session. Prewalk is manual by default. `/prewalk auto` enables automatic mode
+only for the current Pi session, and a new, resumed, forked, or shut-down
+session starts manual again.
 
 This package uses stock Pi 0.82.1 public extension and provider APIs. It does not
 patch Pi, import private Pi modules, call `setModel()` for the handoff, create a
@@ -32,7 +34,6 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 
 ```json
 {
-  "enabled": true,
   "executor": {
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
@@ -49,12 +50,16 @@ top of the picker. Prewalk never stores or changes the planner model.
 
 ## Behavior
 
-Automatic mode lets Sol finish its first assistant turn, then sends OMP's exact
-hidden planning prompt. The bundled `todo` tool must succeed while active. The
-first successful `edit`, `write`, direct `apply_patch`, shell `apply_patch`, or
-Code Mode patch after that gate becomes the handoff mutation. Failed, partial,
-cancelled, still-running, quoted, printed, and dynamically constructed patch
-attempts do not trigger.
+`/prewalk run` starts a manual Prewalk run. `/prewalk auto` records automatic
+mode in the active session only and does not validate models, install a provider
+overlay, open analytics, or inject a planning prompt. `/prewalk configure`
+writes executor and analytics settings only, and does not start Prewalk work.
+
+The bundled `todo` tool must succeed while active. The first successful `edit`,
+`write`, direct `apply_patch`, shell `apply_patch`, or Code Mode patch after
+that gate becomes the handoff mutation. Failed, partial, cancelled,
+still-running, quoted, printed, and dynamically constructed patch attempts do
+not trigger.
 
 The extension decides after the complete assistant turn, so parallel tool
 results cannot race the handoff. Before Luna's first request, stale planning
@@ -100,15 +105,19 @@ Commands:
 
 - `/prewalk status`
 - `/prewalk run`
+- `/prewalk auto`
 - `/prewalk cancel`
 - `/prewalk configure`
 - `/prewalk help` or `/prewalk --help`
 - `/todos`
 
 An explicit Pi model selection cancels the route without changing the user's
-selection. `/reload` restores the current extension-owned run state. New,
-resumed, and forked sessions create a fresh epoch from Pi's selected model and
-reasoning.
+selection. `/reload` restores automatic readiness only for the same session.
+New, resumed, and forked sessions do not inherit automatic mode.
+
+Typing exactly `stop` or `cancel` closes only the current Prewalk task and keeps
+automatic mode ready for the next task. `/prewalk cancel` is the session control
+that also disables automatic mode.
 
 ## Personal savings analytics
 

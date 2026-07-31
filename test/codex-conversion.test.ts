@@ -38,7 +38,6 @@ describe("installed Codex conversion composition", () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
 			`${JSON.stringify({
-				enabled: true,
 				executor: DEFAULT_EXECUTOR,
 			})}\n`,
 		);
@@ -99,6 +98,8 @@ describe("installed Codex conversion composition", () => {
 		});
 
 		await session.bindExtensions({});
+		await session.prompt("/prewalk run");
+		await session.waitForIdle();
 
 		const wrapped = runtime.getRegisteredProviderConfig("openai-codex");
 		expect(conversionConfig?.api).toBe("openai-codex-responses");

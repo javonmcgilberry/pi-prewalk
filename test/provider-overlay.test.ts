@@ -135,7 +135,6 @@ function setup() {
 		registry,
 		{ ...DEFAULT_PLANNER, reasoning: "high" },
 		{
-			enabled: true,
 			executor: { ...DEFAULT_EXECUTOR },
 		},
 		state,

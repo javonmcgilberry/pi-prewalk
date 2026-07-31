@@ -49,6 +49,12 @@ export interface TodoResult {
 	details: TodoSnapshot;
 }
 
+export function hasActionableTodo(phases: readonly TodoPhase[]): boolean {
+	return phases.some((phase) =>
+		phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress"),
+	);
+}
+
 function cloneTask(task: TodoItem): TodoItem {
 	return task.blocker === undefined
 		? { content: task.content, status: task.status }

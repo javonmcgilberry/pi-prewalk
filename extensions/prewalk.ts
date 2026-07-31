@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { admitAutomaticPrewalk } from "../src/admission.js";
 import {
 	ANALYTICS_SCHEMA_VERSION,
 	calculateSavings,
@@ -43,8 +44,11 @@ import {
 import {
 	type AuditEventKind,
 	createAuditRecord,
+	createAutoModeRecord,
 	PREWALK_AUDIT_TYPE,
+	PREWALK_AUTO_MODE_TYPE,
 	parseAuditRecord,
+	parseAutoModeRecord,
 	runFromAudit,
 } from "../src/audit.js";
 import {
@@ -71,6 +75,7 @@ import { createProviderOverlay, type ProviderOverlay } from "../src/provider-ove
 import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
 import {
 	applyTodoOperation,
+	hasActionableTodo,
 	latestTodoPhases,
 	type TodoInput,
 	type TodoPhase,
@@ -79,13 +84,25 @@ import {
 
 const STATUS_KEY = "prewalk";
 const PREWALK_TODO_REMINDER_MESSAGE_TYPE = "prewalk-todo-reminder";
+const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
+const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
 const MAX_CHILD_SESSION_BYTES = 16 * 1024 * 1024;
-const PREWALK_COMMANDS = ["status", "stats", "run", "cancel", "configure", "help", "--help"];
+const PREWALK_COMMANDS = [
+	"status",
+	"stats",
+	"run",
+	"auto",
+	"cancel",
+	"configure",
+	"help",
+	"--help",
+];
 const PROMPT_TYPES = new Set([
 	PREWALK_PLAN_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_TODO_REMINDER_MESSAGE_TYPE,
+	PREWALK_ASSESS_MESSAGE_TYPE,
 ]);
 
 const TodoParameters = Type.Object({
@@ -114,8 +131,13 @@ const TodoParameters = Type.Object({
 	reason: Type.Optional(Type.String()),
 });
 
+const AssessmentParameters = Type.Object({
+	decision: Type.Union([Type.Literal("continue"), Type.Literal("bypass")]),
+});
+
 interface PromptSet {
 	plan: string;
+	assess: string;
 	continue: string;
 	checklist: string;
 	todo: string;
@@ -128,10 +150,17 @@ function promptFile(name: string): URL {
 function loadPrompts(): PromptSet {
 	return {
 		plan: readFileSync(promptFile("prewalk-plan.md"), "utf8"),
+		assess: readFileSync(promptFile("prewalk-assess.md"), "utf8"),
 		continue: readFileSync(promptFile("prewalk-continue.md"), "utf8"),
 		checklist: readFileSync(promptFile("prewalk-checklist.md"), "utf8"),
 		todo: readFileSync(promptFile("todo.md"), "utf8"),
 	};
+}
+
+interface EvaluationState {
+	toolSlate: string[];
+	decision?: "continue" | "bypass";
+	invalid: boolean;
 }
 
 const prompts = loadPrompts();
@@ -153,11 +182,13 @@ function helpText(): string {
 		"/prewalk stats export <path>  Export validated JSONL without overwriting a file.",
 		"/prewalk stats reset  Confirm a new empty ledger generation.",
 		"/prewalk run     Start a new manual Prewalk run after cancellation or failure.",
-		"/prewalk cancel  Stop Prewalk routing for the current session.",
+		"/prewalk auto    Enable conservative automatic admission for this session.",
+		"/prewalk cancel  Disable automatic admission and stop the current Prewalk run.",
 		"/prewalk configure  Choose the executor and control analytics collection and catalog fallback.",
 		"/todos           Show the current Prewalk implementation checklist.",
 		"",
 		"Reset the current run: /prewalk cancel, then /prewalk run.",
+		"Type exactly stop or cancel to close only the current task; /prewalk cancel also disables session automatic mode.",
 		"Reload extension and config changes: /reload.",
 		`Configuration file: ${configPath()}`,
 		"Configuration is written atomically by /prewalk configure.",
@@ -174,7 +205,6 @@ function helpText(): string {
 
 function defaultConfig(): PrewalkConfig {
 	return {
-		enabled: true,
 		executor: { ...DEFAULT_EXECUTOR },
 		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 	};
@@ -402,12 +432,28 @@ function latestAuditRecord(ctx: ExtensionContext) {
 	return undefined;
 }
 
+function latestAutoModeRecord(ctx: ExtensionContext) {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry?.type !== "custom" || entry.customType !== PREWALK_AUTO_MODE_TYPE) continue;
+		const record = parseAutoModeRecord(entry.data);
+		if (record) return record;
+	}
+	return undefined;
+}
+
 export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
 	const mutations = new MutationTurnBuffer();
+	const evaluationMutations = new MutationTurnBuffer();
 	const todoReminder = new TodoReminder();
 	const analyticsStore = new AnalyticsStore(getAgentDir());
 	let activeSessionId: string | undefined;
+	let autoEnabled = false;
+	let lastOutcome: "bypassed" | "completed" | undefined;
+	let pendingAdmission = false;
+	let evaluation: EvaluationState | undefined;
 	let removeExecutionProfilePolicyListener: (() => void) | undefined;
 	const ensureExecutionProfilePolicyListener = (): void => {
 		if (removeExecutionProfilePolicyListener || !pi.events) return;
@@ -428,6 +474,27 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let lastStatus: string | undefined;
 	let delegation: DelegationStatus | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
+	const deactivatePrewalkTools = (): void => {
+		const active = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		pi.setActiveTools(todoConflict ? active : active.filter((name) => name !== "todo"));
+	};
+	const activatePlanningTools = (toolSlate = pi.getActiveTools()): void => {
+		const withoutAssessment = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		pi.setActiveTools([...withoutAssessment.filter((name) => name !== "todo"), "todo"]);
+	};
+	const beginEvaluation = (): void => {
+		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		evaluation = { toolSlate, invalid: false };
+		evaluationMutations.resetForRun();
+		const evaluationTools = todoConflict
+			? toolSlate
+			: toolSlate.filter((name) => name !== "todo");
+		pi.setActiveTools([...evaluationTools, PREWALK_ASSESS_TOOL_NAME]);
+	};
+	const restoreEvaluationTools = (): void => {
+		if (!evaluation) return;
+		pi.setActiveTools(evaluation.toolSlate);
+	};
 	type ActiveAnalyticsState = {
 		journal: RunJournal;
 		pricing: {
@@ -502,7 +569,10 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	}
 
 	const updateStatus = (ctx: ExtensionContext): void => {
-		const nextStatus = compactStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation);
+		const nextStatus = compactStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation, {
+			mode: autoEnabled ? "auto-ready" : "manual",
+			...(lastOutcome ? { lastOutcome } : {}),
+		});
 		if (nextStatus === lastStatus) return;
 		ctx.ui.setStatus(STATUS_KEY, nextStatus);
 		lastStatus = nextStatus;
@@ -517,6 +587,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		pi.appendEntry(PREWALK_AUDIT_TYPE, record);
 		lastAuditKey = key;
 		updateStatus(ctx);
+	};
+
+	const setAutoEnabled = (enabled: boolean, ctx: ExtensionContext): void => {
+		autoEnabled = enabled;
+		pi.appendEntry(
+			PREWALK_AUTO_MODE_TYPE,
+			createAutoModeRecord(ctx.sessionManager.getSessionId(), enabled),
+		);
 	};
 
 	const enqueueAnalytics = (operation: () => Promise<void>): Promise<void> => {
@@ -851,8 +929,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const startRun = async (mode: "automatic" | "manual", ctx: ExtensionContext): Promise<void> => {
 		try {
 			const config = await readConfig();
-			if (mode === "automatic" && !config.enabled) return;
 			if (todoConflict) throw new Error("todo-conflict");
+			activatePlanningTools();
 			if (!ctx.model) throw new Error("model-unavailable");
 			const planner: PlannerProfile = {
 				provider: ctx.model.provider,
@@ -964,7 +1042,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		]);
 		if (catalogChoice !== "enabled" && catalogChoice !== "disabled") return;
 		const nextConfig: PrewalkConfig = {
-			enabled: true,
 			executor: {
 				provider: executor.provider,
 				model: executor.id,
@@ -983,22 +1060,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		);
 		if (!confirmed) return;
 		await writeConfig(nextConfig);
-		if (
-			coordinator.run &&
-			coordinator.run.phase !== "cancelled" &&
-			coordinator.run.phase !== "failed"
-		) {
-			await finalizeAnalytics("cancelled");
-		}
-		overlay?.restore();
-		overlay = undefined;
-		coordinator.reset();
-		mutations.resetForRun();
-		lastAuditKey = undefined;
-		lastStatus = undefined;
-		ctx.ui.setStatus(STATUS_KEY, undefined);
-		await startRun("manual", ctx);
-		ctx.ui.notify("Prewalk configuration saved and a new planning run started.", "info");
+		ctx.ui.notify("Prewalk configuration saved.", "info");
 	};
 
 	const showStats = async (argumentsText: string, ctx: ExtensionContext): Promise<void> => {
@@ -1132,7 +1194,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			"Keep todo state current as work advances.",
 		],
 		parameters: TodoParameters,
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const input: TodoInput = {
 				op: params.op,
 				...(params.list ? { list: params.list } : {}),
@@ -1152,6 +1214,24 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerTool({
+		name: PREWALK_ASSESS_TOOL_NAME,
+		label: "Prewalk assessment",
+		description:
+			"Record whether substantial implementation work remains after bounded inspection.",
+		parameters: AssessmentParameters,
+		async execute(_toolCallId, params) {
+			if (!evaluation || evaluation.invalid || evaluation.decision) {
+				throw new Error("Prewalk assessment is inactive.");
+			}
+			if (params.decision !== "continue" && params.decision !== "bypass") {
+				throw new Error("Prewalk assessment decision is invalid.");
+			}
+			evaluation.decision = params.decision;
+			return { content: [{ type: "text", text: "Assessment recorded." }], details: {} };
+		},
+	});
+
 	pi.registerCommand("prewalk", {
 		description: "Inspect, run, or cancel the current Prewalk handoff.",
 		getArgumentCompletions: (prefix) =>
@@ -1166,17 +1246,26 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			}
 			if (command === "status") {
 				ctx.ui.notify(
-					detailedStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation),
+					detailedStatus(coordinator.run, ctx.model, ctx.thinkingLevel, delegation, {
+						mode: autoEnabled ? "auto-ready" : "manual",
+						...(lastOutcome ? { lastOutcome } : {}),
+					}),
 					"info",
 				);
 				return;
 			}
 			if (command === "cancel") {
-				if (!coordinator.run) {
-					ctx.ui.notify("Prewalk is inactive.", "info");
-					return;
+				setAutoEnabled(false, ctx);
+				updateStatus(ctx);
+				if (evaluation) {
+					restoreEvaluationTools();
+					evaluation = undefined;
 				}
-				await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+				pendingAdmission = false;
+				if (coordinator.run) {
+					await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+				}
+				ctx.ui.notify("Prewalk automatic mode disabled for this session.", "info");
 				return;
 			}
 			if (command === "stats" || command.startsWith("stats ")) {
@@ -1195,11 +1284,24 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				await startRun("manual", ctx);
 				return;
 			}
+			if (command === "auto") {
+				if (autoEnabled) {
+					ctx.ui.notify("Prewalk automatic mode is already enabled for this session.", "info");
+					return;
+				}
+				setAutoEnabled(true, ctx);
+				updateStatus(ctx);
+				ctx.ui.notify("Prewalk automatic mode enabled for this session.", "info");
+				return;
+			}
 			if (command === "configure") {
 				await configure(ctx);
 				return;
 			}
-			ctx.ui.notify("Usage: /prewalk [status|stats|run|cancel|configure|help|--help]", "error");
+			ctx.ui.notify(
+				"Usage: /prewalk [status|stats|run|auto|cancel|configure|help|--help]",
+				"error",
+			);
 		},
 	});
 
@@ -1245,6 +1347,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const todoTool = pi.getAllTools().find((tool) => tool.name === "todo");
 		todoConflict =
 			todoTool !== undefined && !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
+		deactivatePrewalkTools();
 		todoPhases = latestTodoPhases(
 			ctx.sessionManager
 				.buildContextEntries()
@@ -1252,7 +1355,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		);
 		todoReminder.reset();
 		if (event.reason === "reload") {
+			const autoMode = latestAutoModeRecord(ctx);
+			autoEnabled = autoMode?.sessionId === activeSessionId && autoMode.enabled;
 			const record = latestAuditRecord(ctx);
+			if (evaluation) {
+				restoreEvaluationTools();
+				evaluation = undefined;
+			}
 			if (record) {
 				const restored = runFromAudit(record);
 				if (restored.phase === "failed" && restored.reasonCode === "configuration-invalid") {
@@ -1262,6 +1371,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				coordinator.restore(restored);
+				if (
+					restored.todoActive &&
+					!todoConflict &&
+					restored.phase !== "cancelled" &&
+					restored.phase !== "failed"
+				) {
+					pi.setActiveTools([
+						...pi.getActiveTools().filter((name) => name !== "todo"),
+						"todo",
+					]);
+				}
 				lastAuditKey = JSON.stringify(record);
 				if (restored.phase === "cancelled") {
 					updateStatus(ctx);
@@ -1287,9 +1407,59 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		coordinator.reset();
+		autoEnabled = false;
+		lastOutcome = undefined;
+		pendingAdmission = false;
+		evaluation = undefined;
 		mutations.resetForRun();
 		lastAuditKey = undefined;
-		await startRun("automatic", ctx);
+	});
+
+	pi.on("input", async (event, ctx) => {
+		const control = event.text.trim().toLowerCase();
+		if ((control === "stop" || control === "cancel") && event.source !== "extension") {
+			pendingAdmission = false;
+			if (evaluation) {
+				restoreEvaluationTools();
+				evaluation = undefined;
+				lastOutcome = "completed";
+				updateStatus(ctx);
+				return { action: "handled" };
+			}
+			if (coordinator.run) {
+				await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+				lastOutcome = "completed";
+				deactivatePrewalkTools();
+				coordinator.reset();
+				updateStatus(ctx);
+				return { action: "handled" };
+			}
+			return { action: "continue" };
+		}
+		if (
+			!autoEnabled ||
+			coordinator.run ||
+			evaluation ||
+			event.source === "extension" ||
+			event.streamingBehavior !== undefined
+		) {
+			return { action: "continue" };
+		}
+		pendingAdmission = admitAutomaticPrewalk(event.text) === "admit";
+		return { action: "continue" };
+	});
+
+	pi.on("before_agent_start", (_event) => {
+		if (!pendingAdmission || coordinator.run || evaluation) return;
+		pendingAdmission = false;
+		beginEvaluation();
+		return {
+			message: {
+				customType: PREWALK_ASSESS_MESSAGE_TYPE,
+				content: prompts.assess,
+				display: false,
+			},
+		};
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
@@ -1298,6 +1468,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		removeExecutionProfilePolicyListener = undefined;
 		primaryAgentStream = false;
 		delegation = undefined;
+		pendingAdmission = false;
+		evaluation = undefined;
+		if (event.reason !== "reload") autoEnabled = false;
 		if (event.reason !== "reload") {
 			await finalizeAnalytics(
 				coordinator.run?.phase === "completed" ? "succeeded" : "cancelled",
@@ -1347,29 +1520,56 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		);
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
+	pi.on("agent_settled", async (_event, ctx) => {
 		primaryAgentStream = false;
-		if (coordinator.run?.phase !== "completed") return;
-		const reminder = todoReminder.next(todoPhases);
-		if (!reminder) return;
-		pi.sendMessage(
-			{
-				customType: PREWALK_TODO_REMINDER_MESSAGE_TYPE,
-				content: reminder,
-				display: false,
-				details: { runId: coordinator.run.id },
-			},
-			{ triggerTurn: true, deliverAs: "followUp" },
-		);
+		if (evaluation) {
+			const current = evaluation;
+			if (current.decision === "continue" && !current.invalid) {
+				pi.setActiveTools([...current.toolSlate.filter((name) => name !== "todo"), "todo"]);
+				evaluation = undefined;
+				await startRun("automatic", ctx);
+				const action = coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false });
+				if (action.type === "send-planning") await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+				updateStatus(ctx);
+			} else {
+				restoreEvaluationTools();
+				evaluation = undefined;
+				lastOutcome = "bypassed";
+				updateStatus(ctx);
+			}
+			return;
+		}
+		const run = coordinator.run;
+		if (!run) return;
+		const action = coordinator.requestContinuation(hasActionableTodo(todoPhases));
+		if (action.type === "send-continuation") {
+			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
+			return;
+		}
+		await finalizeAnalytics(run.phase === "failed" ? "failed" : "succeeded");
+		overlay?.restore();
+		overlay = undefined;
+		coordinator.reset();
+		lastOutcome = "completed";
+		mutations.resetForRun();
+		todoReminder.reset();
+		deactivatePrewalkTools();
 		updateStatus(ctx);
 	});
 
 	pi.on("tool_execution_update", (event) => {
+		if (evaluation) {
+			evaluationMutations.recordExecutionUpdate(event);
+			return;
+		}
 		if (!acceptsMutationEvidence(coordinator.run)) return;
 		mutations.recordExecutionUpdate(event);
 	});
 
 	pi.on("tool_execution_start", (event, ctx) => {
+		if (evaluation && (event.toolName === "todo" || event.toolName === "subagent")) {
+			evaluation.invalid = true;
+		}
 		if (event.toolName !== "subagent") return;
 		const parentSessionId = ctx.sessionManager.getSessionId();
 		if (parentSessionId) {
@@ -1390,6 +1590,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		if (evaluation) {
+			evaluationMutations.recordResult({
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				input: event.input,
+				isError: event.isError,
+				details: event.details,
+			});
+		}
 		if (event.usage && analyticsState) {
 			const run = coordinator.run;
 			const selected = ctx.model;
@@ -1425,6 +1634,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		if (evaluation) {
+			const evidence = evaluationMutations.finishTurn(event.message, {
+				todoActive: false,
+				todoSeen: false,
+			});
+			if (evidence.mutation) evaluation.invalid = true;
+			return;
+		}
 		if (!verifyOverlayOwnership(ctx)) return;
 		const run = coordinator.run;
 		if (!run || !acceptsMutationEvidence(run)) return;

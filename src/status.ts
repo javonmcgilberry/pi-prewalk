@@ -8,6 +8,11 @@ export interface DelegationStatus {
 	reason?: string;
 }
 
+export interface SessionStatus {
+	mode: "manual" | "auto-ready";
+	lastOutcome?: "bypassed" | "completed";
+}
+
 function modelLabel(model: ModelConfig): string {
 	if (model.model === "gpt-5.6-sol") return "5.6 Sol";
 	if (model.model === "gpt-5.6-luna") return "Luna";
@@ -19,8 +24,12 @@ export function compactStatus(
 	selectedModel: Model<Api> | undefined,
 	_plannerReasoning = "off",
 	delegation?: DelegationStatus,
+	session?: SessionStatus,
 ): string | undefined {
-	if (!run) return undefined;
+	if (!run) {
+		const outcome = session?.lastOutcome ? `; last ${session.lastOutcome}` : "";
+		return session ? `prewalk: ${session.mode}${outcome}` : undefined;
+	}
 	const plannerSelected = isPlannerSelected(selectedModel, run.planner);
 	if (run.phase === "cancelled" && !plannerSelected) {
 		const selected = selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "none";
@@ -67,8 +76,13 @@ export function detailedStatus(
 	selectedModel: Model<Api> | undefined,
 	plannerReasoning = "off",
 	delegation?: DelegationStatus,
+	session?: SessionStatus,
 ): string {
-	if (!run) return "Prewalk is inactive.";
+	if (!run)
+		return (
+			compactStatus(undefined, selectedModel, plannerReasoning, delegation, session) ??
+			"Prewalk is inactive."
+		);
 	const selected = selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "none";
 	const detail = [
 		`status=${compactStatus(run, selectedModel, plannerReasoning, delegation)}`,

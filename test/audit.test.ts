@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createAuditRecord, parseAuditRecord, runFromAudit } from "../src/audit.js";
+import {
+	createAuditRecord,
+	createAutoModeRecord,
+	parseAuditRecord,
+	parseAutoModeRecord,
+	runFromAudit,
+} from "../src/audit.js";
 import { DEFAULT_EXECUTOR, DEFAULT_PLANNER, type PrewalkRun } from "../src/core.js";
 
 const run: PrewalkRun = {
@@ -10,7 +16,6 @@ const run: PrewalkRun = {
 	effectiveRoute: "planner",
 	planner: { ...DEFAULT_PLANNER, reasoning: "high" },
 	config: {
-		enabled: true,
 		executor: { ...DEFAULT_EXECUTOR },
 	},
 	planningPromptInjected: true,
@@ -49,5 +54,12 @@ describe("Prewalk audit records", () => {
 		expect(parseAuditRecord({ ...record, headers: { authorization: "secret" } })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, rawError: "/private/path" })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, reasonCode: "raw provider error" })).toBeUndefined();
+	});
+
+	it("round-trips only versioned, session-bound automatic mode", () => {
+		const record = createAutoModeRecord("session-1", true);
+		expect(parseAutoModeRecord(record)).toEqual(record);
+		expect(parseAutoModeRecord({ ...record, extra: true })).toBeUndefined();
+		expect(parseAutoModeRecord({ ...record, sessionId: "" })).toBeUndefined();
 	});
 });

@@ -99,7 +99,6 @@ beforeEach(async () => {
 	await writeFile(
 		path.join(agentDir, "prewalk.json"),
 		`${JSON.stringify({
-			enabled: true,
 			executor: DEFAULT_EXECUTOR,
 		})}\n`,
 	);
@@ -113,7 +112,7 @@ afterEach(async () => {
 });
 
 describe("stock Pi Agent-loop integration", () => {
-	it("promotes one reconciling receipt with auxiliary and compaction attribution", async () => {
+	it("promotes a task-scoped receipt without post-completion attribution", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
@@ -147,9 +146,6 @@ describe("stock Pi Agent-loop integration", () => {
 					}
 					const solCall = calls.filter((id) => id === PLANNER_MODEL_ID).length;
 					if (solCall === 1) {
-						return response(planner, [{ type: "text", text: "I will inspect first." }]);
-					}
-					if (solCall === 2) {
 						return response(planner, [
 							toolCall("todo-1", "todo", {
 								op: "init",
@@ -167,6 +163,10 @@ describe("stock Pi Agent-loop integration", () => {
 							path: path.join(workDir, "target.txt"),
 							oldText: "before",
 							newText: "after",
+						}),
+						toolCall("todo-done-1", "todo", {
+							op: "done",
+							task: "Make the first mutation",
 						}),
 					]);
 				},
@@ -209,27 +209,19 @@ describe("stock Pi Agent-loop integration", () => {
 		});
 		await session.bindExtensions({});
 
+		await session.prompt("/prewalk run");
+		await session.waitForIdle();
 		await session.prompt("Implement the requested change.");
 		await session.waitForIdle();
 
 		expect(calls, JSON.stringify(sessionManager.getEntries(), null, 2)).toEqual([
 			PLANNER_MODEL_ID,
 			PLANNER_MODEL_ID,
-			PLANNER_MODEL_ID,
-			EXECUTOR_MODEL_ID,
 			EXECUTOR_MODEL_ID,
 		]);
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
 		const analyticsStore = new AnalyticsStore(agentDir);
-		const journals = await analyticsStore.listUnfinishedJournals();
-		expect(journals).toHaveLength(1);
-		expect(journals[0]?.usage).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ role: "planner-primary", provider: "openai-codex" }),
-				expect.objectContaining({ role: "executor-primary", provider: "openai-codex" }),
-			]),
-		);
 
 		await session.extensionRunner.emitToolResult({
 			type: "tool_result",
@@ -348,21 +340,19 @@ describe("stock Pi Agent-loop integration", () => {
 			expect.objectContaining({
 				sessionId: rootSessionId,
 				outcome: "succeeded",
-				actualCost: 10.5,
+				actualCost: 6,
 			}),
 		);
 		expect(rootReceipt?.usage).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ role: "planner-primary" }),
 				expect.objectContaining({ role: "executor-primary" }),
-				expect.objectContaining({
-					role: "auxiliary",
-					cost: expect.objectContaining({ total: 0.3 }),
-				}),
-				expect.objectContaining({
-					role: "compaction",
-					cost: expect.objectContaining({ total: 0.2 }),
-				}),
+			]),
+		);
+		expect(rootReceipt?.usage).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ role: "auxiliary" }),
+				expect.objectContaining({ role: "compaction" }),
 			]),
 		);
 		session.dispose();
