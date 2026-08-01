@@ -79,11 +79,9 @@ import {
 	latestTodoPhases,
 	type TodoInput,
 	type TodoPhase,
-	TodoReminder,
 } from "../src/todo.js";
 
 const STATUS_KEY = "prewalk";
-const PREWALK_TODO_REMINDER_MESSAGE_TYPE = "prewalk-todo-reminder";
 const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
 const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
 const PREWALK_DELEGATION_POLICY_TYPE = "prewalk-delegation-policy-v1";
@@ -101,7 +99,6 @@ const PROMPT_TYPES = new Set([
 	PREWALK_PLAN_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
-	PREWALK_TODO_REMINDER_MESSAGE_TYPE,
 	PREWALK_ASSESS_MESSAGE_TYPE,
 ]);
 
@@ -158,6 +155,7 @@ function loadPrompts(): PromptSet {
 }
 
 interface EvaluationState {
+	id: string;
 	toolSlate: string[];
 	decision?: "continue" | "bypass";
 	invalid: boolean;
@@ -169,6 +167,21 @@ const prompts = loadPrompts();
 
 function configPath(): string {
 	return path.join(getAgentDir(), "prewalk.json");
+}
+
+function nativeResponsesCompactionEnabled(): boolean {
+	try {
+		const config = JSON.parse(
+			readFileSync(path.join(getAgentDir(), "pi-codex-conversion.json"), "utf8"),
+		) as unknown;
+		return (
+			isRecord(config) &&
+			isRecord(config.compaction) &&
+			config.compaction.responsesCompaction === true
+		);
+	} catch {
+		return false;
+	}
 }
 
 function helpText(): string {
@@ -306,21 +319,49 @@ function runIdFromMessage(message: AgentMessage): string | undefined {
 	return typeof message.details.runId === "string" ? message.details.runId : undefined;
 }
 
-function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined): boolean {
+function assessmentIdFromMessage(message: AgentMessage): string | undefined {
+	if (
+		message.role !== "custom" ||
+		message.customType !== PREWALK_ASSESS_MESSAGE_TYPE ||
+		!isRecord(message.details)
+	) {
+		return undefined;
+	}
+	return typeof message.details.assessmentId === "string" ? message.details.assessmentId : undefined;
+}
+
+function shouldExposePrompt(
+	message: AgentMessage,
+	run: PrewalkRun | undefined,
+	assessmentId?: string,
+): boolean {
+	if (message.role === "custom" && message.customType === PREWALK_ASSESS_MESSAGE_TYPE) {
+		return assessmentIdFromMessage(message) === assessmentId;
+	}
 	if (!isPrewalkPrompt(message)) return true;
 	const messageRunId = runIdFromMessage(message);
 	if (!messageRunId) return false;
 	if (!run || messageRunId !== run.id || run.phase === "cancelled") return false;
-	if (message.customType === PREWALK_TODO_REMINDER_MESSAGE_TYPE) return true;
 	if (
 		run.phase === "handoff-pending" ||
 		run.phase === "active" ||
 		run.phase === "completed" ||
 		(run.phase === "failed" && run.effectiveRoute === "executor")
 	) {
-		return message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE;
+		return (
+			message.customType === PREWALK_CONTINUE_MESSAGE_TYPE ||
+			message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE
+		);
 	}
 	return message.customType !== PREWALK_CHECKLIST_MESSAGE_TYPE;
+}
+
+function isEphemeralPrewalkPrompt(message: AgentMessage): boolean {
+	return (
+		message.role === "custom" &&
+		(message.customType === PREWALK_PLAN_MESSAGE_TYPE ||
+			message.customType === PREWALK_ASSESS_MESSAGE_TYPE)
+	);
 }
 
 function delegatedAgent(value: unknown): string {
@@ -469,7 +510,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
 	const mutations = new MutationTurnBuffer();
 	const evaluationMutations = new MutationTurnBuffer();
-	const todoReminder = new TodoReminder();
 	const analyticsStore = new AnalyticsStore(getAgentDir());
 	const hasInheritedExecutionProfilePolicy =
 		process.env[PREWALK_EXECUTION_PROFILE_POLICY_ENV] !== undefined;
@@ -503,7 +543,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 	const beginEvaluation = (): void => {
 		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
-		evaluation = { toolSlate, invalid: false };
+		evaluation = { id: randomUUID(), toolSlate, invalid: false };
 		evaluationMutations.resetForRun();
 		const evaluationTools = todoConflict
 			? toolSlate
@@ -539,6 +579,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		toolCallId: string;
 		rootSessionId: string;
 		parentSessionId: string;
+		analyticsGeneration: string;
 		childCount: number;
 		delegationRunId?: string;
 		policy?: ExecutionProfilePolicy;
@@ -757,6 +798,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 		}
 		coordinator.fail(reasonCode, holdExecutorRoute);
+		overlay?.restore();
+		overlay = undefined;
 		mutations.resetForRun();
 		audit("failed", ctx);
 		if (
@@ -911,6 +954,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		try {
 			const config = await readConfig();
+			if (nativeResponsesCompactionEnabled()) {
+				throw new Error("native-compaction-unsupported");
+			}
 			if (todoConflict) throw new Error("todo-conflict");
 			activatePlanningTools();
 			if (!ctx.model) throw new Error("model-unavailable");
@@ -938,7 +984,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				});
 			}
 			mutations.resetForRun();
-			todoReminder.reset();
 			audit("armed", ctx);
 			if (action.type === "send-planning") {
 				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, triggerTurn);
@@ -952,6 +997,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					"authorization-unavailable",
 					"provider-unavailable",
 					"provider-drift",
+					"native-compaction-unsupported",
 					"todo-conflict",
 				].includes(error.message)
 					? error.message
@@ -1201,7 +1247,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			const result = applyTodoOperation(todoPhases, input);
 			if (result.isError) throw new Error(result.text);
 			todoPhases = result.details.phases;
-			if (params.op !== "view") todoReminder.reset();
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: result.details,
@@ -1353,7 +1398,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				.buildContextEntries()
 				.flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
 		);
-		todoReminder.reset();
 		if (event.reason === "reload") {
 			const autoMode = latestAutoModeRecord(ctx);
 			autoEnabled =
@@ -1457,11 +1501,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (!pendingAdmission || coordinator.run || evaluation) return;
 		pendingAdmission = false;
 		beginEvaluation();
+		const assessment = evaluation as EvaluationState | undefined;
+		if (!assessment) return;
 		return {
 			message: {
 				customType: PREWALK_ASSESS_MESSAGE_TYPE,
 				content: prompts.assess,
 				display: false,
+				details: { assessmentId: assessment.id },
 			},
 		};
 	});
@@ -1540,7 +1587,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				pi.setActiveTools([...current.toolSlate.filter((name) => name !== "todo"), "todo"]);
 				evaluation = undefined;
 				await startRun("automatic", ctx, true);
-				const action = coordinator.onTurnEnd({ hasToolResults: false, todoSucceeded: false });
+				const action = coordinator.onTurnEnd({ todoSucceeded: false });
 				if (action.type === "send-planning")
 					await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, true);
 				updateStatus(ctx);
@@ -1565,7 +1612,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		coordinator.reset();
 		lastOutcome = "completed";
 		mutations.resetForRun();
-		todoReminder.reset();
 		deactivatePrewalkTools();
 		updateStatus(ctx);
 	});
@@ -1646,21 +1692,27 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		mutations.recordExecutionUpdate(event);
 	});
 
-	pi.on("tool_execution_start", (event, ctx) => {
+	pi.on("tool_execution_start", async (event, ctx) => {
 		if (evaluation && (event.toolName === "todo" || event.toolName === "subagent")) {
 			evaluation.invalid = true;
 		}
 		if (event.toolName !== "subagent") return;
 		const parentSessionId = ctx.sessionManager.getSessionId();
 		if (parentSessionId) {
-			delegationInvocations.push({
-				toolCallId: event.toolCallId,
-				rootSessionId: parentSessionId,
-				parentSessionId,
-				childCount: delegatedChildCount(event.args),
-				policy: policyToolCalls.get(event.toolCallId),
-			});
-			if (delegationInvocations.length > 64) delegationInvocations.shift();
+			try {
+				const analyticsGeneration = await analyticsStore.currentGeneration();
+				delegationInvocations.push({
+					toolCallId: event.toolCallId,
+					rootSessionId: parentSessionId,
+					parentSessionId,
+					analyticsGeneration,
+					childCount: delegatedChildCount(event.args),
+					policy: policyToolCalls.get(event.toolCallId),
+				});
+				if (delegationInvocations.length > 64) delegationInvocations.shift();
+			} catch {
+				// Analytics must never affect subagent execution.
+			}
 		}
 		delegation = {
 			agent: delegatedAgent(event.args),
@@ -1721,13 +1773,25 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				const primaryDelegationRunId = evidence[0]?.delegationRunId;
 				if (primaryDelegationRunId) invocation.delegationRunId = primaryDelegationRunId;
 				for (const item of evidence) {
-					const { schemaVersion, ...eventValue } = item;
-					await enqueueAnalytics(async () => {
-						await analyticsStore.writeDelegationEvidence({
-							...eventValue,
-							version: schemaVersion,
+					try {
+						if (
+							invocation.analyticsGeneration !== (await analyticsStore.currentGeneration())
+						) {
+							continue;
+						}
+						const { schemaVersion, ...eventValue } = item;
+						await enqueueAnalytics(async () => {
+							await analyticsStore.writeDelegationEvidence(
+								{
+									...eventValue,
+									version: schemaVersion,
+								},
+								invocation.analyticsGeneration,
+							);
 						});
-					}).catch(() => undefined);
+					} catch {
+						// Analytics must never affect subagent execution.
+					}
 				}
 				if (
 					invocation.policy?.status === "available" &&
@@ -1794,15 +1858,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("context", (event) => ({
-		messages: event.messages.filter((message) => shouldExposePrompt(message, coordinator.run)),
+		messages: event.messages.filter((message) =>
+			shouldExposePrompt(message, coordinator.run, evaluation?.id),
+		),
 	}));
 
 	pi.on("session_before_compact", (event) => {
 		event.preparation.messagesToSummarize = event.preparation.messagesToSummarize.filter(
-			(message) => !isPrewalkPrompt(message),
+			(message) => !isEphemeralPrewalkPrompt(message),
 		);
 		event.preparation.turnPrefixMessages = event.preparation.turnPrefixMessages.filter(
-			(message) => !isPrewalkPrompt(message),
+			(message) => !isEphemeralPrewalkPrompt(message),
 		);
 	});
 
@@ -1813,14 +1879,22 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const provider = selected?.provider ?? run?.planner.provider;
 		const model = selected?.id ?? run?.planner.model;
 		if (provider && model) {
-			await recordAnalyticsUsage(
-				"compaction",
-				`compaction:${event.compactionEntry.id}`,
-				provider,
-				model,
-				"compaction",
-				event.compactionEntry.usage,
-			);
+			try {
+				await recordAnalyticsUsage(
+					"compaction",
+					`compaction:${event.compactionEntry.id}`,
+					provider,
+					model,
+					"compaction",
+					event.compactionEntry.usage,
+				);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Prewalk could not record compaction analytics (${message}); this did not affect compaction.`,
+					"warning",
+				);
+			}
 		}
 	});
 

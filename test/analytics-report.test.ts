@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { RunReceipt, SavingsEstimate, VerifiedBenchmarkSummary } from "../src/analytics.js";
+import type {
+	RunReceipt,
+	SavingsEstimate,
+	TaskTreeReport,
+	VerifiedBenchmarkSummary,
+} from "../src/analytics.js";
 import {
 	renderAnalyticsOverview,
 	renderReceiptReport,
 	renderSavingsEstimate,
+	renderTaskTreeReport,
 	renderVerifiedBenchmarkSummary,
 } from "../src/analytics-report.js";
 import type { AnalyticsAggregate } from "../src/analytics-store.js";
@@ -184,6 +190,47 @@ describe("analytics receipt report", () => {
 		expect(rendered).toContain("estimated savings $0.300000");
 		expect(rendered).toContain("run-report: succeeded");
 		expect(rendered).toContain("run-active: unfinished; actual $0.100000");
+	});
+
+	it("renders every task-tree subtotal and coverage dimension as a visible reconciliation", () => {
+		const report: TaskTreeReport = {
+			rootSessionId: "root",
+			rootReceipts: [],
+			descendantReceipts: [],
+			fallbackEvidence: [],
+			unresolved: [
+				{
+					delegationRunId: "nested",
+					childIndex: 2,
+					reason: "partial-token-breakdown",
+				},
+			],
+			rootActualCost: 0.5,
+			directChildActualCost: 0.3,
+			nestedChildActualCost: 0.05,
+			knownTaskTreeActualCost: 0.85,
+			reportedChildCount: 3,
+			expectedChildCount: 3,
+			costCoverage: "complete",
+			tokenCoverage: "incomplete",
+			estimatedSavings: 0.1,
+			estimatedExtraCost: 0,
+			estimateCoverage: "incomplete",
+		};
+
+		expect(renderTaskTreeReport(report)).toBe(
+			[
+				"Prewalk task tree for root session root",
+				"Root session actual cost: $0.500000.",
+				"Unique direct-child actual cost: $0.300000.",
+				"Unique nested-child actual cost: $0.050000.",
+				"Known task-tree actual cost: $0.850000 = $0.500000 + $0.300000 + $0.050000.",
+				"Reported children: 3 of 3 expected.",
+				"Cost coverage: complete. Token-breakdown coverage: incomplete.",
+				"Task-tree estimate: savings $0.100000; extra cost $0.000000; estimate coverage incomplete.",
+				"Incomplete or unfinished children: nested/2 (partial-token-breakdown).",
+			].join("\n"),
+		);
 	});
 
 	it.each([

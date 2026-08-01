@@ -14,7 +14,7 @@ deepened: 2026-07-30
 
 ## Goal Capsule
 
-- **Objective:** Give each Prewalk user a trustworthy local ledger of actual spend and estimated savings across sessions, with inspectable receipts or explicitly labeled fallback evidence behind every aggregate and receipt precedence where overlap is proven.
+- **Objective:** Give each Prewalk user a trustworthy local ledger of actual spend and estimated savings across sessions, with exact root, direct-child, and nested-child cost subtotals, independently labeled cost and token coverage, and inspectable evidence behind every aggregate.
 - **Product authority:** Pi-reported usage and cost are authoritative for actual spend. Counterfactual estimates and benchmark-verified results remain visibly distinct.
 - **Privacy boundary:** Analytics stay local and retain numeric operational data only.
 - **Execution profile:** Build the complete confirmed analytics scope in Prewalk while treating the standard upstream `pi-subagents` tool contract as an optional public input. Invoke the `run-tests-on-request` skill for implementation verification.
@@ -83,10 +83,10 @@ Long-term analytics also create a privacy and trust obligation. The ledger must 
 - R15. Actual, catalog-estimated, session-counterfactual, and benchmark-verified values must use distinct labels that remain understandable without color.
 - R16. Analytics must retain lifetime history until the user performs a confirmed reset.
 - R24. Current-session analytics must include only evidence owned by the exact Pi session identity and must not silently include descendant processes.
-- R25. A separate task-tree view must total the selected root session and every descendant that Pi's public tool result can link, while reporting unlinked direct, asynchronous, or nested descendants as incomplete rather than guessing.
+- R25. A separate task-tree view must total the selected root session and every descendant whose cost Pi's public tool result reports, while reporting missing or unfinished descendant cost as incomplete rather than guessing.
 - R26. Descendant evidence must use a versioned content-free contract containing the locally observed root and parent session IDs, delegation run ID, child index, child-only usage-slice identities, and lifecycle state. A child session ID is optional and may be recorded only when a public result proves it.
-- R27. A descendant receipt must supersede fallback evidence only for matching usage-slice identities, and unproven aggregate overlap must remain excluded rather than added or replaced.
-- R28. A task-tree report must label actual-spend coverage and estimate coverage separately as complete, pending, fallback-backed, overlap-unresolved, unsupported, or incomplete.
+- R27. Direct-child cost is owned by each unique `results[].usage` slice and nested-child cost is owned by each unique nested run's `totalCost`. The aggregate `Details.totalCost` must never be added because it already includes those charges. A publicly linked standalone child receipt supersedes its parent summary; matching evidence keys prove the overlap, while unproven overlap remains excluded and labeled rather than double-counted.
+- R28. A task-tree report must show root, direct-child, nested-child, and known task-tree actual-cost subtotals; reported versus expected child counts; and separate cost, token-breakdown, and estimate coverage. Exact nested cost may coexist with incomplete token-breakdown coverage.
 
 **Control and privacy**
 
@@ -138,7 +138,7 @@ Long-term analytics also create a privacy and trust obligation. The ledger must 
 - F6. **Inspect a delegated task tree**
   - **Trigger:** A1 requests analytics for the current root task.
   - **Actors:** A1, A2, A3, A5
-  - **Steps:** Analytics projects the standard public subagent result against the locally observed parent invocation, links any publicly identified descendant receipts by usage-slice identity, substitutes eligible child-only terminal evidence, and calculates separate actual-spend and estimate coverage. Missing child identity or terminal detail remains incomplete.
+  - **Steps:** Analytics projects the standard public subagent result against the locally observed parent invocation, links any publicly identified descendant receipts, applies the ownership rule from R27, and calculates separate cost, token-breakdown, and estimate coverage. Missing cost or terminal detail remains incomplete.
   - **Outcome:** A1 sees the task's recorded actual spend and receipt-backed estimates without confusing that total with Pi's current-session footer.
   - **Covered by:** R13, R15, and R24 through R28.
 
@@ -216,9 +216,9 @@ flowchart TB
   - **Covers:** R13, R16, R22, and R23.
 
 - AE10. **Direct and nested descendants remain honest**
-  - **Given:** A root Pi session receives direct child-only usage and a nested run identifier through the standard public subagent result, but nested child usage or child session identity is unavailable.
+  - **Given:** A root Pi session receives complete direct child usage and a nested run summary with exact `totalCost` but only input/output token totals through the standard public subagent result.
   - **When:** A1 opens the task-tree view.
-  - **Then:** Direct fallback usage appears once, the nested descendant is marked incomplete, and no child receipt or usage is invented.
+  - **Then:** Direct and nested costs each appear once, cost coverage is complete, token-breakdown coverage is incomplete because nested cache categories are unavailable, and no missing token category is invented.
   - **Covers:** R13 and R24 through R27.
 
 - AE11. **Fallback evidence remains honest**
@@ -238,7 +238,7 @@ flowchart TB
 - Every displayed aggregate reconciles exactly to its included receipts and fallback evidence, with receipt precedence visible for task-tree totals.
 - Actual cost totals match the sum of Pi-reported actual costs for all included runs.
 - Reloading, reopening, or inspecting a session cannot create a duplicate receipt.
-- Current-session totals remain scoped to one Pi session, while task-tree totals reconcile publicly proven descendant evidence exactly once and expose missing nested detail.
+- Current-session totals remain scoped to one Pi session, while task-tree totals visibly reconcile `root + unique direct children + unique nested children` and expose missing child cost separately from incomplete nested token categories.
 - Fallback-only or unresolved descendants make task-tree estimate and coverage limits visible rather than implying complete savings.
 - Unsupported versions, results that cannot be joined to a locally observed invocation, invalid numeric usage, and unproven aggregate overlap cannot enter financial totals.
 - Missing pricing never produces a savings number unless the optional catalog fallback is enabled and labeled.
@@ -283,7 +283,7 @@ flowchart TB
 - Public catalog pricing can change, so a catalog estimate requires source and effective-date visibility.
 - The Prewalk run lifecycle provides a stable identity and terminal outcome for receipt finalization.
 - Controlled benchmark evidence remains the only authority for the verified label.
-- Standard pi-subagents tool results expose direct-child run identity and usage. Evidence absent from those public results, including unresolved asynchronous completion and incomplete nested breakdowns, must remain pending or incomplete.
+- Standard pi-subagents tool results expose exact direct-child usage through `Details.results[].usage`. Nested summaries expose stable run identity, optional child session identity, input/output totals, and exact `totalCost`, but not cache-read or cache-write categories. Missing terminal results remain pending; exact nested cost is included while nested token-breakdown coverage remains incomplete.
 - The upstream pi-subagents source and installed package remain unchanged.
 - A child receipt may be absent because the child did not load Prewalk, did not reach a durable boundary, or crashed. Fallback metadata can recover actual spend but cannot create a session-counterfactual estimate.
 
@@ -294,9 +294,9 @@ flowchart TB
 - `src/status.ts` shows the existing compact and detailed Prewalk status boundary.
 - `scripts/canary-provider.mjs` demonstrates aggregation of Pi assistant usage without retaining transcript content.
 - `scripts/benchmark-contract.mjs` and `scripts/benchmark-report-lib.mjs` define the existing controlled cost and duration comparison boundary.
-- The upstream `pi-subagents` `Details` and `SingleResult` contracts expose delegation run identity and usage but do not expose a direct child's Pi session ID through the standard parent tool result.
+- The upstream `pi-subagents` `Details` and `SingleResult` contracts expose delegation run identity and exact direct-child input, output, cache-read, cache-write, turns, and cost, but do not expose a direct child's Pi session ID through the standard parent tool result.
 - The installed `pi-subagents` asynchronous path returns running details before terminal usage exists, so a tool-result-only adapter cannot make pending coverage converge after completion.
-- The installed `pi-subagents` nested-run representation shows that the public projection must support more than one descendant level and must separate child-only usage from run-level aggregates.
+- The installed `pi-subagents` `NestedRunSummary` contract exposes nested `id`, optional `sessionId`, `totalTokens` for input/output, and exact `totalCost`, but omits nested cache-read and cache-write categories. Its recursive `children` and `steps[].children` structure requires identity-based deduplication across more than one descendant level.
 - `docs/plans/2026-07-30-002-feat-extension-only-sol-luna-prewalk-plan.md` remains the authority for Prewalk routing, OMP fidelity, provider composition, and benchmark scope outside this analytics Product Contract.
 
 ---
@@ -371,15 +371,15 @@ The compact Prewalk footer remains focused on routing state. Analytics detail be
 
 Current-session remains an exact Pi session filter. A separate task-tree query starts from a root session and walks content-free ancestry fields across direct and nested descendants.
 
-Prewalk projects Pi's public subagent tool lifecycle and standard result details into versioned evidence. Each supported record contains locally observed root and parent session IDs, delegation run ID, child index, lifecycle state, child-only usage slices, and stable usage-slice evidence keys. Fields not proven by the public result, such as a child Pi session ID or a complete nested usage breakdown, are omitted and reported as incomplete.
+Prewalk projects Pi's public subagent tool lifecycle and standard result details into versioned evidence. Each supported record contains locally observed root and parent session IDs, delegation run ID, child index, direct or nested relationship, lifecycle state, child-only usage slices, token coverage, and stable usage-slice evidence keys. A nested child session ID is retained only when `NestedRunSummary.sessionId` proves it. Direct child session identity remains unavailable from `SingleResult`.
 
 Prewalk binds the parent and root identities to its locally owned journal and the locally observed delegation invocation. It rejects lineage that conflicts with those facts. Matching prefers shared child identity, then shared child index within the same root, parent, and delegation run. Evidence with no common identifier remains unlinked.
 
-A child receipt supersedes fallback evidence only when their usage-slice evidence keys match. Aggregate-only usage whose overlap cannot be proven is excluded as overlap-unresolved. Fallback evidence never receives counterfactual savings because it lacks the receipt's complete Prewalk model-pair and lifecycle evidence.
+The ownership rule is intentionally asymmetric. `results[].usage` owns each direct child; each unique nested run ID owns its `totalCost`; and `Details.totalCost` is ignored because it aggregates direct and nested charges. A publicly linked child receipt is the stronger source and supersedes its parent summary. Matching evidence keys prove exact overlap; when a linked receipt and summary cannot prove overlap, the summary is excluded and coverage becomes overlap-unresolved. Fallback evidence never receives counterfactual savings because it lacks the receipt's complete Prewalk model-pair and lifecycle evidence.
 
 #### KTD11. Keep delegation integration optional, versioned, and fail-closed
 
-Prewalk observes Pi's supported `tool_execution_start` and `tool_result` events without importing `pi-subagents` or reading its artifacts. Direct terminal results converge when upstream returns complete standard details. Asynchronous or nested state that never reaches a standard terminal result remains explicitly pending or incomplete.
+Prewalk observes Pi's supported `tool_execution_start` and `tool_result` events without importing `pi-subagents` or reading its artifacts. Direct terminal results carry complete token categories and exact cost. Nested terminal summaries carry exact cost but only input/output tokens, so their cost can converge while token-breakdown coverage remains incomplete. Asynchronous state that never reaches a standard terminal result remains explicitly pending.
 
 Prewalk accepts financial evidence only from explicitly supported contract versions. Tokens must be finite nonnegative integers, costs must be finite nonnegative numbers, and component totals must reconcile before persistence. Invalid, unauthenticated, unsupported, or aggregate-only evidence contributes only a content-free coverage reason.
 
@@ -407,10 +407,10 @@ flowchart LR
 ```mermaid
 flowchart TB
     Root["Root session receipt"] --> Tree["Task-tree reconciliation"]
-    Child["Child receipt"] --> Dedupe{"Matching child identity?"}
+    Child["Child receipt"] --> Dedupe{"Public child identity linked?"}
     Meta["Terminal delegation metadata"] --> Dedupe
-    Dedupe -->|usage-slice keys match| ChildOnly["Use matching receipt slices"]
-    Dedupe -->|child-only receipt missing| Fallback["Use actual-cost fallback only"]
+    Dedupe -->|receipt linked| ChildOnly["Use child receipt"]
+    Dedupe -->|receipt missing| Fallback["Use direct or nested reported cost"]
     Dedupe -->|overlap unproven| Unresolved["Exclude financial value"]
     ChildOnly --> Tree
     Fallback --> Tree
@@ -461,8 +461,8 @@ The implementation should define explicit domain types rather than letting exten
 - `RunReceipt`: finalized or unfinished run evidence plus ancestry, actual cost, estimate result, pricing evidence, and stable unavailability reason.
 - `UsageSlice`: provider, model, request role, input, output, cache-read, cache-write, reasoning, total tokens, and Pi-reported cost breakdown.
 - `SessionLineage`: root session ID, parent session ID, delegation run ID, child index, and an optional child session ID only when the public result proves it.
-- `DelegationEvidence`: contract version, locally observed parent lineage, terminal child-only usage slices, evidence keys, observed status, and fallback eligibility without task text, output, paths, or raw extension details.
-- `TaskTreeReport`: root identity, included receipts, fallback evidence, unresolved descendants, actual-spend coverage, and estimate coverage.
+- `DelegationEvidence`: contract version, locally observed parent lineage, direct or nested relationship, terminal child-only usage slices, token coverage, evidence keys, observed status, and fallback eligibility without task text, output, paths, or raw extension details.
+- `TaskTreeReport`: root identity, included receipts, fallback evidence, unresolved descendants, root/direct/nested/known actual-cost subtotals, child counts, cost coverage, token-breakdown coverage, and estimate coverage.
 - `PricingEvidence`: actual Pi cost, current model metadata, dated Pi model-registry catalog snapshot, or unavailable reason.
 - `VerifiedBenchmarkSummary`: benchmark contract version, evidence fingerprint, completion time, run counts, and accepted numeric comparisons.
 
@@ -572,7 +572,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 2. Define assertion-free production domain types for usage slices, journals, receipts, session lineage, delegation evidence, task-tree reports, estimates, pricing evidence, and verified benchmark summaries.
 3. Implement strict versioned runtime validation and serialization allowlists shared by storage and export.
 4. Define stable outcome, pricing-source, and unavailability reason values that UI tests can assert without matching prose.
-5. Define the supported delegation contract versions, locally observed invocation fields, numeric validity rules, usage-slice evidence keys, and separate actual-spend and estimate coverage states.
+5. Define the supported delegation contract versions, locally observed invocation fields, direct/nested relationships, numeric validity rules, usage-slice evidence keys, and separate cost, token-breakdown, and estimate coverage states.
 6. Keep paths and provider event objects outside the persisted domain.
 
 **Test Scenarios:**
@@ -616,7 +616,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 5. Emit session-counterfactual, dated catalog-estimated, unavailable, or negative-savings results with explicit evidence.
 6. Make event ingestion idempotent and ensure reasoning tokens are never billed separately from output.
 7. Validate versioned evidence projected from the public tool lifecycle and emit fallback actual-cost evidence only when KTD10 permits it.
-8. Reject nested aggregate totals that would duplicate their per-child results, and never estimate savings from fallback evidence.
+8. Ignore `Details.totalCost`, project each unique nested run's exact `totalCost`, mark its token categories partial, and never estimate savings from fallback evidence.
 
 **Test Scenarios:**
 
@@ -630,7 +630,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 - Failed and cancelled outcomes retain actual spend but never receive estimates.
 - A valid terminal child event produces one fallback evidence record without retaining task text, output, artifact paths, or raw event details.
 - Running, malformed, unauthenticated, unsupported, or numerically invalid child events produce no financial fallback and carry an explicit coverage reason.
-- Nested aggregate usage and per-child usage cannot both enter the same task tree.
+- Direct usage, unique nested `totalCost`, and an upstream aggregate cannot represent the same charge more than once.
 - A terminal child receipt supersedes only fallback slices with shared evidence keys; aggregate-only overlap remains unresolved and excluded.
 
 **Verification:** Run focused calculator and report tests through the `run-tests-on-request` skill, followed by `npm run lint` and `npm run typecheck`.
@@ -657,7 +657,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 3. Write one journal per run with atomic temporary-file replacement and promote terminal journals to immutable receipts.
 4. Restore a journal by run identity and epoch on reload without duplicating prior usage.
 5. Aggregate validated run evidence on demand by UTC timestamp, current timezone, outcome, session, and recent-run limit.
-6. Resolve task trees from locally observed parent invocations and public result evidence, prefer publicly linked child receipts over matching usage-slice evidence, exclude unproven aggregate overlap, and calculate actual and estimate coverage independently.
+6. Resolve task trees from locally observed parent invocations and public result evidence, prefer publicly linked child receipts over parent summaries, exclude unproven overlap, and calculate cost, token-breakdown, and estimate coverage independently.
 7. Export validated receipts and delegation evidence as documented JSONL using exclusive file creation so an existing destination remains unchanged.
 8. Rotate the generation on confirmed reset, refuse later writes from prior-generation runs, track cleanup until all prior managed artifacts are verified absent, and preserve safe retry state after partial deletion failure.
 9. Surface corrupted or unsupported receipts as report failures with safe receipt identifiers.
@@ -675,7 +675,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 - Export contains every valid receipt and delegation evidence record and none of the prohibited R18 content.
 - Export to an existing destination fails with clear guidance and leaves the existing bytes unchanged.
 - Corrupted and unsupported receipts fail visibly instead of disappearing from totals.
-- Direct children, nested descendants, and concurrent siblings reconcile once under their root session.
+- Root receipts, direct children, nested descendants, and concurrent siblings reconcile once under their root session with visible subtotals and child counts.
 - Matching child receipt slices replace fallback slices with the same evidence keys before aggregation, including after reload and repeated inspection.
 - Missing, running, crashed, cyclic, and unlinked descendants produce deterministic pending or incomplete coverage without corrupting known totals.
 
@@ -706,7 +706,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 3. Keep the journal open after handoff and across reload, then close it on cancellation, failure, quit, or session replacement.
 4. Add `/prewalk stats` forms, including the separate task-tree view, configuration controls, native reset confirmation, and help text from the Command Contract.
 5. Show provisional current-session actual and estimated values while clearly marking an active or unfinished receipt.
-6. Subscribe to the versioned public delegation projection, bind records to the locally observed delegation invocation, and restore replayed asynchronous state after reload.
+6. Subscribe to the versioned public delegation projection, bind records to the locally observed delegation invocation and ledger generation, and reject late results from a generation retired by reset.
 7. Keep analytics out of routing decisions, hidden prompts, model status, Pi's native session statistics, and the compact footer.
 
 **Test Scenarios:**
@@ -720,7 +720,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 - Help and report output distinguish actual, estimated, catalog-estimated, unavailable, verified, and unfinished states without relying on color.
 - Auxiliary requests appear in actual detail without altering the planner-only savings comparison.
 - Current-session remains root-only when direct and nested children are present.
-- Task-tree reporting replaces only matching fallback slices with child receipt slices and labels running or unlinked descendants as incomplete.
+- Task-tree reporting gives a publicly linked child receipt precedence over its parent summary, proves overlap through evidence keys when available, and labels running, missing-cost, partial-token, or overlap-unresolved descendants explicitly.
 - Aggregate-only fallback whose overlap cannot be proven is excluded and labeled overlap-unresolved.
 - Stock Pi without `pi-subagents` retains every existing stats form and reports no synthetic descendants.
 
@@ -793,7 +793,7 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 **Test Scenarios:**
 
 - The real Agent loop produces one reconciling receipt for a successful Prewalk run.
-- Direct and concurrent results produce fallback totals, while pending or nested details unavailable from the standard result produce the incomplete coverage required by AE10 and AE11.
+- Direct and concurrent results produce exact fallback totals; nested `totalCost` produces an exact nested subtotal with partial token coverage; pending or missing-cost descendants produce the incomplete coverage required by AE10 and AE11.
 - Real lifecycle failure, cancellation, reload, and reset match AE2, AE6, AE8, and AE9.
 - Stock Pi works with no conversion package installed or registered.
 - Optional provider-stream composition preserves executor model identity and cost attribution.
@@ -826,9 +826,9 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 **Approach:**
 
 1. Record a bounded invocation identity from public `tool_execution_start`.
-2. Project ordinary `tool_result.details.results[].usage` into versioned child-only fallback slices.
+2. Project ordinary `tool_result.details.results[].usage` into versioned direct-child fallback slices with complete token categories and exact reported cost.
 3. Keep async launches pending until a public terminal result is observed.
-4. Mark nested usage unavailable from the public result as incomplete instead of reading child session files.
+4. Walk unique nested summaries recursively, project exact `totalCost`, retain a public nested `sessionId` when present, and mark token coverage partial because upstream omits nested cache categories.
 5. Exclude task text, output, prompts, artifact paths, session-file paths, errors, and raw tool payloads from durable evidence.
 6. Keep observation additive and leave upstream pi-subagents behavior unchanged.
 
@@ -836,9 +836,10 @@ None are launch-blocking. Detailed breakdowns, charts, optimization advice, hist
 
 - A foreground terminal result emits one terminal record per direct child with the locally observed parent identity and no invented child session identity.
 - Parallel children share a delegation run but retain distinct child indexes and usage evidence keys.
-- A nested run identifier produces an incomplete record and does not fold unavailable nested usage into the parent's child-only slices.
+- A nested run with `totalCost` contributes exact cost once, retains only publicly proven session identity, and marks token categories partial.
+- A nested run without `totalCost` contributes no invented cost and remains explicitly incomplete.
 - An asynchronous launch remains pending when the public result has no terminal usage, including after reload.
-- Failed, interrupted, timed-out, and crashed children emit terminal or incomplete lifecycle states without invented usage.
+- Failed, interrupted, timed-out, stopped, and crashed children retain any exact incurred cost while never inventing missing usage.
 - Projection records contain no task text, output, prompts, paths, raw errors, or provider payloads.
 - Existing `subagent`, `subagent_wait`, and orchestration results remain behaviorally unchanged.
 
@@ -876,12 +877,12 @@ The authenticated provider canary is optional supporting evidence for analytics 
 
 - Every R-ID and AE-ID maps to at least one named automated scenario.
 - Actual totals reconcile exactly to Pi-attributable usage for successful, failed, cancelled, active, and unfinished runs.
-- Session totals remain one-process totals, while task-tree totals reconcile publicly linked receipt-backed and fallback-backed descendants exactly once.
+- Session totals remain one-process totals, while task-tree totals reconcile root, direct-child, and nested-child actual cost exactly once.
 - Counterfactual tests cover cache categories, per-request tiers, missing rates, zero rates, catalog fallback, and negative savings.
-- Storage tests cover concurrent sessions, direct fallback and nested incomplete evidence, receipt-over-fallback replacement, repeated lifecycle delivery, atomic-write interruption, corruption, export privacy, and reset during an active run.
+- Storage tests cover concurrent sessions, direct and nested fallback evidence, separate cost and token coverage, receipt-over-summary replacement, repeated lifecycle delivery, atomic-write interruption, corruption, export privacy, reopen, and reset during active parent or child work.
 - Real Pi Agent-loop tests exercise public lifecycle events instead of only a mocked extension harness.
 - Delegation adapter tests cover terminal fallback, duplicate aggregate and child evidence, malformed metadata, running children, crashes, unsupported schemas, and absence of `pi-subagents`.
-- Delegation protocol tests cover locally observed invocation identity, direct usage and nested incomplete evidence, child-only usage slices, stable evidence keys, pending asynchronous results, and content-free payloads.
+- Delegation protocol tests cover locally observed invocation identity, exact direct usage, exact nested cost with partial token categories, missing nested cost, child-only usage slices, stable evidence keys, pending asynchronous results, and content-free payloads.
 - Package tests prove standalone installation and the absence of a conversion-extension dependency.
 - UI snapshots or string assertions prove evidence classes and states remain understandable without color and readable at narrow widths.
 
@@ -927,7 +928,7 @@ acceptance example. The names refer to the owning test files and test cases.
 | R22 | `test/extension.test.ts` - reset confirmation |
 | R23 | `test/analytics-store.test.ts` - active-run reset exclusion |
 | R24 | `test/analytics-subagents.test.ts` - content-free delegation contract |
-| R25 | `test/agent-loop.test.ts` - direct fallback and nested incomplete coverage |
+| R25 | `test/agent-loop.test.ts` - separate root, direct, and nested cost reconciliation |
 | R26 | `test/analytics-subagents.test.ts` - stable child usage evidence |
 | R27 | `test/analytics-store.test.ts` - task-tree receipt precedence |
 | R28 | `test/analytics-store.test.ts` - pending and overlap coverage |
@@ -940,7 +941,7 @@ acceptance example. The names refer to the owning test files and test cases.
 | AE7 | `test/analytics-report.test.ts` - verified benchmark rendering |
 | AE8 | `test/analytics-store.test.ts` - reset and corruption handling |
 | AE9 | `test/agent-loop.test.ts` - terminal receipt promotion |
-| AE10 | `test/agent-loop.test.ts` - direct fallback and nested incomplete descendants |
+| AE10 | `test/agent-loop.test.ts` - exact nested cost with partial token coverage |
 | AE11 | `test/analytics-store.test.ts` - fallback and pending descendants |
 | AE12 | `test/analytics-subagents.test.ts` - unsupported/overlapping evidence fails closed |
 
@@ -954,9 +955,9 @@ The feature is complete when all of the following are true:
 - Successful runs produce a correctly labeled session-counterfactual or catalog estimate only when its pricing evidence satisfies KTD5.
 - Failed, cancelled, active, and unfinished runs retain their observed actual cost but do not inflate estimated savings.
 - Concurrent Pi sessions cannot corrupt totals, and confirmed reset during an active run permanently excludes that run from the new generation.
-- Current-session is scoped to one Pi session, and the separate task-tree view reconciles publicly proven descendants while making direct, asynchronous, or nested evidence gaps explicit without changing Pi's native footer.
-- Child receipt slices supersede only fallback slices with matching evidence keys, while fallback-only and unresolved descendants expose their separate actual and estimate coverage limits.
-- The versioned delegation projection uses locally observed parent invocations and standard public results to supply child-only usage slices without publishing prohibited content. Child identity, asynchronous completion, or nested usage absent from that result remains incomplete.
+- Current-session is scoped to one Pi session, and the separate task-tree view displays exact root, unique direct-child, unique nested-child, and known total cost while making asynchronous, missing-cost, partial-token, or overlap gaps explicit without changing Pi's native footer.
+- A publicly linked child receipt supersedes its parent summary; matching evidence keys prove overlap, and unresolved overlap excludes the summary. Fallback-only and unresolved descendants expose separate cost, token-breakdown, and estimate coverage.
+- The versioned delegation projection uses locally observed parent invocations and standard public results to supply direct and nested child-only usage slices without publishing prohibited content. Missing direct child identity, asynchronous completion, nested cache categories, or child cost remains explicitly incomplete.
 - Personal savings and benchmark-verified results are stored, calculated, and rendered through separate boundaries.
 - Stored receipts, reports, and exports satisfy the strict privacy allowlist.
 - Portable export preserves task-tree lineage and fallback evidence without raw `pi-subagents` details, paths, task text, or child output.

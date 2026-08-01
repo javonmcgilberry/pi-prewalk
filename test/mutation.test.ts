@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { type MutationToolResult, MutationTurnBuffer } from "../src/mutation.js";
+import {
+	type MutationEvidenceAdapter,
+	type MutationToolResult,
+	MutationTurnBuffer,
+} from "../src/mutation.js";
 
 function assistant(...calls: Array<{ id: string; name: string }>) {
 	return {
@@ -39,6 +43,31 @@ function finish(
 }
 
 describe("direct mutation results", () => {
+	it("accepts only positive evidence from an optional adapter", () => {
+		const adapter: MutationEvidenceAdapter = {
+			candidateFor: (candidate) =>
+				candidate.toolName === "integration_patch" && candidate.details === "committed"
+					? {
+						toolCallId: candidate.toolCallId,
+						toolName: candidate.toolName,
+						kind: "apply_patch",
+						source: "adapter",
+					}
+					: undefined,
+		};
+		const accepted = new MutationTurnBuffer([adapter]);
+		accepted.recordResult(
+			result("committed", "integration_patch", { details: "committed" }),
+		);
+		expect(finish(accepted, [{ id: "committed", name: "integration_patch" }]).mutation).toMatchObject({
+			toolName: "integration_patch",
+		});
+
+		const rejected = new MutationTurnBuffer([adapter]);
+		rejected.recordResult(result("unknown", "integration_patch", { details: "unknown" }));
+		expect(finish(rejected, [{ id: "unknown", name: "integration_patch" }]).mutation).toBeUndefined();
+	});
+
 	it.each(["edit", "write"])("accepts a successful %s result", (toolName) => {
 		const buffer = new MutationTurnBuffer();
 		buffer.recordResult(result("mutation", toolName));

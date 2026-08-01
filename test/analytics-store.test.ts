@@ -13,6 +13,7 @@ import {
 	type VerifiedBenchmarkSummary,
 } from "../src/analytics.js";
 import { AnalyticsStore, resolveAnalyticsDirectory } from "../src/analytics-store.js";
+import { projectDelegationToolResult } from "../src/analytics-subagents.js";
 
 const planner = { provider: "provider", model: "planner" };
 const executor = { provider: "provider", model: "executor" };
@@ -90,7 +91,7 @@ function delegationEvent(
 	costUsd: number,
 ) {
 	return {
-		version: 1,
+		version: 2,
 		eventId: `event-${childIndex}`,
 		phase: "terminal",
 		rootSessionId: "root",
@@ -98,6 +99,7 @@ function delegationEvent(
 		invocationId: "tool-call",
 		delegationRunId: "delegation",
 		childIndex,
+		relationship: "direct",
 		childSessionId,
 		lifecycle: "completed",
 		observedAt: childIndex + 1,
@@ -112,6 +114,7 @@ function delegationEvent(
 				totalTokens: 2,
 				turns: 1,
 				costUsd,
+				tokenCoverage: "complete",
 			},
 		],
 	};
@@ -226,16 +229,17 @@ describe("AnalyticsStore", () => {
 			),
 		]);
 		await Promise.all([
-			store.writeDelegationEvidence(delegationEvent(0, "child-a", "usage-a", 0.2)),
-			store.writeDelegationEvidence(delegationEvent(1, "child-b", "usage-b", 0.1)),
-			store.writeDelegationEvidence(delegationEvent(2, "child-c", "usage-c", 0.3)),
+			store.writeDelegationEvidence(delegationEvent(0, "child-a", "usage-a", 0.2), generation),
+			store.writeDelegationEvidence(delegationEvent(1, "child-b", "usage-b", 0.1), generation),
+			store.writeDelegationEvidence(delegationEvent(2, "child-c", "usage-c", 0.3), generation),
 		]);
 
 		const report = await store.taskTree("root");
 
 		expect(report.rootActualCost).toBe(0.5);
-		expect(report.descendantActualCost).toBeCloseTo(0.7);
-		expect(report.totalActualCost).toBeCloseTo(1.2);
+		expect(report.directChildActualCost).toBeCloseTo(0.7);
+		expect(report.nestedChildActualCost).toBe(0);
+		expect(report.knownTaskTreeActualCost).toBeCloseTo(1.2);
 		expect(report.fallbackEvidence.map((item) => item.childSessionId)).toEqual(["child-b"]);
 		expect(report.unresolved).toContainEqual({
 			delegationRunId: "delegation",
@@ -243,8 +247,152 @@ describe("AnalyticsStore", () => {
 			childSessionId: "child-c",
 			reason: "overlap-unresolved",
 		});
-		expect(report.actualCoverage).toBe("overlap-unresolved");
+		expect(report.costCoverage).toBe("overlap-unresolved");
+		expect(report.tokenCoverage).toBe("overlap-unresolved");
 		expect(report.estimateCoverage).toBe("overlap-unresolved");
+	});
+
+	it("reconciles exact root, direct-child, and nested-child costs with separate token coverage", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.promoteReceipt(
+			receipt(generation, "root-run", {
+				sessionId: "root",
+				usage: [usage(1, 0.5)],
+				actualCost: 0.5,
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: 0.65,
+					savings: 0.15,
+				},
+			}),
+		);
+		const evidence = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "root",
+			invocationId: "tool-call",
+			childCount: 2,
+			details: {
+				runId: "delegation",
+				results: [
+					{
+						agent: "reviewer",
+						exitCode: 0,
+						usage: {
+							input: 10,
+							output: 5,
+							cacheRead: 2,
+							cacheWrite: 1,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [
+							{
+								id: "nested",
+								state: "complete",
+								totalTokens: { input: 4, output: 2, total: 6 },
+								totalCost: { inputTokens: 4, outputTokens: 2, costUsd: 0.05 },
+							},
+						],
+					},
+					{
+						agent: "tester",
+						exitCode: 0,
+						usage: {
+							input: 20,
+							output: 10,
+							cacheRead: 4,
+							cacheWrite: 2,
+							cost: 0.2,
+							turns: 2,
+						},
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+		for (const item of evidence) {
+			const { schemaVersion, ...stored } = item;
+			await store.writeDelegationEvidence({ ...stored, version: schemaVersion }, generation);
+		}
+
+		const report = await store.taskTree("root");
+
+		expect(report.rootActualCost).toBe(0.5);
+		expect(report.directChildActualCost).toBeCloseTo(0.3);
+		expect(report.nestedChildActualCost).toBeCloseTo(0.05);
+		expect(report.knownTaskTreeActualCost).toBeCloseTo(0.85);
+		expect(report.reportedChildCount).toBe(3);
+		expect(report.expectedChildCount).toBe(3);
+		expect(report.costCoverage).toBe("complete");
+		expect(report.tokenCoverage).toBe("incomplete");
+		expect(report.unresolved).toContainEqual({
+			delegationRunId: "nested",
+			childIndex: 2,
+			reason: "partial-token-breakdown",
+		});
+
+		const reopenedReport = await new AnalyticsStore(agentDirectory).taskTree("root");
+		expect(reopenedReport).toEqual(report);
+	});
+
+	it("keeps missing child cost explicit without estimating the actual subtotal", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		const evidence = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "root",
+			invocationId: "tool-call",
+			childCount: 1,
+			details: {
+				runId: "delegation",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [{ id: "nested", state: "complete" }],
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+		for (const item of evidence) {
+			const { schemaVersion, ...stored } = item;
+			await store.writeDelegationEvidence({ ...stored, version: schemaVersion }, generation);
+		}
+
+		const report = await store.taskTree("root");
+
+		expect(report.directChildActualCost).toBe(0.1);
+		expect(report.nestedChildActualCost).toBe(0);
+		expect(report.knownTaskTreeActualCost).toBe(0.1);
+		expect(report.costCoverage).toBe("incomplete");
+		expect(report.tokenCoverage).toBe("incomplete");
+		expect(report.unresolved).toContainEqual({
+			delegationRunId: "nested",
+			childIndex: 1,
+			reason: "missing-cost",
+		});
+	});
+
+	it("rejects delegation evidence captured before a ledger reset", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const priorGeneration = await store.currentGeneration();
+		await store.reset();
+
+		await expect(
+			store.writeDelegationEvidence(delegationEvent(0, "child", "usage", 0.1), priorGeneration),
+		).rejects.toThrow("prior ledger generation");
+		expect(await store.listDelegationEvidence()).toEqual([]);
 	});
 
 	it("preserves the last valid journal when atomic replacement fails", async () => {
@@ -429,6 +577,80 @@ describe("AnalyticsStore", () => {
 		expect(weekAndSession.receipts.map((item) => item.runId)).toEqual(["run-1"]);
 	});
 
+	it("counts child receipts once in lifetime and task-tree totals when a parent summary overlaps", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.promoteReceipt(
+			receipt(generation, "root-run", {
+				sessionId: "root",
+				actualCost: 0.5,
+				usage: [usage(1, 0.5)],
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: 0.65,
+					savings: 0.15,
+				},
+			}),
+		);
+		await store.promoteReceipt(
+			receipt(generation, "child-run", {
+				sessionId: "child",
+				actualCost: 0.2,
+				usage: [usage(1, 0.2)],
+				evidenceKeys: ["subagent:delegation:0"],
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: 0.35,
+					savings: 0.15,
+				},
+			}),
+		);
+		await store.writeDelegationEvidence(
+			delegationEvent(0, "child", "subagent:delegation:0", 0.2),
+			generation,
+		);
+
+		const lifetime = await store.aggregate();
+		const taskTree = await store.taskTree("root");
+
+		expect(lifetime.actualCost).toBeCloseTo(0.7);
+		expect(taskTree.rootActualCost).toBe(0.5);
+		expect(taskTree.directChildActualCost).toBe(0.2);
+		expect(taskTree.knownTaskTreeActualCost).toBeCloseTo(0.7);
+		expect(taskTree.fallbackEvidence).toEqual([]);
+		expect(taskTree.costCoverage).toBe("complete");
+	});
+
+	it("uses a linked child receipt when the parent summary has no cost", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.promoteReceipt(
+			receipt(generation, "child-run", {
+				sessionId: "child",
+				actualCost: 0.2,
+				usage: [usage(1, 0.2)],
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: 0.35,
+					savings: 0.15,
+				},
+			}),
+		);
+		await store.writeDelegationEvidence(
+			{ ...delegationEvent(0, "child", "unused", 0.2), usage: [] },
+			generation,
+		);
+
+		const taskTree = await store.taskTree("root");
+
+		expect(taskTree.directChildActualCost).toBe(0.2);
+		expect(taskTree.reportedChildCount).toBe(1);
+		expect(taskTree.expectedChildCount).toBe(1);
+		expect(taskTree.costCoverage).toBe("complete");
+		expect(taskTree.tokenCoverage).toBe("complete");
+		expect(taskTree.unresolved).toEqual([]);
+	});
+
 	it("does not publish an incomplete export when publication is interrupted", async () => {
 		const store = new AnalyticsStore(agentDirectory, {
 			beforeExportPublish: () => {
@@ -458,11 +680,20 @@ describe("AnalyticsStore", () => {
 				completedAt: "2026-03-08T06:00:00.000Z",
 			}),
 		);
+		await store.writeDelegationEvidence(
+			delegationEvent(0, "child", "subagent:run:0", 0.1),
+			generation,
+		);
 		const destination = path.join(root, "analytics.jsonl");
 
-		expect(await store.exportJsonLines(destination)).toBe(2);
+		expect(await store.exportJsonLines(destination)).toBe(3);
 		const lines = (await readFile(destination, "utf8")).trim().split("\n");
-		expect(lines.map((line) => JSON.parse(line).runId)).toEqual(["run-a", "run-b"]);
+		expect(lines.map((line) => JSON.parse(line).runId)).toEqual(["run-a", "run-b", undefined]);
+		expect(JSON.parse(lines[2] ?? "{}")).toMatchObject({
+			schemaVersion: 2,
+			relationship: "direct",
+			delegationRunId: "delegation",
+		});
 		expect(lines.join("\n")).not.toMatch(/prompt|assistantText|toolInput|rawError|\/Users\//);
 		expect((await stat(destination)).mode & 0o777).toBe(0o600);
 	});

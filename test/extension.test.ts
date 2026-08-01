@@ -468,9 +468,19 @@ describe("Prewalk extension harness", () => {
 
 		expect(beforeStart).toEqual([
 			expect.objectContaining({
-				message: expect.objectContaining({ customType: "prewalk-assess" }),
+				message: expect.objectContaining({
+					customType: "prewalk-assess",
+					details: expect.objectContaining({ assessmentId: expect.any(String) }),
+				}),
 			}),
 		]);
+		const assessment = (beforeStart[0] as { message: Record<string, unknown> } | undefined)
+			?.message;
+		const [visible] = await harness.emit("context", {
+			type: "context",
+			messages: [{ ...assessment, role: "custom", timestamp: 1 }],
+		});
+		expect((visible as { messages: unknown[] }).messages).toHaveLength(1);
 		expect(harness.activeTools()).toEqual(["read", "edit", "prewalk_assess"]);
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -763,6 +773,27 @@ describe("Prewalk extension harness", () => {
 		});
 	});
 
+	it("refuses to arm when Conversion native Responses compaction is enabled", async () => {
+		await writeFile(
+			path.join(agentDir, "pi-codex-conversion.json"),
+			`${JSON.stringify({ compaction: { responsesCompaction: true } })}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.notifications.at(-1)).toBe(
+			"Prewalk failed: native-compaction-unsupported.",
+		);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			reasonCode: "native-compaction-unsupported",
+		});
+	});
+
 	it("treats a restricted child slate without todo as an open gate", async () => {
 		const harness = createHarness({
 			todoVisible: false,
@@ -908,8 +939,98 @@ describe("Prewalk extension harness", () => {
 
 		await harness.commands.get("prewalk")?.("stats task", harness.context);
 
-		expect(harness.notifications.at(-1)).toContain("fallback records 2");
-		expect(harness.notifications.at(-1)).toContain("Total task tree actual: $0.300000");
+		expect(harness.notifications.at(-1)).toContain("Unique direct-child actual cost: $0.300000");
+		expect(harness.notifications.at(-1)).toContain("Reported children: 2 of 2 expected");
+		expect(harness.notifications.at(-1)).toContain("Cost coverage: complete");
+	});
+
+	it("deduplicates repeated delivery of one terminal subagent result", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "tool",
+			toolName: "subagent",
+			args: { agent: "reviewer", task: "review" },
+		});
+		const result = {
+			type: "tool_result",
+			toolCallId: "tool",
+			toolName: "subagent",
+			input: { agent: "reviewer", task: "review" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: {
+				runId: "run",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+					},
+				],
+			},
+		};
+
+		await harness.emit("tool_result", result);
+		await harness.emit("tool_result", result);
+		await harness.commands.get("prewalk")?.("stats task", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("Unique direct-child actual cost: $0.100000");
+		expect(harness.notifications.at(-1)).toContain("Reported children: 1 of 1 expected");
+	});
+
+	it("ignores unrelated tool results in task-tree analytics", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "bash-tool",
+			toolName: "bash",
+			args: { command: "true" },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "bash-tool",
+			toolName: "bash",
+			input: { command: "true" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: {
+				runId: "must-not-be-observed",
+				results: [{ usage: { cost: 99 } }],
+			},
+		});
+		await harness.commands.get("prewalk")?.("stats task", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("Reported children: 0 of 0 expected");
+		expect(harness.notifications.at(-1)).toContain("Known task-tree actual cost: $0.000000");
+	});
+
+	it("does not block subagent execution when analytics generation lookup fails", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		vi.spyOn(AnalyticsStore.prototype, "currentGeneration").mockRejectedValueOnce(
+			new Error("analytics unavailable"),
+		);
+
+		await expect(
+			harness.emit("tool_execution_start", {
+				type: "tool_execution_start",
+				toolCallId: "tool",
+				toolName: "subagent",
+				args: { agent: "reviewer", task: "review" },
+			}),
+		).resolves.toBeDefined();
 	});
 
 	it.each(["help", "--help"])("shows the quick guide for %s", async (command) => {
@@ -992,6 +1113,83 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("nothing changed");
 		await harness.commands.get("prewalk")?.("stats reset", harness.context);
 		expect(harness.notifications.at(-1)).toContain("active run was excluded");
+	});
+
+	it("does not reject compaction when analytics persistence fails", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const writeJournal = vi
+			.spyOn(AnalyticsStore.prototype, "writeJournal")
+			.mockRejectedValueOnce(new Error("simulated analytics failure"));
+
+		try {
+			await expect(
+				harness.emit("session_compact", {
+					type: "session_compact",
+					compactionEntry: {
+						type: "compaction",
+						id: "compact-write-failure",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						summary: "content omitted",
+						firstKeptEntryId: "entry-1",
+						tokensBefore: 100,
+						usage: assistant(harness.planner).usage,
+					},
+					fromExtension: false,
+					reason: "overflow",
+					willRetry: false,
+				}),
+			).resolves.toBeDefined();
+			expect(harness.notifications.at(-1)).toContain("did not affect compaction");
+		} finally {
+			writeJournal.mockRestore();
+		}
+	});
+
+	it("excludes a child result that finishes after its analytics generation is reset", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "child-before-reset",
+			toolName: "subagent",
+			args: { agent: "reviewer", task: "review" },
+		});
+		vi.mocked(harness.context.ui.confirm).mockResolvedValueOnce(true);
+		await harness.commands.get("prewalk")?.("stats reset", harness.context);
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "child-before-reset",
+			toolName: "subagent",
+			input: { agent: "reviewer", task: "review" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: {
+				runId: "child-run",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+					},
+				],
+			},
+		});
+		await harness.commands.get("prewalk")?.("stats task", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("Reported children: 0 of 0 expected");
+		expect(harness.notifications.at(-1)).toContain("Cost coverage: unsupported");
 	});
 
 	it("reports incomplete reset cleanup and retries it without another reset", async () => {
@@ -1199,7 +1397,48 @@ describe("Prewalk extension harness", () => {
 			(filtered as { messages: Array<{ customType: string }> }).messages.map(
 				(message) => message.customType,
 			),
-		).toEqual([PREWALK_CHECKLIST_MESSAGE_TYPE]);
+		).toEqual([PREWALK_CONTINUE_MESSAGE_TYPE, PREWALK_CHECKLIST_MESSAGE_TYPE]);
+
+		const compactionMessages = [
+			{
+				role: "custom",
+				customType: PREWALK_PLAN_MESSAGE_TYPE,
+				content: "plan",
+				display: false,
+				details: { runId },
+				timestamp: 1,
+			},
+			{
+				role: "custom",
+				customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+				content: "continue",
+				display: false,
+				details: { runId },
+				timestamp: 1,
+			},
+			{
+				role: "custom",
+				customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+				content: "checklist",
+				display: false,
+				details: { runId },
+				timestamp: 1,
+			},
+		];
+		const preparation = {
+			messagesToSummarize: [...compactionMessages],
+			turnPrefixMessages: [...compactionMessages],
+		};
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation,
+		});
+		for (const messages of [preparation.messagesToSummarize, preparation.turnPrefixMessages]) {
+			expect(messages.map((message) => message.customType)).toEqual([
+				PREWALK_CONTINUE_MESSAGE_TYPE,
+				PREWALK_CHECKLIST_MESSAGE_TYPE,
+			]);
+		}
 
 		await harness.emit("agent_start", { type: "agent_start" });
 		const result = await harness
@@ -1628,7 +1867,7 @@ describe("Prewalk extension harness", () => {
 		});
 	});
 
-	it("holds Luna routing after a delegated Luna failure", async () => {
+	it("restores planner routing after a delegated Luna failure", async () => {
 		const harness = createHarness();
 		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
 		prewalkExtension(harness.pi);
@@ -1651,14 +1890,11 @@ describe("Prewalk extension harness", () => {
 			effectiveRoute: "executor",
 			reasonCode: "executor-stream-failed",
 		});
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain("outcome failed");
 		expect(harness.notifications.at(-1)).toContain("Savings unavailable");
 
-		harness.setStream((selected) => doneStream(selected as Model<"openai-codex-responses">));
-		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
-		expect(harness.delegated.at(-1)).toBe(harness.executor);
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {

@@ -1,21 +1,22 @@
 # Pi Prewalk
 
-Pi Prewalk is an extension-only implementation of Oh My Pi's Prewalk flow. The
-Pi-selected planner stays selected and saved while it plans, opens the todo
-gate, and makes the first successful mutation. The extension snapshots that
-model and reasoning when the epoch starts, then routes primary Agent-loop
-requests through a configured same-provider executor for the rest of that live
-session. Prewalk is manual by default. `/prewalk auto` enables automatic mode
-only for the current Pi session, and a new, resumed, forked, or shut-down
-session starts manual again.
+Prewalk lets one model plan a task and another finish it without throwing away
+the conversation. The planner reads the code, writes the todo list, and makes
+the first successful code change. After that turn ends, Prewalk sends the rest
+of the session through the executor you configured.
 
-This package uses stock Pi 0.82.1 public extension and provider APIs. It does not
-patch Pi, import private Pi modules, call `setModel()` for the handoff, create a
-router model, or modify Pi settings.
+Pi still shows and saves the planner as your selected model. Prewalk only changes
+the route for the current run. It restores the normal provider route when the
+run finishes, fails, or is cancelled, so a failed run cannot leak its executor
+route into the next task.
+
+The flow matches Oh My Pi's public behavior where stock Pi's extension APIs
+allow it. Prewalk does not patch Pi, import private Pi modules, call
+`setModel()`, create a fake router model, or rewrite your settings.
 
 ## Requirements
 
-- `@earendil-works/pi-coding-agent` 0.82.1
+- Stock `@earendil-works/pi-coding-agent` (the test fixture is pinned to 0.82.1)
 - Configured authorization for the chosen provider
 - Two available models on the same provider and Pi API
 - No other extension owning the `todo` tool name
@@ -48,25 +49,31 @@ Pi's native UI. Long model catalogs are shown eight at a time. A newly selected
 executor defaults to `low`; an existing executor keeps its saved level at the
 top of the picker. Prewalk never stores or changes the planner model.
 
-## Behavior
+## How it works
 
 `/prewalk run` starts a manual Prewalk run. `/prewalk auto` records automatic
 mode in the active session only and does not validate models, install a provider
 overlay, open analytics, or inject a planning prompt. `/prewalk configure`
 writes executor and analytics settings only, and does not start Prewalk work.
 
-The bundled `todo` tool must succeed while active. The first successful `edit`,
-`write`, direct `apply_patch`, shell `apply_patch`, or Code Mode patch after
-that gate becomes the handoff mutation. Failed, partial, cancelled,
-still-running, quoted, printed, and dynamically constructed patch attempts do
-not trigger.
+The bundled `todo` tool must succeed first. Prewalk then waits for positive proof
+that code changed. A successful `edit`, `write`, direct `apply_patch`, shell
+`apply_patch`, or Code Mode patch counts. Failed, partial, cancelled,
+still-running, quoted, printed, and dynamically built patch attempts do not.
+Unknown tools do not count unless an optional integration translates their
+result into the same positive mutation evidence. If the result is unclear,
+Prewalk does nothing.
 
-The extension decides after the complete assistant turn, so parallel tool
-results cannot race the handoff. Before Luna's first request, stale planning
-guidance is removed from effective context and OMP's executor checklist is
-retained. Hidden Prewalk messages are also excluded from compaction summaries.
-Luna-authored transcript messages keep Luna's real provider, model, usage, and
-stop reason.
+Prewalk waits for the whole assistant turn to finish, so parallel tools cannot
+race the handoff. Before the executor's first request, it removes the old
+planning prompt but keeps OMP's executor checklist. Planning-only hidden
+messages stay out of compaction summaries. Messages written by the executor keep
+their real provider, model, usage, and stop reason.
+
+Pi Codex Conversion is optional. Prewalk refuses to start if that extension's
+config explicitly enables native Responses compaction. That compaction can run
+before Prewalk gets a chance to filter planner-only context, so guessing would
+be unsafe. Leave `compaction.responsesCompaction` off when using both.
 
 The compact status shows both roles and reasoning levels:
 
@@ -148,10 +155,15 @@ metadata is unavailable, the estimate remains `unavailable`.
 
 Verified benchmark reports are imported as a separate, fingerprinted evidence
 summary and never enter personal totals. Delegation task trees project standard
-public subagent tool results into versioned, content-free evidence. Child
-receipts take precedence over matching fallback usage, while missing async or
-nested evidence remains pending or incomplete. Stock Pi works without
-`pi-codex-conversion`, `pi-subagents`, or any provider extension.
+public subagent tool results into versioned, content-free evidence. The report
+shows root-session, unique direct-child, unique nested-child, and known
+task-tree actual cost so the equation is visible. Direct results provide exact
+input, output, cache-read, cache-write, and cost. Nested summaries provide
+exact cost but omit cache categories, so cost coverage can be complete while
+token-breakdown coverage remains incomplete. Publicly linked child receipts
+take precedence over parent summaries, and repeated results are deduplicated.
+Missing async or child cost remains pending or incomplete. Stock Pi works
+without `pi-codex-conversion`, `pi-subagents`, or any provider extension.
 
 ## Verification
 
@@ -168,10 +180,11 @@ npm pack --dry-run
 
 The unit and mocked-extension suites cover prompts, the OMP coordinator, todo,
 mutation proof, status, audit records, and provider ownership. The Agent-loop
-suite uses stock Pi's exported session factory and the installed conversion
-package. The RPC smoke loads conversion first, arms, reports status, cancels,
-reloads, and proves settings and selected Sol remain unchanged without calling
-a provider.
+suite uses stock Pi's exported session factory; the dedicated conversion test
+proves public provider-wrapper composition without issuing a request. The RPC
+smoke is a stock-Pi check: it arms, reports status, cancels, reloads, and
+proves settings and the selected planner remain unchanged without calling a
+provider.
 
 ### Authenticated canary
 

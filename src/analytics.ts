@@ -117,11 +117,12 @@ export interface DelegationUsageSlice {
 	category: "child";
 	inputTokens: number;
 	outputTokens: number;
-	cacheReadTokens: number;
-	cacheWriteTokens: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
 	totalTokens: number;
 	turns: number;
 	costUsd: number;
+	tokenCoverage: "complete" | "partial";
 }
 
 export interface DelegationEvidence {
@@ -134,6 +135,7 @@ export interface DelegationEvidence {
 	invocationId: string;
 	delegationRunId: string;
 	childIndex: number;
+	relationship: "direct" | "nested";
 	childSessionId?: string;
 	lifecycle: DelegationLifecycle;
 	observedAt: number;
@@ -142,7 +144,6 @@ export interface DelegationEvidence {
 
 export type CoverageState =
 	| "complete"
-	| "fallback-backed"
 	| "pending"
 	| "overlap-unresolved"
 	| "unsupported"
@@ -151,7 +152,8 @@ export type ActualCostCoverage = CoverageState;
 export type EstimateCoverage = CoverageState;
 export type TaskTreeUnresolvedReason =
 	| "pending"
-	| "missing-usage"
+	| "missing-cost"
+	| "partial-token-breakdown"
 	| "overlap-unresolved"
 	| "unsupported";
 
@@ -169,11 +171,15 @@ export interface TaskTreeReport {
 	fallbackEvidence: DelegationEvidence[];
 	unresolved: TaskTreeUnresolvedDescendant[];
 	rootActualCost: number;
-	descendantActualCost: number;
-	totalActualCost: number;
+	directChildActualCost: number;
+	nestedChildActualCost: number;
+	knownTaskTreeActualCost: number;
+	reportedChildCount: number;
+	expectedChildCount: number;
 	estimatedSavings: number;
 	estimatedExtraCost: number;
-	actualCoverage: ActualCostCoverage;
+	costCoverage: ActualCostCoverage;
+	tokenCoverage: CoverageState;
 	estimateCoverage: EstimateCoverage;
 }
 

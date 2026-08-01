@@ -1,7 +1,13 @@
 import { isRecord } from "./guards.js";
 
 export type MutationKind = "edit" | "write" | "apply_patch";
-export type MutationSource = "builtin" | "direct" | "shell" | "exec_command" | "code_mode";
+export type MutationSource =
+	| "builtin"
+	| "direct"
+	| "shell"
+	| "exec_command"
+	| "code_mode"
+	| "adapter";
 
 export interface MutationCandidate {
 	toolCallId: string;
@@ -34,9 +40,17 @@ export interface MutationTurnOptions {
 }
 
 export interface MutationTurnEvidence {
-	hasToolResults: boolean;
 	todoSucceeded: boolean;
 	mutation?: MutationCandidate;
+}
+
+/**
+ * Optional integrations translate their terminal tool result into the same
+ * positive mutation evidence used by stock Pi. Returning undefined is a
+ * fail-closed decision.
+ */
+export interface MutationEvidenceAdapter {
+	candidateFor(result: MutationToolResult): MutationCandidate | undefined;
 }
 
 interface CodeModeTrace {
@@ -250,6 +264,8 @@ export class MutationTurnBuffer {
 	private readonly codeModeSessions = new Set<number>();
 	private triggerChosen = false;
 
+	constructor(private readonly adapters: readonly MutationEvidenceAdapter[] = []) {}
+
 	resetForRun(): void {
 		this.results.clear();
 		this.cells.clear();
@@ -276,7 +292,6 @@ export class MutationTurnBuffer {
 	}
 
 	finishTurn(message: unknown, options: MutationTurnOptions): MutationTurnEvidence {
-		const hasToolResults = this.results.size > 0;
 		const todoSucceeded = [...this.results.values()].some(
 			(result) => result.toolName === "todo" && !result.isError,
 		);
@@ -294,7 +309,6 @@ export class MutationTurnBuffer {
 		}
 		this.cleanupTurn();
 		return {
-			hasToolResults,
 			todoSucceeded,
 			...(mutation ? { mutation } : {}),
 		};
@@ -325,6 +339,10 @@ export class MutationTurnBuffer {
 
 	private candidateFor(result: MutationToolResult): MutationCandidate | undefined {
 		if (result.isError) return undefined;
+		for (const adapter of this.adapters) {
+			const candidate = adapter.candidateFor(result);
+			if (candidate) return candidate;
+		}
 		if (result.toolName === "edit" || result.toolName === "write") {
 			return {
 				toolCallId: result.toolCallId,

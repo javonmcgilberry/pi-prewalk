@@ -238,9 +238,9 @@ export class AnalyticsStore {
 		return receipts;
 	}
 
-	async writeDelegationEvidence(value: unknown): Promise<DelegationEvidence> {
+	async writeDelegationEvidence(value: unknown, generation: string): Promise<DelegationEvidence> {
 		const parsed = parseDelegationAnalyticsEvent(value);
-		const generation = await this.currentGeneration();
+		await this.requireCurrentGeneration(generation);
 		const evidence: DelegationEvidence = { ...parsed, generation };
 		const target = this.delegationPath(generation, delegationEvidenceKey(evidence));
 		try {
@@ -260,6 +260,7 @@ export class AnalyticsStore {
 			if (!hasErrorCode(error, "ENOENT")) throw error;
 		}
 		await this.withDelegationLock(async () => {
+			await this.requireCurrentGeneration(generation);
 			try {
 				const stored = JSON.parse(await readFile(target, "utf8"));
 				const { generation: _generation, schemaVersion, ...event } = stored;
@@ -271,6 +272,7 @@ export class AnalyticsStore {
 			} catch (error) {
 				if (!hasErrorCode(error, "ENOENT")) throw error;
 			}
+			await this.requireCurrentGeneration(generation);
 			await this.atomicReplace(target, `${JSON.stringify(evidence)}\n`);
 		});
 		return evidence;
@@ -311,6 +313,12 @@ export class AnalyticsStore {
 				descendantReceipts.map((receipt) => [`${receipt.runId}:${receipt.epoch}`, receipt]),
 			).values(),
 		];
+		const receiptRelationships = new Map<string, DelegationEvidence["relationship"]>();
+		for (const item of evidence) {
+			if (item.childSessionId !== undefined) {
+				receiptRelationships.set(item.childSessionId, item.relationship);
+			}
+		}
 		const receiptEvidenceKeys = new Set(
 			uniqueDescendants.flatMap((receipt) => receipt.evidenceKeys ?? []),
 		);
@@ -329,32 +337,42 @@ export class AnalyticsStore {
 				unresolved.push(unresolvedEntry("pending"));
 				continue;
 			}
+			const childHasReceipt = uniqueDescendants.some(
+				(receipt) => receipt.sessionId === item.childSessionId,
+			);
 			if (item.usage.length === 0) {
-				unresolved.push(unresolvedEntry("missing-usage"));
+				if (!childHasReceipt) unresolved.push(unresolvedEntry("missing-cost"));
 				continue;
 			}
 			const unmatched = item.usage.filter(
 				(slice) => !receiptEvidenceKeys.has(slice.evidenceKey),
 			);
 			if (unmatched.length === 0) continue;
-			const childHasReceipt = uniqueDescendants.some(
-				(receipt) => receipt.sessionId === item.childSessionId,
-			);
 			if (childHasReceipt && unmatched.length === item.usage.length) {
 				unresolved.push(unresolvedEntry("overlap-unresolved"));
 				continue;
 			}
-			fallbackEvidence.push({ ...item, usage: unmatched });
+			const fallback = { ...item, usage: unmatched };
+			fallbackEvidence.push(fallback);
+			if (unmatched.some((slice) => slice.tokenCoverage === "partial")) {
+				unresolved.push(unresolvedEntry("partial-token-breakdown"));
+			}
 		}
 		const rootActualCost = rootReceipts.reduce((sum, receipt) => sum + receipt.actualCost, 0);
-		const descendantActualCost = uniqueDescendants.reduce(
-			(sum, receipt) => sum + receipt.actualCost,
-			0,
-		);
-		const fallbackActualCost = fallbackEvidence.reduce(
-			(sum, item) => sum + item.usage.reduce((usageSum, slice) => usageSum + slice.costUsd, 0),
-			0,
-		);
+		const receiptActualCost = (relationship: DelegationEvidence["relationship"]): number =>
+			uniqueDescendants
+				.filter((receipt) => receiptRelationships.get(receipt.sessionId) === relationship)
+				.reduce((sum, receipt) => sum + receipt.actualCost, 0);
+		const fallbackActualCost = (relationship: DelegationEvidence["relationship"]): number =>
+			fallbackEvidence
+				.filter((item) => item.relationship === relationship)
+				.reduce(
+					(sum, item) =>
+						sum + item.usage.reduce((usageSum, slice) => usageSum + slice.costUsd, 0),
+					0,
+				);
+		const directChildActualCost = receiptActualCost("direct") + fallbackActualCost("direct");
+		const nestedChildActualCost = receiptActualCost("nested") + fallbackActualCost("nested");
 		const estimateReceipts = [...rootReceipts, ...uniqueDescendants];
 		const estimatedSavings = estimateReceipts.reduce(
 			(sum, receipt) =>
@@ -375,11 +393,20 @@ export class AnalyticsStore {
 			fallbackEvidence,
 			unresolved,
 			rootActualCost,
-			descendantActualCost: descendantActualCost + fallbackActualCost,
-			totalActualCost: rootActualCost + descendantActualCost + fallbackActualCost,
+			directChildActualCost,
+			nestedChildActualCost,
+			knownTaskTreeActualCost: rootActualCost + directChildActualCost + nestedChildActualCost,
+			reportedChildCount: evidence.filter(
+				(item) =>
+					item.usage.length > 0 ||
+					(item.childSessionId !== undefined &&
+						uniqueDescendants.some((receipt) => receipt.sessionId === item.childSessionId)),
+			).length,
+			expectedChildCount: evidence.length,
 			estimatedSavings,
 			estimatedExtraCost,
-			actualCoverage: coverageState(evidence, fallbackEvidence, unresolved),
+			costCoverage: costCoverageState(evidence, unresolved),
+			tokenCoverage: tokenCoverageState(evidence, unresolved),
 			estimateCoverage:
 				evidence.length === 0
 					? "unsupported"
@@ -810,19 +837,31 @@ function compareReceiptsNewestFirst(left: RunReceipt, right: RunReceipt): number
 	return compareReceiptTimestamps(right, left) || left.runId.localeCompare(right.runId);
 }
 
-function coverageState(
+function costCoverageState(
 	evidence: DelegationEvidence[],
-	fallbackEvidence: DelegationEvidence[],
 	unresolved: TaskTreeUnresolvedDescendant[],
-): TaskTreeReport["actualCoverage"] {
+): TaskTreeReport["costCoverage"] {
 	if (evidence.length === 0) return "unsupported";
 	if (unresolved.some((item) => item.reason === "pending")) return "pending";
 	if (unresolved.some((item) => item.reason === "overlap-unresolved")) {
 		return "overlap-unresolved";
 	}
-	if (unresolved.length > 0) return "incomplete";
-	if (fallbackEvidence.length > 0) return "fallback-backed";
+	if (unresolved.some((item) => item.reason === "missing-cost" || item.reason === "unsupported")) {
+		return "incomplete";
+	}
 	return "complete";
+}
+
+function tokenCoverageState(
+	evidence: DelegationEvidence[],
+	unresolved: TaskTreeUnresolvedDescendant[],
+): TaskTreeReport["tokenCoverage"] {
+	if (evidence.length === 0) return "unsupported";
+	if (unresolved.some((item) => item.reason === "pending")) return "pending";
+	if (unresolved.some((item) => item.reason === "overlap-unresolved")) {
+		return "overlap-unresolved";
+	}
+	return unresolved.length === 0 ? "complete" : "incomplete";
 }
 
 function compareReceiptsOldestFirst(left: RunReceipt, right: RunReceipt): number {

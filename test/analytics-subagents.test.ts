@@ -7,7 +7,7 @@ import {
 } from "../src/analytics-subagents.js";
 
 const event = (phase: "start" | "progress" | "terminal", lifecycle: string = "running") => ({
-	version: 1,
+	version: 2,
 	eventId: `event-${phase}`,
 	phase,
 	rootSessionId: "root",
@@ -15,6 +15,7 @@ const event = (phase: "start" | "progress" | "terminal", lifecycle: string = "ru
 	invocationId: "tool-call",
 	delegationRunId: "run",
 	childIndex: 0,
+	relationship: "direct",
 	childSessionId: "child",
 	lifecycle,
 	observedAt: 1,
@@ -29,6 +30,7 @@ const event = (phase: "start" | "progress" | "terminal", lifecycle: string = "ru
 			totalTokens: 3,
 			turns: 1,
 			costUsd: 0.1,
+			tokenCoverage: "complete",
 		},
 	],
 });
@@ -63,7 +65,7 @@ describe("delegation analytics adapter", () => {
 			}),
 		).toEqual([
 			{
-				schemaVersion: 1,
+				schemaVersion: 2,
 				eventId: "tool-call.run.0.terminal.100",
 				phase: "terminal",
 				rootSessionId: "root",
@@ -71,6 +73,7 @@ describe("delegation analytics adapter", () => {
 				invocationId: "tool-call",
 				delegationRunId: "run",
 				childIndex: 0,
+				relationship: "direct",
 				lifecycle: "completed",
 				observedAt: 100,
 				usage: [
@@ -84,6 +87,7 @@ describe("delegation analytics adapter", () => {
 						totalTokens: 36,
 						turns: 2,
 						costUsd: 0.25,
+						tokenCoverage: "complete",
 					},
 				],
 			},
@@ -111,7 +115,30 @@ describe("delegation analytics adapter", () => {
 		]);
 	});
 
-	it("marks nested summaries without complete usage as incomplete", () => {
+	it("normalizes unsafe Pi tool-call IDs before persisting analytics", () => {
+		const [projected] = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "call_abc|fc_123",
+			childCount: 1,
+			details: { runId: "run", results: [{ exitCode: 0 }] },
+			isError: false,
+			observedAt: 100,
+		});
+
+		expect(projected).toBeDefined();
+		const { schemaVersion, ...event } = projected!;
+		expect(event.invocationId).toMatch(/^invocation-[a-f0-9]{64}$/);
+		expect(event.eventId).toMatch(/^[A-Za-z0-9._:-]{1,256}$/);
+		expect(() =>
+			parseDelegationAnalyticsEvent({
+				...event,
+				version: schemaVersion,
+			}),
+		).not.toThrow();
+	});
+
+	it("projects exact nested cost while marking its token categories partial", () => {
 		const projected = projectDelegationToolResult({
 			rootSessionId: "root",
 			parentSessionId: "parent",
@@ -134,8 +161,10 @@ describe("delegation analytics adapter", () => {
 						children: [
 							{
 								id: "nested-run",
+								sessionId: "nested-session",
 								state: "complete",
-								children: [{ id: "nested-grandchild", state: "complete" }],
+								totalTokens: { input: 4, output: 2, total: 6 },
+								totalCost: { inputTokens: 4, outputTokens: 2, costUsd: 0.08 },
 							},
 						],
 					},
@@ -145,21 +174,152 @@ describe("delegation analytics adapter", () => {
 			observedAt: 100,
 		});
 
-		expect(projected).toHaveLength(3);
+		expect(projected).toHaveLength(2);
 		expect(projected[1]).toMatchObject({
 			delegationRunId: "nested-run",
 			childIndex: 1,
 			phase: "terminal",
-			lifecycle: "incomplete",
-			usage: [],
+			lifecycle: "completed",
+			relationship: "nested",
+			childSessionId: "nested-session",
+			usage: [
+				{
+					evidenceKey: "subagent:nested-run",
+					category: "child",
+					inputTokens: 4,
+					outputTokens: 2,
+					totalTokens: 6,
+					turns: 0,
+					costUsd: 0.08,
+					tokenCoverage: "partial",
+				},
+			],
 		});
-		expect(projected[2]).toMatchObject({
-			delegationRunId: "nested-grandchild",
-			childIndex: 2,
+	});
+
+	it.each([
+		[{ stopped: true, exitCode: 1 }, "stopped"],
+		[{ timedOut: true, exitCode: 1 }, "timed-out"],
+		[{ interrupted: true, exitCode: 1 }, "interrupted"],
+		[{ exitCode: 1 }, "failed"],
+	] as const)("retains incurred cost for a %s child", (outcome, lifecycle) => {
+		const [projected] = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "tool-call",
+			childCount: 1,
+			details: {
+				runId: "run",
+				results: [
+					{
+						...outcome,
+						usage: {
+							input: 10,
+							output: 5,
+							cacheRead: 2,
+							cacheWrite: 1,
+							cost: 0.25,
+							turns: 2,
+						},
+					},
+				],
+			},
+			isError: true,
+			observedAt: 100,
+		});
+
+		expect(projected).toMatchObject({
 			phase: "terminal",
-			lifecycle: "incomplete",
+			lifecycle,
+			usage: [{ costUsd: 0.25, tokenCoverage: "complete" }],
+		});
+	});
+
+	it("reports a completed nested child with missing upstream cost as incomplete", () => {
+		const projected = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "tool-call",
+			childCount: 1,
+			details: {
+				runId: "run",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [
+							{
+								id: "nested-without-cost",
+								state: "complete",
+								totalTokens: { input: 4, output: 2, total: 6 },
+							},
+						],
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+
+		expect(projected[1]).toMatchObject({
+			delegationRunId: "nested-without-cost",
+			lifecycle: "completed",
 			usage: [],
 		});
+	});
+
+	it("deduplicates the same nested run reported through multiple result branches", () => {
+		const nested = {
+			id: "nested",
+			state: "complete",
+			totalCost: { inputTokens: 4, outputTokens: 2, costUsd: 0.08 },
+		};
+		const projected = projectDelegationToolResult({
+			rootSessionId: "root",
+			parentSessionId: "parent",
+			invocationId: "tool-call",
+			childCount: 2,
+			details: {
+				runId: "run",
+				results: [
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [nested],
+					},
+					{
+						exitCode: 0,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.1,
+							turns: 1,
+						},
+						children: [nested],
+					},
+				],
+			},
+			isError: false,
+			observedAt: 100,
+		});
+
+		expect(projected.filter((item) => item.delegationRunId === "nested")).toHaveLength(1);
 	});
 
 	it("does not project fractional token or turn counts", () => {

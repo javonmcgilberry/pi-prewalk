@@ -1,4 +1,6 @@
-export const DELEGATION_ANALYTICS_VERSION = 1;
+import { createHash } from "node:crypto";
+
+export const DELEGATION_ANALYTICS_VERSION = 2;
 export const SUBAGENT_DELEGATION_ANALYTICS_START_EVENT = "subagent:delegation-analytics:start";
 export const SUBAGENT_DELEGATION_ANALYTICS_PROGRESS_EVENT =
 	"subagent:delegation-analytics:progress";
@@ -30,6 +32,8 @@ const LIFECYCLES: readonly DelegationAnalyticsLifecycle[] = [
 	"incomplete",
 ];
 const PHASES: readonly DelegationAnalyticsPhase[] = ["start", "progress", "terminal"];
+const TOKEN_COVERAGE: readonly DelegationUsageSlice["tokenCoverage"][] = ["complete", "partial"];
+const RELATIONSHIPS: readonly DelegationEvidence["relationship"][] = ["direct", "nested"];
 const EVENT_KEYS = new Set([
 	"version",
 	"eventId",
@@ -39,6 +43,7 @@ const EVENT_KEYS = new Set([
 	"invocationId",
 	"delegationRunId",
 	"childIndex",
+	"relationship",
 	"childSessionId",
 	"lifecycle",
 	"observedAt",
@@ -55,6 +60,7 @@ const USAGE_KEYS = new Set([
 	"totalTokens",
 	"turns",
 	"costUsd",
+	"tokenCoverage",
 ]);
 
 function safeId(value: unknown, label: string): string {
@@ -102,21 +108,39 @@ export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidenc
 			throw new Error("Delegation analytics usage category is unsupported.");
 		const inputTokens = integer(item.inputTokens, "inputTokens");
 		const outputTokens = integer(item.outputTokens, "outputTokens");
-		const cacheReadTokens = integer(item.cacheReadTokens, "cacheReadTokens");
-		const cacheWriteTokens = integer(item.cacheWriteTokens, "cacheWriteTokens");
 		const totalTokens = integer(item.totalTokens, "totalTokens");
-		if (totalTokens !== inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens)
-			throw new Error("Delegation usage totalTokens does not reconcile.");
+		const tokenCoverage = enumValue(item.tokenCoverage, TOKEN_COVERAGE, "tokenCoverage");
+		const cacheReadTokens =
+			item.cacheReadTokens === undefined
+				? undefined
+				: integer(item.cacheReadTokens, "cacheReadTokens");
+		const cacheWriteTokens =
+			item.cacheWriteTokens === undefined
+				? undefined
+				: integer(item.cacheWriteTokens, "cacheWriteTokens");
+		if (tokenCoverage === "complete") {
+			if (cacheReadTokens === undefined || cacheWriteTokens === undefined)
+				throw new Error("Complete delegation usage requires every token category.");
+			if (totalTokens !== inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens)
+				throw new Error("Delegation usage totalTokens does not reconcile.");
+		} else if (
+			cacheReadTokens !== undefined ||
+			cacheWriteTokens !== undefined ||
+			totalTokens !== inputTokens + outputTokens
+		) {
+			throw new Error("Partial delegation usage must contain only input and output tokens.");
+		}
 		return {
 			evidenceKey: safeId(item.evidenceKey, "evidenceKey"),
 			category: "child",
 			inputTokens,
 			outputTokens,
-			cacheReadTokens,
-			cacheWriteTokens,
 			totalTokens,
 			turns: integer(item.turns, "turns"),
 			costUsd: finite(item.costUsd, "costUsd"),
+			tokenCoverage,
+			...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+			...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
 		};
 	});
 	return {
@@ -129,6 +153,7 @@ export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidenc
 		invocationId: safeId(value.invocationId, "invocationId"),
 		delegationRunId: safeId(value.delegationRunId, "delegationRunId"),
 		childIndex: integer(value.childIndex, "childIndex"),
+		relationship: enumValue(value.relationship, RELATIONSHIPS, "relationship"),
 		...(value.childSessionId === undefined
 			? {}
 			: { childSessionId: safeId(value.childSessionId, "childSessionId") }),
@@ -246,6 +271,12 @@ function boundedId(value: string, limit = 80): string {
 	return value.slice(0, limit);
 }
 
+function contentFreeId(value: string, namespace: string): string {
+	const bounded = boundedId(value, 256);
+	if (/^[A-Za-z0-9._:-]{1,256}$/.test(bounded)) return bounded;
+	return `${namespace}-${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function projectedUsage(
 	value: Record<string, unknown>,
 	delegationRunId: string,
@@ -279,6 +310,7 @@ function projectedUsage(
 			totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
 			turns,
 			costUsd,
+			tokenCoverage: "complete",
 		},
 	];
 }
@@ -293,15 +325,15 @@ function eventId(
 	return `${boundedId(invocationId)}.${boundedId(delegationRunId)}.${childIndex}.${phase}.${observedAt}`;
 }
 
-function nestedRunIds(results: unknown[]): string[] {
-	const ids: string[] = [];
+function nestedRuns(results: unknown[]): Record<string, unknown>[] {
+	const runs: Record<string, unknown>[] = [];
 	const seen = new Set<string>();
 	const visit = (value: unknown, depth: number): void => {
-		if (!isRecord(value) || depth > 32 || ids.length >= 1024) return;
+		if (!isRecord(value) || depth > 32 || runs.length >= 1024) return;
 		const id = nonEmptyString(value.id);
 		if (id && !seen.has(id)) {
 			seen.add(id);
-			ids.push(id);
+			runs.push(value);
 		}
 		if (Array.isArray(value.children)) {
 			for (const child of value.children) visit(child, depth + 1);
@@ -317,7 +349,54 @@ function nestedRunIds(results: unknown[]): string[] {
 		if (!isRecord(result) || !Array.isArray(result.children)) continue;
 		for (const child of result.children) visit(child, 0);
 	}
-	return ids;
+	return runs;
+}
+
+function nestedLifecycle(value: Record<string, unknown>): DelegationAnalyticsLifecycle {
+	if (value.timedOut === true) return "timed-out";
+	if (value.stopped === true || value.state === "stopped") return "stopped";
+	if (value.state === "queued" || value.state === "running" || value.state === "pending") {
+		return "running";
+	}
+	if (value.state === "paused") return "interrupted";
+	if (value.state === "failed" || nonEmptyString(value.error)) return "failed";
+	if (value.state === "complete" || value.state === "completed") return "completed";
+	return "incomplete";
+}
+
+function nestedUsage(value: Record<string, unknown>, runId: string): DelegationUsageSlice[] {
+	if (!isRecord(value.totalCost)) return [];
+	const inputTokens = nonNegativeInteger(value.totalCost.inputTokens);
+	const outputTokens = nonNegativeInteger(value.totalCost.outputTokens);
+	const costUsd = nonNegative(value.totalCost.costUsd);
+	if (inputTokens === undefined || outputTokens === undefined || costUsd === undefined) return [];
+	if (isRecord(value.totalTokens)) {
+		const totalInput = nonNegativeInteger(value.totalTokens.input);
+		const totalOutput = nonNegativeInteger(value.totalTokens.output);
+		const total = nonNegativeInteger(value.totalTokens.total);
+		if (
+			totalInput === undefined ||
+			totalOutput === undefined ||
+			total === undefined ||
+			totalInput !== inputTokens ||
+			totalOutput !== outputTokens ||
+			total !== totalInput + totalOutput
+		) {
+			return [];
+		}
+	}
+	return [
+		{
+			evidenceKey: `subagent:${boundedId(runId, 220)}`,
+			category: "child",
+			inputTokens,
+			outputTokens,
+			totalTokens: inputTokens + outputTokens,
+			turns: nonNegativeInteger(value.turnCount) ?? 0,
+			costUsd,
+			tokenCoverage: "partial",
+		},
+	];
 }
 
 export function projectDelegationToolResult(
@@ -325,8 +404,13 @@ export function projectDelegationToolResult(
 ): DelegationEvidence[] {
 	const observedAt = input.observedAt ?? Date.now();
 	const details = isRecord(input.details) ? input.details : undefined;
-	const delegationRunId =
-		nonEmptyString(details?.runId) ?? nonEmptyString(details?.asyncId) ?? input.invocationId;
+	const rootSessionId = contentFreeId(input.rootSessionId, "root");
+	const parentSessionId = contentFreeId(input.parentSessionId, "parent");
+	const invocationId = contentFreeId(input.invocationId, "invocation");
+	const delegationRunId = contentFreeId(
+		nonEmptyString(details?.runId) ?? nonEmptyString(details?.asyncId) ?? input.invocationId,
+		"run",
+	);
 	const results = details && Array.isArray(details.results) ? details.results : [];
 	const count = Math.max(1, results.length || input.childCount);
 	const evidence: DelegationEvidence[] = [];
@@ -341,38 +425,44 @@ export function projectDelegationToolResult(
 		const phase = lifecycle === "running" ? "start" : "terminal";
 		evidence.push({
 			schemaVersion: DELEGATION_ANALYTICS_VERSION,
-			eventId: eventId(input.invocationId, delegationRunId, childIndex, phase, observedAt),
+			eventId: eventId(invocationId, delegationRunId, childIndex, phase, observedAt),
 			phase,
-			rootSessionId: input.rootSessionId,
-			parentSessionId: input.parentSessionId,
-			invocationId: input.invocationId,
+			rootSessionId,
+			parentSessionId,
+			invocationId,
 			delegationRunId,
 			childIndex,
+			relationship: "direct",
 			lifecycle,
 			observedAt,
 			usage: record ? projectedUsage(record, delegationRunId, childIndex) : [],
 		});
 	}
 	let nestedChildIndex = evidence.length;
-	for (const nestedRunId of nestedRunIds(results)) {
+	for (const nested of nestedRuns(results)) {
+		const rawNestedRunId = nonEmptyString(nested.id);
+		if (!rawNestedRunId) continue;
+		const nestedRunId = contentFreeId(rawNestedRunId, "run");
+		const rawChildSessionId = nonEmptyString(nested.sessionId);
+		const childSessionId = rawChildSessionId
+			? contentFreeId(rawChildSessionId, "child")
+			: undefined;
+		const lifecycle = nestedLifecycle(nested);
+		const phase = lifecycle === "running" ? "start" : "terminal";
 		evidence.push({
 			schemaVersion: DELEGATION_ANALYTICS_VERSION,
-			eventId: eventId(
-				input.invocationId,
-				nestedRunId,
-				nestedChildIndex,
-				"terminal",
-				observedAt,
-			),
-			phase: "terminal",
-			rootSessionId: input.rootSessionId,
-			parentSessionId: input.parentSessionId,
-			invocationId: input.invocationId,
+			eventId: eventId(invocationId, nestedRunId, nestedChildIndex, phase, observedAt),
+			phase,
+			rootSessionId,
+			parentSessionId,
+			invocationId,
 			delegationRunId: nestedRunId,
 			childIndex: nestedChildIndex,
-			lifecycle: "incomplete",
+			relationship: "nested",
+			...(childSessionId === undefined ? {} : { childSessionId }),
+			lifecycle,
 			observedAt,
-			usage: [],
+			usage: nestedUsage(nested, nestedRunId),
 		});
 		nestedChildIndex += 1;
 	}

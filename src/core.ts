@@ -79,7 +79,6 @@ export interface PrewalkRun {
 }
 
 export interface TurnEvidence {
-	hasToolResults: boolean;
 	todoSucceeded: boolean;
 	mutation?: MutationTrigger;
 }

@@ -70,14 +70,17 @@ export function renderVerifiedBenchmarkSummary(summary: VerifiedBenchmarkSummary
 export function renderTaskTreeReport(report: TaskTreeReport): string {
 	return [
 		`Prewalk task tree for root session ${report.rootSessionId}`,
-		`Root session: actual ${formatUsd(report.rootActualCost)}; receipts ${report.rootReceipts.length}.`,
-		`Descendants: actual ${formatUsd(report.descendantActualCost)}; receipts ${report.descendantReceipts.length}; fallback records ${report.fallbackEvidence.length}.`,
-		`Total task tree actual: ${formatUsd(report.totalActualCost)}; actual coverage ${report.actualCoverage}; estimate coverage ${report.estimateCoverage}.`,
-		`Task-tree estimate: savings ${formatUsd(report.estimatedSavings)}; extra cost ${formatUsd(report.estimatedExtraCost)}.`,
+		`Root session actual cost: ${formatUsd(report.rootActualCost)}.`,
+		`Unique direct-child actual cost: ${formatUsd(report.directChildActualCost)}.`,
+		`Unique nested-child actual cost: ${formatUsd(report.nestedChildActualCost)}.`,
+		`Known task-tree actual cost: ${formatUsd(report.knownTaskTreeActualCost)} = ${formatUsd(report.rootActualCost)} + ${formatUsd(report.directChildActualCost)} + ${formatUsd(report.nestedChildActualCost)}.`,
+		`Reported children: ${report.reportedChildCount} of ${report.expectedChildCount} expected.`,
+		`Cost coverage: ${report.costCoverage}. Token-breakdown coverage: ${report.tokenCoverage}.`,
+		`Task-tree estimate: savings ${formatUsd(report.estimatedSavings)}; extra cost ${formatUsd(report.estimatedExtraCost)}; estimate coverage ${report.estimateCoverage}.`,
 		...(report.unresolved.length === 0
 			? []
 			: [
-					`Unresolved descendants: ${report.unresolved.map((item) => `${item.delegationRunId}/${item.childIndex} (${item.reason})`).join(", ")}.`,
+					`Incomplete or unfinished children: ${report.unresolved.map((item) => `${item.delegationRunId}/${item.childIndex} (${item.reason})`).join(", ")}.`,
 				]),
 	].join("\n");
 }

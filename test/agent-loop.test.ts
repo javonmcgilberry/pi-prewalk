@@ -269,7 +269,14 @@ describe("stock Pi Agent-loop integration", () => {
 							cost: 0.1,
 							turns: 1,
 						},
-						children: [{ id: "delegation-nested", state: "complete" }],
+						children: [
+							{
+								id: "delegation-nested",
+								state: "complete",
+								totalTokens: { input: 2, output: 1, total: 3 },
+								totalCost: { inputTokens: 2, outputTokens: 1, costUsd: 0.03 },
+							},
+						],
 					},
 				],
 			},
@@ -299,13 +306,20 @@ describe("stock Pi Agent-loop integration", () => {
 				expect.objectContaining({ delegationRunId: "delegation-pending", reason: "pending" }),
 				expect.objectContaining({
 					delegationRunId: "delegation-nested",
-					reason: "missing-usage",
+					reason: "partial-token-breakdown",
 				}),
 			]),
 		);
-		expect(taskTree.fallbackEvidence).toHaveLength(1);
+		expect(taskTree.fallbackEvidence).toHaveLength(2);
 		expect(taskTree.fallbackEvidence[0]?.delegationRunId).toBe("delegation-direct");
-		expect(taskTree.actualCoverage).toBe("pending");
+		expect(taskTree.rootActualCost).toBe(6);
+		expect(taskTree.directChildActualCost).toBe(0.1);
+		expect(taskTree.nestedChildActualCost).toBe(0.03);
+		expect(taskTree.knownTaskTreeActualCost).toBe(6.13);
+		expect(taskTree.reportedChildCount).toBe(2);
+		expect(taskTree.expectedChildCount).toBe(3);
+		expect(taskTree.costCoverage).toBe("pending");
+		expect(taskTree.tokenCoverage).toBe("pending");
 		const command = session.extensionRunner.getCommand("prewalk");
 		if (!command) throw new Error("Prewalk command was not registered.");
 		await command.handler("stats task", session.extensionRunner.createCommandContext());
