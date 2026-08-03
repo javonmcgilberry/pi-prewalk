@@ -784,9 +784,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 
-		expect(harness.notifications.at(-1)).toBe(
-			"Prewalk failed: native-compaction-unsupported.",
-		);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: native-compaction-unsupported.");
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
@@ -1894,7 +1892,6 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain("outcome failed");
 		expect(harness.notifications.at(-1)).toContain("Savings unavailable");
-
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {

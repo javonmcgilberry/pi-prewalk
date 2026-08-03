@@ -127,7 +127,8 @@ describe("delegation analytics adapter", () => {
 		});
 
 		expect(projected).toBeDefined();
-		const { schemaVersion, ...event } = projected!;
+		if (!projected) throw new Error("Expected projected delegation evidence");
+		const { schemaVersion, ...event } = projected;
 		expect(event.invocationId).toMatch(/^invocation-[a-f0-9]{64}$/);
 		expect(event.eventId).toMatch(/^[A-Za-z0-9._:-]{1,256}$/);
 		expect(() =>

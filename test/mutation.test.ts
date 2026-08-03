@@ -48,24 +48,26 @@ describe("direct mutation results", () => {
 			candidateFor: (candidate) =>
 				candidate.toolName === "integration_patch" && candidate.details === "committed"
 					? {
-						toolCallId: candidate.toolCallId,
-						toolName: candidate.toolName,
-						kind: "apply_patch",
-						source: "adapter",
-					}
+							toolCallId: candidate.toolCallId,
+							toolName: candidate.toolName,
+							kind: "apply_patch",
+							source: "adapter",
+						}
 					: undefined,
 		};
 		const accepted = new MutationTurnBuffer([adapter]);
-		accepted.recordResult(
-			result("committed", "integration_patch", { details: "committed" }),
-		);
-		expect(finish(accepted, [{ id: "committed", name: "integration_patch" }]).mutation).toMatchObject({
+		accepted.recordResult(result("committed", "integration_patch", { details: "committed" }));
+		expect(
+			finish(accepted, [{ id: "committed", name: "integration_patch" }]).mutation,
+		).toMatchObject({
 			toolName: "integration_patch",
 		});
 
 		const rejected = new MutationTurnBuffer([adapter]);
 		rejected.recordResult(result("unknown", "integration_patch", { details: "unknown" }));
-		expect(finish(rejected, [{ id: "unknown", name: "integration_patch" }]).mutation).toBeUndefined();
+		expect(
+			finish(rejected, [{ id: "unknown", name: "integration_patch" }]).mutation,
+		).toBeUndefined();
 	});
 
 	it.each(["edit", "write"])("accepts a successful %s result", (toolName) => {

@@ -1,7 +1,7 @@
 {
   "name": "@local/pi-prewalk",
   "version": "0.1.0",
-  "description": "OMP-faithful same-session Sol-to-Luna handoff for stock Pi",
+  "description": "Same-session planner-to-executor handoff for stock Pi",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -16,6 +16,8 @@
     "scripts",
     "prompts",
     "benchmark",
+    "docs/README.md",
+    "docs/analytics.md",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

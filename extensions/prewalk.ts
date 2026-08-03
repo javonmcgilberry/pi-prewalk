@@ -171,9 +171,9 @@ function configPath(): string {
 
 function nativeResponsesCompactionEnabled(): boolean {
 	try {
-		const config = JSON.parse(
+		const config: unknown = JSON.parse(
 			readFileSync(path.join(getAgentDir(), "pi-codex-conversion.json"), "utf8"),
-		) as unknown;
+		);
 		return (
 			isRecord(config) &&
 			isRecord(config.compaction) &&
@@ -327,7 +327,9 @@ function assessmentIdFromMessage(message: AgentMessage): string | undefined {
 	) {
 		return undefined;
 	}
-	return typeof message.details.assessmentId === "string" ? message.details.assessmentId : undefined;
+	return typeof message.details.assessmentId === "string"
+		? message.details.assessmentId
+		: undefined;
 }
 
 function shouldExposePrompt(
@@ -541,14 +543,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const withoutAssessment = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		pi.setActiveTools([...withoutAssessment.filter((name) => name !== "todo"), "todo"]);
 	};
-	const beginEvaluation = (): void => {
+	const beginEvaluation = (): EvaluationState => {
 		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
-		evaluation = { id: randomUUID(), toolSlate, invalid: false };
+		const state: EvaluationState = { id: randomUUID(), toolSlate, invalid: false };
+		evaluation = state;
 		evaluationMutations.resetForRun();
 		const evaluationTools = todoConflict
 			? toolSlate
 			: toolSlate.filter((name) => name !== "todo");
 		pi.setActiveTools([...evaluationTools, PREWALK_ASSESS_TOOL_NAME]);
+		return state;
 	};
 	const restoreEvaluationTools = (): void => {
 		if (!evaluation) return;
@@ -1500,9 +1504,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (_event) => {
 		if (!pendingAdmission || coordinator.run || evaluation) return;
 		pendingAdmission = false;
-		beginEvaluation();
-		const assessment = evaluation as EvaluationState | undefined;
-		if (!assessment) return;
+		const assessment = beginEvaluation();
 		return {
 			message: {
 				customType: PREWALK_ASSESS_MESSAGE_TYPE,

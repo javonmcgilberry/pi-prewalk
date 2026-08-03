@@ -80,7 +80,7 @@ describe("OMP coordinator behavior", () => {
 	it("waits for successful todo before accepting a mutation", () => {
 		const coordinator = new PrewalkCoordinator();
 		coordinator.arm("run", "epoch", "automatic", true, planner, config);
-	coordinator.onTurnEnd({ todoSucceeded: false });
+		coordinator.onTurnEnd({ todoSucceeded: false });
 
 		expect(
 			coordinator.onTurnEnd({
@@ -89,9 +89,9 @@ describe("OMP coordinator behavior", () => {
 			}),
 		).toEqual({ type: "none" });
 
-	coordinator.onTurnEnd({ todoSucceeded: true });
+		coordinator.onTurnEnd({ todoSucceeded: true });
 		const action = coordinator.onTurnEnd({
-		todoSucceeded: false,
+			todoSucceeded: false,
 			mutation: { toolCallId: "ready", toolName: "edit" },
 		});
 		expect(action).toEqual({
@@ -105,7 +105,7 @@ describe("OMP coordinator behavior", () => {
 		coordinator.arm("run", "epoch", "automatic", false, planner, config);
 		expect(
 			coordinator.onTurnEnd({
-		todoSucceeded: false,
+				todoSucceeded: false,
 				mutation: { toolCallId: "write", toolName: "write" },
 			}),
 		).toEqual({
@@ -117,11 +117,9 @@ describe("OMP coordinator behavior", () => {
 	it("allows one continuation only after todo ownership and actionable work", () => {
 		const coordinator = new PrewalkCoordinator();
 		coordinator.arm("run", "epoch", "automatic", true, planner, config);
-	expect(coordinator.onTurnEnd({ todoSucceeded: false }).type).toBe(
-			"send-planning",
-		);
+		expect(coordinator.onTurnEnd({ todoSucceeded: false }).type).toBe("send-planning");
 		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
-	coordinator.onTurnEnd({ todoSucceeded: true });
+		coordinator.onTurnEnd({ todoSucceeded: true });
 		expect(coordinator.requestContinuation(false)).toEqual({ type: "none" });
 		expect(coordinator.requestContinuation(true)).toEqual({ type: "send-continuation" });
 		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
@@ -131,7 +129,7 @@ describe("OMP coordinator behavior", () => {
 		const coordinator = new PrewalkCoordinator();
 		coordinator.arm("run", "epoch", "automatic", false, planner, config);
 		coordinator.onTurnEnd({
-		todoSucceeded: false,
+			todoSucceeded: false,
 			mutation: { toolCallId: "write", toolName: "write" },
 		});
 		coordinator.activateExecutor();
@@ -147,7 +145,7 @@ describe("OMP coordinator behavior", () => {
 	it("restores an existing live epoch without re-arming", () => {
 		const original = new PrewalkCoordinator();
 		original.arm("run", "epoch", "automatic", true, planner, config);
-	original.onTurnEnd({ todoSucceeded: false });
+		original.onTurnEnd({ todoSucceeded: false });
 		const run = original.run;
 		if (!run) throw new Error("Expected run");
 

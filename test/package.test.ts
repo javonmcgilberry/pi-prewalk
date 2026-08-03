@@ -56,8 +56,8 @@ describe("shipped package contract", () => {
 			devDependencies: Record<string, string>;
 		};
 
-		expect(pkg.description).toContain("same-session");
-		expect(pkg.description).toContain("Sol-to-Luna");
+		expect(pkg.description.toLowerCase()).toContain("same-session");
+		expect(pkg.description).toContain("planner-to-executor");
 		expect(pkg.description).toContain("stock Pi");
 		expect(pkg.description.toLowerCase()).not.toContain("restart");
 		expect(pkg.bin).toBeUndefined();
@@ -66,6 +66,8 @@ describe("shipped package contract", () => {
 				"extensions",
 				"src",
 				"scripts",
+				"docs/README.md",
+				"docs/analytics.md",
 				"README.md",
 				"LICENSE",
 				"prewalk.example.json",

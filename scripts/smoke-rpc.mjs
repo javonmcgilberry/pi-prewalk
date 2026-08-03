@@ -25,8 +25,6 @@ try {
 	await writeFile(
 		path.join(agentDir, "prewalk.json"),
 		`${JSON.stringify({
-			enabled: true,
-			planner: { provider: "anthropic", model: "claude-opus-4-6" },
 			executor: {
 				provider: "anthropic",
 				model: "claude-sonnet-4-6",

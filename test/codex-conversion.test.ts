@@ -10,7 +10,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 // @ts-expect-error The published extension artifact does not ship declarations.
 import codexConversion from "../node_modules/@howaboua/pi-codex-conversion/dist/index.js";
@@ -54,10 +54,17 @@ describe("installed Codex conversion composition", () => {
 		);
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 
-		let conversionConfig: ProviderConfig | undefined;
+		let conversionApi: ProviderConfig["api"] | undefined;
+		let conversionStream: ProviderConfig["streamSimple"] | undefined;
 		const probe: ExtensionFactory = (pi) => {
 			pi.on("session_start", (_event, ctx) => {
-				conversionConfig = ctx.modelRegistry.getRegisteredProviderConfig("openai-codex");
+				const registered = ctx.modelRegistry.getRegisteredProviderConfig("openai-codex");
+				conversionApi = registered?.api;
+				conversionStream = registered?.streamSimple;
+				vi.spyOn(ctx.modelRegistry, "getApiKeyAndHeaders").mockResolvedValue({
+					ok: true,
+					apiKey: "integration-token",
+				});
 			});
 		};
 		const settings = SettingsManager.create(workDir, agentDir);
@@ -102,10 +109,10 @@ describe("installed Codex conversion composition", () => {
 		await session.waitForIdle();
 
 		const wrapped = runtime.getRegisteredProviderConfig("openai-codex");
-		expect(conversionConfig?.api).toBe("openai-codex-responses");
-		expect(conversionConfig?.streamSimple).toBeTypeOf("function");
+		expect(conversionApi).toBe("openai-codex-responses");
+		expect(conversionStream).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).toBeTypeOf("function");
-		expect(wrapped?.streamSimple).not.toBe(conversionConfig?.streamSimple);
+		expect(wrapped?.streamSimple).not.toBe(conversionStream);
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "message")).toEqual([]);
 	});
