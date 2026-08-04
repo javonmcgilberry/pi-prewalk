@@ -28,6 +28,7 @@ export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 export interface PrewalkConfig {
 	executor: ExecutorConfig;
 	analytics?: AnalyticsConfig;
+	experimentalChild?: ExperimentalChildConfig;
 }
 
 export type ParsedPrewalkConfig = PrewalkConfig & { analytics: AnalyticsConfig };
@@ -39,6 +40,16 @@ export interface ModelConfig {
 
 export interface ExecutorConfig extends ModelConfig {
 	reasoning: ThinkingLevel;
+}
+
+export interface ExperimentalChildTarget {
+	mode: "implementation" | "read-only" | "plan";
+	executor: ExecutorConfig;
+}
+
+export interface ExperimentalChildConfig {
+	enabled: boolean;
+	agents: Record<string, ExperimentalChildTarget>;
 }
 
 export interface PlannerProfile extends ModelConfig {
@@ -89,8 +100,10 @@ export type CoordinatorAction =
 	| { type: "send-continuation" }
 	| { type: "handoff"; trigger: MutationTrigger };
 
-const CONFIG_KEYS = new Set(["executor", "analytics"]);
+const CONFIG_KEYS = new Set(["executor", "analytics", "experimentalChild"]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
+const EXPERIMENTAL_CHILD_KEYS = new Set(["enabled", "agents"]);
+const EXPERIMENTAL_CHILD_TARGET_KEYS = new Set(["mode", "executor"]);
 export const REASONING_LEVELS: readonly ThinkingLevel[] = [
 	"minimal",
 	"low",
@@ -116,25 +129,71 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config field: ${unknownKeys.join(", ")}.`);
 	}
-	const executor = parseModelConfig(value.executor, "executor", EXECUTOR_KEYS);
-	if (!isRecord(value.executor) || !isReasoningLevel(value.executor.reasoning)) {
-		throw new Error("Prewalk config executor.reasoning is invalid.");
-	}
+	const executor = parseExecutorConfig(value.executor, "executor");
 	const analytics =
 		value.analytics === undefined
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
 			: parseAnalyticsConfig(value.analytics);
 	return {
-		executor: { ...executor, reasoning: value.executor.reasoning },
+		executor,
 		analytics,
+		...(value.experimentalChild === undefined
+			? {}
+			: { experimentalChild: parseExperimentalChildConfig(value.experimentalChild) }),
 	};
 }
 
-function parseModelConfig(
-	value: unknown,
-	name: "planner" | "executor",
-	keys: ReadonlySet<string>,
-): ModelConfig {
+function parseExecutorConfig(value: unknown, name: string): ExecutorConfig {
+	const model = parseModelConfig(value, name, EXECUTOR_KEYS);
+	if (!isRecord(value) || !isReasoningLevel(value.reasoning)) {
+		throw new Error(`Prewalk config ${name}.reasoning is invalid.`);
+	}
+	return { ...model, reasoning: value.reasoning };
+}
+
+function parseExperimentalChildConfig(value: unknown): ExperimentalChildConfig {
+	if (!isRecord(value)) throw new Error("Prewalk config experimentalChild must be a JSON object.");
+	const unknownKeys = Object.keys(value).filter((key) => !EXPERIMENTAL_CHILD_KEYS.has(key));
+	if (unknownKeys.length > 0) {
+		throw new Error(`Unknown Prewalk config experimentalChild field: ${unknownKeys.join(", ")}.`);
+	}
+	if (typeof value.enabled !== "boolean") {
+		throw new Error("Prewalk config experimentalChild.enabled must be a boolean.");
+	}
+	if (!isRecord(value.agents)) {
+		throw new Error("Prewalk config experimentalChild.agents must be an object.");
+	}
+	const agents: Record<string, ExperimentalChildTarget> = {};
+	for (const [agent, target] of Object.entries(value.agents)) {
+		if (!agent.trim()) throw new Error("Prewalk child agent names must be non-empty.");
+		if (!isRecord(target)) throw new Error(`Prewalk child target ${agent} must be an object.`);
+		const targetUnknownKeys = Object.keys(target).filter(
+			(key) => !EXPERIMENTAL_CHILD_TARGET_KEYS.has(key),
+		);
+		if (targetUnknownKeys.length > 0) {
+			throw new Error(
+				`Unknown Prewalk child target ${agent} field: ${targetUnknownKeys.join(", ")}.`,
+			);
+		}
+		if (
+			target.mode !== "implementation" &&
+			target.mode !== "read-only" &&
+			target.mode !== "plan"
+		) {
+			throw new Error(`Prewalk child target ${agent}.mode is invalid.`);
+		}
+		agents[agent] = {
+			mode: target.mode,
+			executor: parseExecutorConfig(
+				target.executor,
+				`experimentalChild.agents.${agent}.executor`,
+			),
+		};
+	}
+	return { enabled: value.enabled, agents };
+}
+
+function parseModelConfig(value: unknown, name: string, keys: ReadonlySet<string>): ModelConfig {
 	if (!isRecord(value)) throw new Error(`Prewalk config ${name} must be a JSON object.`);
 	const unknownKeys = Object.keys(value).filter((key) => !keys.has(key));
 	if (unknownKeys.length > 0) {
@@ -255,6 +314,17 @@ export class PrewalkCoordinator {
 			throw new Error("The Prewalk executor is not active.");
 		}
 		run.phase = "completed";
+	}
+
+	release(): void {
+		const run = this.requiredRun();
+		if (
+			run.effectiveRoute !== "executor" ||
+			(run.phase !== "active" && run.phase !== "completed")
+		) {
+			throw new Error("The Prewalk executor is not active.");
+		}
+		run.effectiveRoute = "planner";
 	}
 
 	cancel(selectedModelIsPlanner: boolean): void {

@@ -10,7 +10,7 @@ export interface DelegationStatus {
 
 export interface SessionStatus {
 	mode: "manual" | "auto-ready";
-	lastOutcome?: "bypassed" | "completed";
+	lastOutcome?: "bypassed" | "completed" | "released";
 }
 
 function modelLabel(model: ModelConfig): string {

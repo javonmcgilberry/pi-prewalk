@@ -8,6 +8,8 @@ product_contract_source: ce-plan-bootstrap
 execution: code
 ---
 
+> **Superseded:** This plan described a patched-Pi updater and compatibility-PR architecture that is no longer the product direction. Use [`2026-08-03-001-feat-faithful-core-compatibility-and-drift-brief.md`](2026-08-03-001-feat-faithful-core-compatibility-and-drift-brief.md) instead. This historical plan is preserved for context and must not be implemented as written.
+
 # Automated Pi Compatibility - Plan
 
 ## Goal Capsule

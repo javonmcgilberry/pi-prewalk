@@ -1,0 +1,36 @@
+name: OMP drift report
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read current OMP source without modifying Prewalk
+        run: git clone --depth=1 https://github.com/can1357/oh-my-pi.git "$RUNNER_TEMP/omp"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export OMP_CURRENT_REVISION="$(git -C "$RUNNER_TEMP/omp" rev-parse HEAD)"
+          node scripts/compatibility/omp-drift.mjs "$RUNNER_TEMP/omp" "$RUNNER_TEMP/drift.json"
+          fingerprint="$(node -p 'require(process.argv[1]).fingerprint' "$RUNNER_TEMP/drift.json")"
+          changed="$(node -p 'const d=require(process.argv[1]);d.promptChanges.length+d.addedScenarios.length+d.missingScenarios.length' "$RUNNER_TEMP/drift.json")"
+          [[ "$changed" == 0 ]] && exit 0
+          title="OMP drift ${fingerprint:0:12}"
+          existing="$(gh issue list --repo "$REPO" --state all --search "$title in:title" --json number --jq '.[0].number // empty')"
+          [[ -n "$existing" ]] && exit 0
+          { printf 'Human classification required: adopt, adapt for stock Pi, exclude with a reason, or investigate.\n\n```json\n'; cat "$RUNNER_TEMP/drift.json"; printf '\n```\n'; } > "$RUNNER_TEMP/body.md"
+          gh issue create --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"

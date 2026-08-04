@@ -1,0 +1,47 @@
+name: Pi compatibility reporter
+
+on:
+  workflow_run:
+    workflows: ["Pi compatibility candidates"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    if: ${{ github.event.workflow_run.event != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh run download "$RUN_ID" --dir "$RUNNER_TEMP/results"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          issue="$(gh issue list --repo "$REPO" --state open --search 'Prewalk Pi compatibility ledger in:title' --json number --jq '.[0].number // empty')"
+          if [[ -n "$issue" ]]; then gh issue view "$issue" --repo "$REPO" --json body --jq .body > "$RUNNER_TEMP/body.md"; else printf '# Prewalk Pi compatibility ledger\n' > "$RUNNER_TEMP/body.md"; fi
+          find "$RUNNER_TEMP/results" -name result.json -type f -print0 | while IFS= read -r -d '' result; do
+            node scripts/compatibility/validate-result.mjs "$result" > "$RUNNER_TEMP/validated.json"
+            node scripts/compatibility/report.mjs "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/validated.json" > "$RUNNER_TEMP/next.md"
+            mv "$RUNNER_TEMP/next.md" "$RUNNER_TEMP/body.md"
+            status="$(node -p 'require(process.argv[1]).status' "$RUNNER_TEMP/validated.json")"
+            if [[ "$status" == failed ]]; then
+              version="$(node -p 'require(process.argv[1]).version' "$RUNNER_TEMP/validated.json")"
+              fingerprint="$(node --input-type=module -e 'import{failureFingerprint}from"./scripts/compatibility/contracts.mjs";import{readFileSync}from"node:fs";process.stdout.write(failureFingerprint(JSON.parse(readFileSync(process.argv[1],"utf8"))))' "$RUNNER_TEMP/validated.json")"
+              title="Pi $version compatibility failure ${fingerprint:0:12}"
+              existing="$(gh issue list --repo "$REPO" --state all --search "$title in:title" --json number --jq '.[0].number // empty')"
+              node --input-type=module -e 'import{renderLedgerEntry}from"./scripts/compatibility/contracts.mjs";import{readFileSync}from"node:fs";process.stdout.write(renderLedgerEntry(JSON.parse(readFileSync(process.argv[1],"utf8"))))' "$RUNNER_TEMP/validated.json" > "$RUNNER_TEMP/failure.md"
+              if [[ -z "$existing" ]]; then gh issue create --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/failure.md"; fi
+            fi
+          done
+          if [[ -n "$issue" ]]; then gh issue edit "$issue" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"; else gh issue create --repo "$REPO" --title 'Prewalk Pi compatibility ledger' --body-file "$RUNNER_TEMP/body.md"; fi

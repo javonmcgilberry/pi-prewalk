@@ -30,6 +30,7 @@ export type AuditEventKind =
 	| "handoff-triggered"
 	| "executor-active"
 	| "handoff-completed"
+	| "manual-release"
 	| "cancelled"
 	| "failed";
 
@@ -65,6 +66,7 @@ const EVENTS = new Set<string>([
 	"handoff-triggered",
 	"executor-active",
 	"handoff-completed",
+	"manual-release",
 	"cancelled",
 	"failed",
 ]);
@@ -88,6 +90,8 @@ const REASON_CODES = new Set([
 	"provider-drift",
 	"todo-conflict",
 	"executor-stream-failed",
+	"native-compaction-unsupported",
+	"manual-release",
 ]);
 const AUDIT_KEYS = new Set([
 	"schemaVersion",

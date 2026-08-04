@@ -36,7 +36,9 @@
     "benchmark:report": "node scripts/benchmark-report.mjs",
     "test": "vitest run",
     "test:agent-loop": "vitest run test/agent-loop.test.ts test/codex-conversion.test.ts test/benchmark-agent-loop.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:links": "node scripts/check-links.mjs",
+    "pack:dry-run": "npm pack --dry-run --json"
   },
   "dependencies": {
     "typebox": "^1.1.38"

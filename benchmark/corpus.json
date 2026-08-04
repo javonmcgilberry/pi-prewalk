@@ -4,9 +4,9 @@
     "piVersion": "0.82.1",
     "conversionVersion": "3.0.3",
     "promptDigests": {
-      "plan": "349513aa69d05e492d3657df49489e32486d303ea09464929af31d466b13b9c8",
-      "continue": "d8e402a29942139df021a6f1ec78a4b1e18fa72dbd1c538b851555846847335d",
-      "checklist": "910cddca1c6bb446cb65dd7d5580cfc1989088cb14ff35b42e3a4fed5b44dfc2"
+      "plan": "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78",
+      "continue": "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0",
+      "checklist": "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"
     },
     "activeTools": ["exec_command", "write_stdin", "apply_patch", "todo"],
     "arms": {

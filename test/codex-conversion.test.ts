@@ -19,6 +19,7 @@ import { DEFAULT_EXECUTOR, PLANNER_MODEL_ID } from "../src/core.js";
 let temporaryRoot: string | undefined;
 
 afterEach(async () => {
+	vi.unstubAllGlobals();
 	delete process.env.PI_CODING_AGENT_DIR;
 	if (temporaryRoot) {
 		await rm(temporaryRoot, { recursive: true, force: true });
@@ -27,7 +28,10 @@ afterEach(async () => {
 });
 
 describe("installed Codex conversion composition", () => {
-	it("loads conversion 3.0.3 first and wraps its public stream without a request", async () => {
+	it("loads conversion 3.0.3 first and sends a deterministic request through its public stream", async () => {
+		const accessToken = `e30.${Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+		).toString("base64url")}.signature`;
 		temporaryRoot = await mkdtemp(path.join(tmpdir(), "prewalk-conversion-"));
 		const agentDir = path.join(temporaryRoot, "agent");
 		const workDir = path.join(temporaryRoot, "work");
@@ -46,7 +50,7 @@ describe("installed Codex conversion composition", () => {
 			`${JSON.stringify({
 				"openai-codex": {
 					type: "oauth",
-					access: "integration-token",
+					access: accessToken,
 					refresh: "integration-refresh",
 					expires: Date.now() + 60_000,
 				},
@@ -63,7 +67,7 @@ describe("installed Codex conversion composition", () => {
 				conversionStream = registered?.streamSimple;
 				vi.spyOn(ctx.modelRegistry, "getApiKeyAndHeaders").mockResolvedValue({
 					ok: true,
-					apiKey: "integration-token",
+					apiKey: accessToken,
 				});
 			});
 		};
@@ -113,6 +117,67 @@ describe("installed Codex conversion composition", () => {
 		expect(conversionStream).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).not.toBe(conversionStream);
+		const terminal = {
+			type: "response.completed",
+			response: {
+				id: "response-test",
+				status: "completed",
+				model: planner.id,
+				output: [
+					{
+						id: "message-test",
+						type: "message",
+						status: "completed",
+						role: "assistant",
+						content: [{ type: "output_text", text: "Converted response.", annotations: [] }],
+					},
+				],
+				usage: {
+					input_tokens: 1,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens: 1,
+					output_tokens_details: { reasoning_tokens: 0 },
+					total_tokens: 2,
+				},
+			},
+		};
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					`${[
+						{
+							type: "response.output_item.done",
+							output_index: 0,
+							item: terminal.response.output[0],
+						},
+						terminal,
+					]
+						.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+						.join("")}`,
+					{
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					},
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const converted = await wrapped
+			?.streamSimple?.(
+				planner,
+				{
+					systemPrompt: "system",
+					messages: [{ role: "user", content: "Test conversion", timestamp: Date.now() }],
+					tools: [],
+				},
+				{ apiKey: accessToken, transport: "sse" },
+			)
+			.result();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(converted?.content).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ type: "text", text: "Converted response." }),
+			]),
+		);
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "message")).toEqual([]);
 	});

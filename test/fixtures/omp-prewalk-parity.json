@@ -1,5 +1,19 @@
 {
-  "revision": "8db0228f4d38ff5d41b30038b6d227b01ea0fc8a",
+  "revision": "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d",
+  "promptAssets": {
+    "prewalk-plan.md": {
+      "source": "packages/coding-agent/src/prompts/system/prewalk-plan.md",
+      "sha256": "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"
+    },
+    "prewalk-checklist.md": {
+      "source": "packages/coding-agent/src/prompts/system/prewalk-checklist.md",
+      "sha256": "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"
+    },
+    "prewalk-continue.md": {
+      "source": "packages/coding-agent/src/prompts/system/prewalk-continue.md",
+      "sha256": "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0"
+    }
+  },
   "sourceSuites": [
     "packages/coding-agent/test/agent-session-prewalk.test.ts",
     "packages/coding-agent/test/prewalk-startup-degradation.test.ts"
@@ -31,6 +45,16 @@
       "local": "test/core.test.ts"
     },
     {
+      "upstream": "does not switch on a read-only xd:// device dispatched through write (issue #7312)",
+      "classification": "excluded",
+      "rationale": "Stock Pi does not expose Oh My Pi's xd:// virtual-device mutation-tier contract, so Prewalk cannot distinguish read-only xd writes through public APIs."
+    },
+    {
+      "upstream": "switches on a write-tier xd:// device dispatched through write (issue #7312)",
+      "classification": "excluded",
+      "rationale": "Stock Pi does not expose Oh My Pi's xd:// virtual-device mutation-tier contract; support would require a public mutation-evidence adapter rather than guessed target semantics."
+    },
+    {
       "upstream": "re-arms continuation after tool progress between prose turns",
       "classification": "direct",
       "local": "test/core.test.ts"
@@ -47,13 +71,13 @@
     },
     {
       "upstream": "effort-only prewalk on the same model downgrades the thinking level instead of silently skipping",
-      "classification": "excluded",
-      "rationale": "Phase one always changes from the fixed Sol planner to the fixed Luna executor."
+      "classification": "pi-adapted",
+      "local": "test/extension.test.ts"
     },
     {
       "upstream": "emits a notice and skips the checklist when the prewalk target is a genuine no-op",
-      "classification": "excluded",
-      "rationale": "The fixed planner and executor IDs cannot form a same-model no-op."
+      "classification": "pi-adapted",
+      "local": "test/extension.test.ts"
     },
     {
       "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
