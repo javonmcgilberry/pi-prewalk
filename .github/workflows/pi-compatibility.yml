@@ -1,0 +1,100 @@
+name: Pi compatibility candidates
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable Pi version; prereleases require an explicit manual run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: matrix
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$MANUAL_VERSION" ]]; then
+            node -e 'const v=process.env.MANUAL_VERSION;if(!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v))process.exit(2);process.stdout.write(JSON.stringify({include:[{version:v}]}))' > matrix.json
+          else
+            npm view @earendil-works/pi-coding-agent --json > npm-metadata.json
+            issue="$(gh issue list --repo "$REPO" --state open --search 'Prewalk Pi compatibility ledger in:title' --json number --jq '.[0].number // empty')"
+            if [[ -n "$issue" ]]; then gh issue view "$issue" --repo "$REPO" --json body --jq .body > ledger.md; else : > ledger.md; fi
+            node -e 'const fs=require("fs");const body=fs.readFileSync("ledger.md","utf8");const versions=[...body.matchAll(/<!-- prewalk-compat:start:(\d+\.\d+\.\d+) -->/g)].map(m=>m[1]);fs.writeFileSync("ledger.json",JSON.stringify({versions}))'
+            node scripts/compatibility/discover.mjs npm-metadata.json ledger.json > discovered.json
+            node -e 'const d=require("./discovered.json");process.stdout.write(JSON.stringify({include:d.candidates.map(({version})=>({version}))}))' > matrix.json
+          fi
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+
+  candidate:
+    needs: discover
+    if: ${{ fromJSON(needs.discover.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Acquire candidate without lifecycle scripts
+        env:
+          CANDIDATE: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/prewalk-candidate"
+          cp -R . "$RUNNER_TEMP/prewalk-candidate/repo"
+          cd "$RUNNER_TEMP/prewalk-candidate/repo"
+          npm ci --ignore-scripts
+          npm install --no-save --ignore-scripts "@earendil-works/pi-agent-core@$CANDIDATE" "@earendil-works/pi-ai@$CANDIDATE" "@earendil-works/pi-coding-agent@$CANDIDATE" "@earendil-works/pi-tui@$CANDIDATE"
+          npm view "@earendil-works/pi-coding-agent@$CANDIDATE" dist.integrity --json > "$RUNNER_TEMP/integrity.json"
+      - name: Run isolated compatibility checks
+        env:
+          CANDIDATE: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/prewalk-candidate/repo"
+          export npm_config_offline=true
+          ulimit -u 256
+          set +e
+          timeout 15m sh -c 'npm run typecheck && npm test && npm run test:agent-loop && npm run smoke:rpc' > "$RUNNER_TEMP/candidate.log" 2>&1
+          status=$?
+          set -e
+          tail -c 2000 "$RUNNER_TEMP/candidate.log" > "$RUNNER_TEMP/summary.txt"
+          STATUS="$status" RUN_ID="$GITHUB_RUN_ID" VERSION="$CANDIDATE" node <<'NODE' > "$RUNNER_TEMP/result.json"
+          const fs=require("fs");
+          const status=Number(process.env.STATUS)===0?"supported":"failed";
+          const integrity=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/integrity.json","utf8"));
+          const summary=fs.readFileSync(process.env.RUNNER_TEMP+"/summary.txt","utf8").replace(/[\u0000-\u001f\u007f]/g," ").slice(-2000);
+          process.stdout.write(JSON.stringify({version:process.env.VERSION,status,integrity,testedAt:new Date().toISOString(),runId:process.env.RUN_ID,artifactId:`candidate-${process.env.VERSION}-${process.env.RUN_ID}`,summary,dependencies:{"@earendil-works/pi-coding-agent":process.env.VERSION,"@howaboua/pi-codex-conversion":"3.0.3"}}));
+          NODE
+          node scripts/compatibility/validate-result.mjs "$RUNNER_TEMP/result.json" > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-${{ matrix.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/result.json
+          retention-days: 30
+          if-no-files-found: error

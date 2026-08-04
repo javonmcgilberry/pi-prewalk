@@ -18,12 +18,23 @@ export const DEFAULT_ANALYTICS_CONFIG: AnalyticsConfig = {
 	schemaVersion: ANALYTICS_SCHEMA_VERSION,
 };
 
-export type RunOutcome = "active" | "succeeded" | "failed" | "cancelled" | "unfinished";
+export type RunOutcome =
+	| "active"
+	| "succeeded"
+	| "failed"
+	| "cancelled"
+	| "released"
+	| "session-ended"
+	| "interrupted"
+	| "unfinished";
 export const RUN_OUTCOMES: readonly RunOutcome[] = [
 	"active",
 	"succeeded",
 	"failed",
 	"cancelled",
+	"released",
+	"session-ended",
+	"interrupted",
 	"unfinished",
 ];
 
@@ -1194,6 +1205,9 @@ function requireRunOutcome(value: unknown, name: string): RunOutcome {
 	if (value === "succeeded") return "succeeded";
 	if (value === "failed") return "failed";
 	if (value === "cancelled") return "cancelled";
+	if (value === "released") return "released";
+	if (value === "session-ended") return "session-ended";
+	if (value === "interrupted") return "interrupted";
 	if (value === "unfinished") return "unfinished";
 	throw new Error(`${name} is invalid.`);
 }

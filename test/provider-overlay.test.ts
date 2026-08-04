@@ -216,6 +216,23 @@ describe("provider overlay", () => {
 		expect(fixture.delegatedModels).toEqual([fixture.planner]);
 	});
 
+	it("keeps an overlapping auxiliary stream on the planner while the primary stream uses the executor", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		const primary = fixture.config()?.streamSimple?.(fixture.planner, fixture.context).result();
+
+		fixture.setPrimary(false);
+		const auxiliary = fixture.config()?.streamSimple?.(fixture.planner, fixture.context).result();
+		await Promise.all([primary, auxiliary]);
+
+		expect(fixture.delegatedModels.map((model) => model.id).sort()).toEqual(
+			[fixture.executor.id, fixture.planner.id].sort(),
+		);
+		expect(fixture.state.onExecutorStreamStarted).toHaveBeenCalledOnce();
+	});
+
 	it("restores only while it still owns the provider registration", () => {
 		const fixture = setup();
 		fixture.overlay.install();

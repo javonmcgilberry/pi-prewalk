@@ -66,7 +66,16 @@ const receipt: RunReceipt = {
 
 describe("analytics domain contract", () => {
 	it("exports stable state and evidence vocabularies", () => {
-		expect(RUN_OUTCOMES).toEqual(["active", "succeeded", "failed", "cancelled", "unfinished"]);
+		expect(RUN_OUTCOMES).toEqual([
+			"active",
+			"succeeded",
+			"failed",
+			"cancelled",
+			"released",
+			"session-ended",
+			"interrupted",
+			"unfinished",
+		]);
 		expect(HANDOFF_STATES).toEqual(["not-started", "pending", "completed", "failed"]);
 		expect(USAGE_ROLES).toEqual([
 			"planner-primary",

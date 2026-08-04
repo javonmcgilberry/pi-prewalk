@@ -48,6 +48,34 @@ describe("provider-neutral configuration", () => {
 		).toThrow("recentReceiptCount must be greater than zero");
 	});
 
+	it("parses explicit disabled child targets and rejects ambiguous child configuration", () => {
+		expect(
+			parseConfig({
+				...config,
+				experimentalChild: {
+					enabled: false,
+					agents: {
+						worker: { mode: "implementation", executor: DEFAULT_EXECUTOR },
+					},
+				},
+			}),
+		).toMatchObject({
+			experimentalChild: {
+				enabled: false,
+				agents: { worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } },
+			},
+		});
+		expect(() =>
+			parseConfig({
+				...config,
+				experimentalChild: {
+					enabled: true,
+					agents: { worker: { mode: "automatic", executor: DEFAULT_EXECUTOR } },
+				},
+			}),
+		).toThrow("worker.mode is invalid");
+	});
+
 	it("rejects unknown configuration", () => {
 		expect(() => parseConfig({ executor: DEFAULT_EXECUTOR, target: "other/model" })).toThrow(
 			"Unknown Prewalk config field: target.",

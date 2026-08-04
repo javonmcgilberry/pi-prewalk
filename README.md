@@ -5,9 +5,9 @@ starting over. The planner reads the repo, writes the todo list, and makes the
 first successful code change. When that turn ends, the configured executor
 takes over the same conversation.
 
-Pi still shows and saves the planner as the selected model. Prewalk changes the
-provider route for the current run only, then restores the normal route when the
-run succeeds, fails, or is cancelled.
+Pi still shows and saves the planner as the selected model. After handoff,
+Prewalk keeps routing primary turns to the executor until explicit release or
+terminal session cleanup. The selected planner remains underneath the overlay.
 
 This project reproduces Oh My Pi's observable Prewalk flow with stock Pi's
 public extension APIs. It does not patch Pi, import private Pi modules, call
@@ -15,8 +15,9 @@ public extension APIs. It does not patch Pi, import private Pi modules, call
 
 ## Status
 
-Prewalk is experimental. Its compatibility suite is frozen to stock Pi 0.82.1,
-and the extension is also used with stock Pi 0.83.0. The repository does not
+Prewalk is experimental. Its efficacy benchmark remains frozen to stock Pi
+0.82.1 and Pi Codex Conversion 3.0.3. Rolling compatibility checks evaluate
+new stable Pi releases separately. The repository does not
 contain a completed paid benchmark, so it makes no claim about measured savings
 or quality for this implementation.
 
@@ -79,7 +80,8 @@ currently selected planner. It never stores or changes the planner.
 | `/prewalk auto` | Enable conservative automatic admission for this session |
 | `/prewalk status` | Show the current planner, executor, gate, route, and failure |
 | `/prewalk configure` | Choose the executor and analytics settings |
-| `/prewalk cancel` | Stop the current run and disable automatic mode |
+| `/prewalk cancel` | Cancel a pre-handoff run and disable automatic mode |
+| `/prewalk release` | Restore the selected planner after handoff without re-arming |
 | `/prewalk stats` | Show local usage and savings receipts |
 | `/todos` | Show the current implementation checklist |
 | `/prewalk help` | Show every command and reset rule |
@@ -90,6 +92,11 @@ Manual mode is the simplest place to start:
 2. Run `/prewalk run`.
 3. Let the planner inspect the repo, create the todo list, and begin the change.
 4. Check `/prewalk status` if you want to see which model owns the next turn.
+
+After handoff, later turns stay on the executor, including after `/reload` in
+the same live Pi session. `/prewalk release` restores the planner in the same
+transcript. Closing and reopening Pi starts on the planner; an old unfinished
+receipt is recorded as interrupted rather than silently restoring the route.
 
 ## What triggers the handoff
 
@@ -125,15 +132,44 @@ Prewalk works without pi-subagents, Context Mode, or Pi Codex Conversion.
 
 - Context Mode and equivalent patch tools can participate when they provide
   positive mutation evidence.
-- pi-subagents launches inherit a run-scoped execution ceiling. Broader child
-  model overrides are blocked while Prewalk is active. Delayed scheduled launches
-  are rejected because they cannot safely inherit a transient run snapshot.
+- pi-subagents remains independent. Prewalk does not rewrite child models,
+  thinking levels, fallback models, scheduled launches, or nested descendants.
 - Pi Codex Conversion can wrap the same public provider stream. Keep
   `compaction.responsesCompaction` set to `false`. Prewalk refuses to arm when
   native Responses compaction is explicitly enabled because hook order could
   otherwise compact planning-only context before Prewalk filters it.
 
 Cross-provider routing and guessed mutation results are deliberately unsupported.
+
+### Experimental child-local Prewalk
+
+Child-local Prewalk is disabled by default and is not enabled by the portable
+setup. A child must load this extension explicitly through its upstream
+`extensions` or `subagentOnlyExtensions` configuration and must have a matching
+entry under `experimentalChild.agents`. Read-only, plan-mode, unconfigured,
+equal-target, and unavailable-target children stay on their independently
+resolved profile. Descendants do not inherit a parent target.
+
+```json
+{
+  "experimentalChild": {
+    "enabled": false,
+    "agents": {
+      "worker": {
+        "mode": "implementation",
+        "executor": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-luna",
+          "reasoning": "low"
+        }
+      }
+    }
+  }
+}
+```
+
+This path has no efficacy or savings claim. `/prewalk status` reports why a
+loaded child is disabled or unavailable.
 
 ## Local analytics
 
@@ -146,6 +182,9 @@ paths.
 
 Savings are a labeled planner-only counterfactual, not a billing statement.
 Missing pricing evidence stays `unavailable`; Prewalk does not invent a rate.
+Direct and nested pi-subagents costs are accepted only from terminal public
+result details and counted once. Async or detached work without terminal public
+evidence remains pending or incomplete.
 See [the analytics guide](docs/analytics.md) for receipt math, task-tree coverage,
 exports, resets, and benchmark imports.
 
@@ -153,8 +192,8 @@ exports, resets, and benchmark imports.
 
 - Selecting another Pi model cancels the current route without changing the new
   selection.
-- A failed or cancelled run releases the provider overlay before another run can
-  start.
+- A failed pre-handoff run or explicit cancellation releases the provider
+  overlay before another run can start. After handoff, use `/prewalk release`.
 - A planner/provider mismatch, missing authorization, invalid config, todo
   conflict, or unsupported native compaction fails before the executor is used.
 - Hidden planning prompts stay out of normal model context and compaction input.
@@ -172,13 +211,22 @@ npm run typecheck
 npm test
 npm run test:agent-loop
 npm run smoke:rpc
-npm pack --dry-run
+npm run check:links
+npm run pack:dry-run
 ```
 
 The Agent-loop tests use stock Pi's exported session factory. The dedicated
-Conversion test checks provider-wrapper composition without issuing a provider
-request. The RPC smoke test loads stock Pi only and confirms that status,
+Conversion test checks provider-wrapper composition. The RPC smoke test loads
+stock Pi only and confirms that status,
 cancellation, reload, settings, and the selected planner remain stable.
+
+Normal CI is secret-free and never calls paid providers. Scheduled compatibility
+jobs discover the full npm stable-version list, run candidates in a bounded
+temporary copy with checkout credentials disabled, and publish schema-validated
+artifacts. A separate trusted reporter owns the rolling compatibility ledger and
+deduplicated failure issues. The OMP drift workflow is report-only and never
+updates prompts, fixtures, runtime code, or package pins. Provider canaries and
+efficacy benchmarks remain manual, approval-gated, and cost-confirmed.
 
 The authenticated canary does make real provider requests and requires an
 explicit cost confirmation. The directional benchmark is also opt-in and is
@@ -195,5 +243,8 @@ not install instructions or promises about current behavior.
 
 The planning, continuation, and executor-checklist prompts are copied
 byte-for-byte from Oh My Pi revision
-`8db0228f4d38ff5d41b30038b6d227b01ea0fc8a` under the MIT license. See
+`f559e7e9dc1e8818d5d8e15ace28da3d42f2457d` from
+`packages/coding-agent/src/prompts/system/prewalk-{plan,continue,checklist}.md`
+under the MIT license. The coordinator remains a stock-Pi public-API adaptation.
+See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

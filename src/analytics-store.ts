@@ -468,6 +468,9 @@ export class AnalyticsStore {
 			succeeded: 0,
 			failed: 0,
 			cancelled: 0,
+			released: 0,
+			"session-ended": 0,
+			interrupted: 0,
 			unfinished: 0,
 		};
 		for (const receipt of receipts) {

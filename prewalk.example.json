@@ -9,5 +9,9 @@
     "catalogFallbackEnabled": false,
     "recentReceiptCount": 10,
     "schemaVersion": 1
+  },
+  "experimentalChild": {
+    "enabled": false,
+    "agents": {}
   }
 }

@@ -98,6 +98,10 @@ beforeEach(async () => {
 			executor: DEFAULT_EXECUTOR,
 		})}\n`,
 	);
+	await writeFile(
+		path.join(agentDir, "settings.json"),
+		`${JSON.stringify({ compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 0 } })}\n`,
+	);
 	await writeFile(path.join(workDir, "target.txt"), "before\n");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 });
@@ -108,11 +112,12 @@ afterEach(async () => {
 });
 
 describe("stock Pi Agent-loop integration", () => {
-	it("promotes a task-scoped receipt without post-completion attribution", async () => {
+	it("keeps one stock-Pi route and receipt active through manual compaction and shutdown", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
 		let lunaContext: Context | undefined;
+		const compactionReasons: string[] = [];
 		const conversion: ExtensionFactory = (pi) => {
 			pi.registerProvider("openai-codex", {
 				api: "openai-codex-responses",
@@ -163,6 +168,19 @@ describe("stock Pi Agent-loop integration", () => {
 				},
 			});
 		};
+		const compactionFixture: ExtensionFactory = (pi) => {
+			pi.on("session_before_compact", (event) => ({
+				compaction: {
+					summary: "Deterministic stock-Pi compaction summary.",
+					firstKeptEntryId: event.preparation.firstKeptEntryId,
+					tokensBefore: event.preparation.tokensBefore,
+					usage: usage(0.2, 2, 1),
+				},
+			}));
+			pi.on("session_compact", (event) => {
+				compactionReasons.push(event.reason);
+			});
+		};
 		const settings = SettingsManager.create(workDir, agentDir);
 		const loader = new DefaultResourceLoader({
 			cwd: workDir,
@@ -175,13 +193,14 @@ describe("stock Pi Agent-loop integration", () => {
 			extensionFactories: [
 				{ name: "conversion", factory: conversion },
 				{ name: "prewalk", factory: prewalkExtension },
+				{ name: "compaction-fixture", factory: compactionFixture },
 			],
 		});
 		await loader.reload();
 		expect(
 			loader.getExtensions().extensions,
 			JSON.stringify(loader.getExtensions(), null, 2),
-		).toHaveLength(2);
+		).toHaveLength(3);
 		const runtime = await ModelRuntime.create({
 			authPath: path.join(agentDir, "auth.json"),
 			modelsPath: null,
@@ -224,22 +243,11 @@ describe("stock Pi Agent-loop integration", () => {
 			details: undefined,
 			usage: usage(0.3, 3, 2),
 		});
-		await session.extensionRunner.emit({
-			type: "session_compact",
-			compactionEntry: {
-				type: "compaction",
-				id: "compact-1",
-				parentId: null,
-				timestamp: new Date().toISOString(),
-				summary: "content omitted",
-				firstKeptEntryId: "entry-1",
-				tokensBefore: 100,
-				usage: usage(0.2, 2, 1),
-			},
-			fromExtension: false,
-			reason: "manual",
-			willRetry: false,
-		});
+		await session.compact();
+		expect(compactionReasons).toEqual(["manual"]);
+		await session.prompt("Continue after compaction.");
+		await session.waitForIdle();
+		expect(calls.at(-1)).toBe(EXECUTOR_MODEL_ID);
 
 		const rootSessionId = session.sessionId;
 		await session.extensionRunner.emit({
@@ -312,10 +320,10 @@ describe("stock Pi Agent-loop integration", () => {
 		);
 		expect(taskTree.fallbackEvidence).toHaveLength(2);
 		expect(taskTree.fallbackEvidence[0]?.delegationRunId).toBe("delegation-direct");
-		expect(taskTree.rootActualCost).toBe(6);
+		expect(taskTree.rootActualCost).toBe(8.5);
 		expect(taskTree.directChildActualCost).toBe(0.1);
 		expect(taskTree.nestedChildActualCost).toBe(0.03);
-		expect(taskTree.knownTaskTreeActualCost).toBe(6.13);
+		expect(taskTree.knownTaskTreeActualCost).toBeCloseTo(8.63);
 		expect(taskTree.reportedChildCount).toBe(2);
 		expect(taskTree.expectedChildCount).toBe(3);
 		expect(taskTree.costCoverage).toBe("pending");
@@ -330,8 +338,8 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(rootReceipt).toEqual(
 			expect.objectContaining({
 				sessionId: rootSessionId,
-				outcome: "succeeded",
-				actualCost: 6,
+				outcome: "session-ended",
+				actualCost: 8.5,
 			}),
 		);
 		expect(rootReceipt?.usage).toEqual(
@@ -340,7 +348,7 @@ describe("stock Pi Agent-loop integration", () => {
 				expect.objectContaining({ role: "executor-primary" }),
 			]),
 		);
-		expect(rootReceipt?.usage).not.toEqual(
+		expect(rootReceipt?.usage).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ role: "auxiliary" }),
 				expect.objectContaining({ role: "compaction" }),
@@ -441,7 +449,7 @@ describe("stock Pi Agent-loop integration", () => {
 		session.dispose();
 	});
 
-	it("rewrites a real public subagent tool execution before its child provider boundary", async () => {
+	it("preserves a real public subagent launch before its child provider boundary", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const providerCalls: string[] = [];
@@ -549,8 +557,6 @@ describe("stock Pi Agent-loop integration", () => {
 			{
 				agent: "reviewer",
 				task: "Review without an explicit profile",
-				model: "openai-codex/gpt-5.6-luna",
-				thinking: "low",
 			},
 		]);
 		expect(providerCalls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
