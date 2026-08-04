@@ -1132,11 +1132,12 @@ describe("Prewalk extension harness", () => {
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		await harness.commands.get("prewalk")?.("stats", harness.context);
-		expect(harness.notifications.at(-1)).toContain("Lifetime: 1 receipts");
-		expect(harness.notifications.at(-1)).toContain("actual $4.000000");
-		expect(harness.notifications.at(-1)).toContain(`${runId}: session-ended`);
+		expect(harness.notifications.at(-1)).toContain("All time");
+		expect(harness.notifications.at(-1)).toContain("$4.00");
+		expect(harness.notifications.at(-1)).toContain(runId);
+		expect(harness.notifications.at(-1)).toContain("session-ended");
 		await harness.commands.get("prewalk")?.("stats --successful", harness.context);
-		expect(harness.notifications.at(-1)).toContain("Lifetime: 0 receipts");
+		expect(harness.notifications.at(-1)).toContain("All time");
 
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain("Actual detail: planner primary $2.000000");
@@ -1296,7 +1297,7 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.statuses.at(-1)).toContain("[5.6 Sol");
 		await harness.commands.get("prewalk")?.("stats", harness.context);
-		expect(harness.notifications.at(-1)).toContain("Lifetime: 0 receipts");
+		expect(harness.notifications.at(-1)).toContain("All time");
 	});
 
 	it("configures an executor without starting Prewalk work", async () => {

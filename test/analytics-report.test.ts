@@ -131,7 +131,7 @@ describe("analytics receipt report", () => {
 		expect(after).toContain("evidence: verified; fingerprint");
 		expect(after).toContain("completed 2026-07-30T13:00:00.000Z");
 		expect(after).toContain("Sol 20; Luna 20; Prewalk 20");
-		expect(after.split("\n")[1]).toBe(before.split("\n")[1]);
+		expect(after.split("\n")[3]).toBe(before.split("\n")[3]);
 		expect(renderVerifiedBenchmarkSummary(verifiedBenchmark)).toContain("median cost");
 		expect(renderVerifiedBenchmarkSummary(verifiedBenchmark)).not.toContain("\\\\n");
 	});
@@ -174,9 +174,33 @@ describe("analytics receipt report", () => {
 
 	it("renders aggregate evidence classes and unfinished state in text", () => {
 		const lifetime = aggregate({
-			receiptCount: 1,
-			actualCost: 0.6,
+			receiptCount: 3,
+			actualCost: 1.3,
 			estimatedSavings: 0.3,
+			outcomes: {
+				...aggregate().outcomes,
+				succeeded: 2,
+				cancelled: 1,
+				unfinished: 1,
+			},
+			receipts: [
+				receipt,
+				{
+					...receipt,
+					runId: "run-unpriced",
+					actualCost: 0.2,
+					estimate: { kind: "unavailable", reason: "pricing-missing" },
+					pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+				},
+				{
+					...receipt,
+					runId: "run-cancelled",
+					outcome: "cancelled",
+					actualCost: 0.4,
+					estimate: { kind: "unavailable", reason: "run-not-successful" },
+					pricingEvidence: { source: "unavailable", reason: "run-not-successful" },
+				},
+			],
 			recentReceipts: [receipt],
 			unfinished: [
 				{
@@ -195,10 +219,31 @@ describe("analytics receipt report", () => {
 			week: aggregate(),
 			session: aggregate(),
 		});
-		expect(rendered).toContain("Lifetime: 1 receipts; actual $0.600000");
-		expect(rendered).toContain("estimated savings $0.300000");
-		expect(rendered).toContain("run-report: succeeded");
-		expect(rendered).toContain("run-active: unfinished; actual $0.100000");
+		expect(rendered).toContain("Observed spend (all recorded runs)");
+		expect(rendered).toContain("Cost comparison (successful runs with complete pricing)");
+		expect(rendered).toContain("1 / 2");
+		expect(rendered).toContain("$1.30");
+		expect(rendered).toContain("$0.80");
+		expect(rendered).toContain("Save $0.30 (37.5%)");
+		expect(rendered).toContain("run-report");
+		expect(rendered).toContain("Unfinished runs (1; observed spend only)");
+	});
+
+	it("distinguishes catalog estimates and unavailable comparisons in overview tables", () => {
+		const catalogReceipt: RunReceipt = {
+			...receipt,
+			runId: "run-catalog",
+			estimate: { kind: "catalog-estimated", plannerOnlyCost: 0.8, savings: 0.3 },
+			pricingEvidence: { source: "catalog", catalogDate: "2026-07-30" },
+		};
+		const rendered = renderAnalyticsOverview({
+			lifetime: aggregate({ recentReceipts: [catalogReceipt] }),
+			month: aggregate(),
+			week: aggregate(),
+			session: aggregate(),
+		});
+		expect(rendered).toContain("Catalog save $0.30");
+		expect(rendered).toContain("No comparable runs");
 	});
 
 	it("renders every task-tree subtotal and coverage dimension as a visible reconciliation", () => {

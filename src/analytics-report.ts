@@ -19,43 +19,130 @@ export interface AnalyticsOverview {
 
 export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 	return [
-		"Prewalk personal savings analytics",
-		renderAggregateLine("Lifetime", overview.lifetime),
-		renderAggregateLine("Current month", overview.month),
-		renderAggregateLine("Current week", overview.week),
-		renderAggregateLine("Current session", overview.session),
+		"Prewalk analytics",
+		"Observed spend includes every recorded outcome. Cost comparisons use successful runs with complete pricing.",
+		"",
+		"Observed spend (all recorded runs)",
+		renderTable(
+			["PERIOD", "TERMINAL RUNS", "OBSERVED SPEND", "UNFINISHED"],
+			[
+				renderObservedSpendRow("All time", overview.lifetime),
+				renderObservedSpendRow("This month", overview.month),
+				renderObservedSpendRow("This week", overview.week),
+				renderObservedSpendRow("This session", overview.session),
+			],
+		),
+		"",
+		"Cost comparison (successful runs with complete pricing)",
+		renderTable(
+			["PERIOD", "COVERAGE", "PLANNER-ONLY", "PREWALK PRIMARY", "NET RESULT"],
+			[
+				renderComparisonRow("All time", overview.lifetime),
+				renderComparisonRow("This month", overview.month),
+				renderComparisonRow("This week", overview.week),
+				renderComparisonRow("This session", overview.session),
+			],
+		),
 		...(overview.verifiedBenchmark === undefined
 			? []
-			: [renderVerifiedBenchmarkSummary(overview.verifiedBenchmark)]),
-		"Recent receipts:",
+			: ["", renderVerifiedBenchmarkSummary(overview.verifiedBenchmark)]),
+		"",
+		`Recent activity (${overview.lifetime.recentReceipts.length} terminal receipts)`,
 		...(overview.lifetime.recentReceipts.length === 0
-			? ["  none"]
-			: overview.lifetime.recentReceipts.map(
-					(receipt) =>
-						`  ${receipt.runId}: ${receipt.outcome}; actual ${formatUsd(receipt.actualCost)}; ${compactEstimate(receipt.estimate)}`,
-				)),
+			? ["No terminal receipts yet."]
+			: [
+					renderTable(
+						["RUN ID", "OUTCOME", "OBSERVED SPEND", "COMPARISON"],
+						overview.lifetime.recentReceipts.map((receipt) => [
+							receipt.runId,
+							receipt.outcome,
+							formatCompactUsd(receipt.actualCost),
+							compactEstimate(receipt.estimate),
+						]),
+					),
+				]),
 		...(overview.lifetime.unfinished.length === 0
 			? []
 			: [
-					"Unfinished runs (actual observed spend only):",
-					...overview.lifetime.unfinished.map(
-						(run) => `  ${run.runId}: unfinished; actual ${formatUsd(run.actualCost)}`,
+					"",
+					`Unfinished runs (${overview.lifetime.unfinished.length}; observed spend only)`,
+					renderTable(
+						["RUN ID", "OBSERVED SPEND"],
+						overview.lifetime.unfinished.map((run) => [
+							run.runId,
+							formatCompactUsd(run.actualCost),
+						]),
 					),
 				]),
 	].join("\n");
 }
 
-function renderAggregateLine(label: string, aggregate: AnalyticsAggregate): string {
-	return `${label}: ${aggregate.receiptCount} receipts; actual ${formatUsd(aggregate.actualCost)}; estimated savings ${formatUsd(aggregate.estimatedSavings)}; estimated extra cost ${formatUsd(aggregate.estimatedExtraCost)}; unavailable ${aggregate.unavailableSavingsCount}; unfinished ${aggregate.unfinished.length}.`;
+function renderObservedSpendRow(label: string, aggregate: AnalyticsAggregate): string[] {
+	return [
+		label,
+		String(aggregate.receiptCount),
+		formatCompactUsd(aggregate.actualCost),
+		String(aggregate.unfinished.length),
+	];
+}
+
+function renderComparisonRow(label: string, aggregate: AnalyticsAggregate): string[] {
+	const successful = aggregate.receipts.filter((receipt) => receipt.outcome === "succeeded");
+	const comparable = successful.filter((receipt) => receipt.estimate.kind !== "unavailable");
+	if (comparable.length === 0) {
+		return [label, `0 / ${successful.length}`, "—", "—", "No comparable runs"];
+	}
+	const plannerOnlyCost = comparable.reduce(
+		(total, receipt) =>
+			total + (receipt.estimate.kind === "unavailable" ? 0 : receipt.estimate.plannerOnlyCost),
+		0,
+	);
+	const netSavings = comparable.reduce(
+		(total, receipt) =>
+			total + (receipt.estimate.kind === "unavailable" ? 0 : receipt.estimate.savings),
+		0,
+	);
+	const prewalkPrimaryCost = plannerOnlyCost - netSavings;
+	return [
+		label,
+		`${comparable.length} / ${successful.length}`,
+		formatCompactUsd(plannerOnlyCost),
+		formatCompactUsd(prewalkPrimaryCost),
+		formatNetResult(netSavings, plannerOnlyCost),
+	];
+}
+
+function renderTable(headers: string[], rows: string[][]): string {
+	const widths = headers.map((header, index) =>
+		Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)),
+	);
+	const renderRow = (row: string[]) =>
+		row
+			.map((cell, index) => cell.padEnd(widths[index] ?? 0))
+			.join("  ")
+			.trimEnd();
+	return [
+		renderRow(headers),
+		widths.map((width) => "─".repeat(width)).join("  "),
+		...rows.map(renderRow),
+	].join("\n");
 }
 
 function compactEstimate(estimate: SavingsEstimate): string {
-	if (estimate.kind === "unavailable")
-		return `savings unavailable (${unavailabilityLabel(estimate.reason)})`;
+	if (estimate.kind === "unavailable") return "Not comparable";
+	const source = estimate.kind === "catalog-estimated" ? "Catalog" : "Session";
 	if (estimate.savings < 0) {
-		return `${estimate.kind === "catalog-estimated" ? "catalog-estimated" : "estimated"} extra cost ${formatUsd(-estimate.savings)}`;
+		return `${source} extra ${formatCompactUsd(-estimate.savings)}`;
 	}
-	return `${estimate.kind === "catalog-estimated" ? "catalog-estimated" : "estimated"} savings ${formatUsd(estimate.savings)}`;
+	return `${source} save ${formatCompactUsd(estimate.savings)}`;
+}
+
+function formatNetResult(netSavings: number, plannerOnlyCost: number): string {
+	if (plannerOnlyCost === 0) return "—";
+	const percentage = `${Math.abs((netSavings / plannerOnlyCost) * 100).toFixed(1)}%`;
+	return netSavings < 0
+		? `Extra ${formatCompactUsd(-netSavings)} (${percentage})`
+		: `Save ${formatCompactUsd(netSavings)} (${percentage})`;
 }
 
 export function renderVerifiedBenchmarkSummary(summary: VerifiedBenchmarkSummary): string {
@@ -141,4 +228,8 @@ function formatModel(provider: string, model: string): string {
 
 function formatUsd(value: number): string {
 	return `$${value.toFixed(6)}`;
+}
+
+function formatCompactUsd(value: number): string {
+	return `$${value.toFixed(2)}`;
 }
