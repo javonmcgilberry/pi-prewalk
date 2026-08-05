@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import benchmarkAttestation from "../extensions/benchmark-attestation.js";
+import benchmarkAttestation from "../benchmark/extensions/benchmark-attestation.js";
 import {
 	createBenchmarkToolDefinitions,
 	createDockerWorkerRequest,
 	loadBenchmarkScenario,
-} from "../extensions/benchmark-tools.js";
+} from "../benchmark/extensions/benchmark-tools.js";
 
 let root: string | undefined;
 
@@ -119,15 +119,15 @@ describe("benchmark tool attestation", () => {
 		const allTools = [
 			{
 				name: "exec_command",
-				sourceInfo: { path: "/package/extensions/benchmark-tools.ts" },
+				sourceInfo: { path: "/package/benchmark/extensions/benchmark-tools.ts" },
 			},
 			{
 				name: "write_stdin",
-				sourceInfo: { path: "/package/extensions/benchmark-tools.ts" },
+				sourceInfo: { path: "/package/benchmark/extensions/benchmark-tools.ts" },
 			},
 			{
 				name: "apply_patch",
-				sourceInfo: { path: "/package/extensions/benchmark-tools.ts" },
+				sourceInfo: { path: "/package/benchmark/extensions/benchmark-tools.ts" },
 			},
 			{ name: "todo", sourceInfo: { path: "/package/extensions/prewalk.ts" } },
 		];

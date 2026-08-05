@@ -13,6 +13,27 @@ This project reproduces Oh My Pi's observable Prewalk flow with stock Pi's
 public extension APIs. It does not patch Pi, import private Pi modules, call
 `setModel()`, or hide a second model behind a fake router model.
 
+## Repository layout
+
+- `extensions/prewalk.ts` is the single Pi package entrypoint declared by
+  `package.json`. Pi packages conventionally keep host-facing entrypoints under
+  `extensions/`; the manifest names the file explicitly, so the directory is an
+  integration boundary rather than a collection of independently loaded
+  extensions.
+- `src/` contains the coordinator, provider overlay, analytics, mutation, and
+  status implementation used by that entrypoint.
+- `prompts/` contains the attributed Prewalk prompts.
+- `benchmark/extensions/` contains Pi-loadable extensions used only by the
+  opt-in benchmark harness. They are never auto-loaded in normal sessions.
+- `scripts/`, `test/`, and `docs/` contain development and verification
+  support.
+
+At runtime Pi reads the `pi.extensions` manifest entry and invokes the default
+export from `extensions/prewalk.ts` with its public `ExtensionAPI`. Prewalk then
+communicates through registered commands, tools, events, session entries, and a
+temporary provider-registry overlay; it does not patch Pi's agent loop or
+change the selected planner model.
+
 ## Status
 
 Prewalk is experimental. Its efficacy benchmark remains frozen to stock Pi

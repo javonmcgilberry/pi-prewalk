@@ -4,6 +4,14 @@
   "description": "Same-session planner-to-executor handoff for stock Pi",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/javonmcgilberry/pi-prewalk.git"
+  },
+  "homepage": "https://github.com/javonmcgilberry/pi-prewalk#readme",
+  "bugs": {
+    "url": "https://github.com/javonmcgilberry/pi-prewalk/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",

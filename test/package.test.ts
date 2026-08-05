@@ -54,6 +54,7 @@ describe("shipped package contract", () => {
 			dependencies: Record<string, string>;
 			peerDependencies?: Record<string, string>;
 			devDependencies: Record<string, string>;
+			pi: { extensions: string[] };
 		};
 
 		expect(pkg.description.toLowerCase()).toContain("same-session");
@@ -61,8 +62,13 @@ describe("shipped package contract", () => {
 		expect(pkg.description).toContain("stock Pi");
 		expect(pkg.description.toLowerCase()).not.toContain("restart");
 		expect(pkg.bin).toBeUndefined();
+		expect(pkg.pi.extensions).toEqual(["./extensions/prewalk.ts"]);
+		expect(await readdir(resolve(root, "extensions"))).toEqual(["prewalk.ts"]);
+		expect(existsSync(resolve(root, "benchmark/extensions/benchmark-tools.ts"))).toBe(true);
+		expect(existsSync(resolve(root, "benchmark/extensions/benchmark-attestation.ts"))).toBe(true);
 		expect(pkg.files).toEqual(
 			expect.arrayContaining([
+				"benchmark",
 				"extensions",
 				"src",
 				"scripts",

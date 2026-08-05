@@ -158,7 +158,7 @@ export function createBenchmarkRuntime({
 	}
 	const packageRoot = path.resolve(import.meta.dirname, "..");
 	const extensionPaths = [
-		path.join(packageRoot, "extensions", "benchmark-tools.ts"),
+		path.join(packageRoot, "benchmark", "extensions", "benchmark-tools.ts"),
 		path.join(
 			packageRoot,
 			"node_modules",
@@ -168,7 +168,7 @@ export function createBenchmarkRuntime({
 			"index.js",
 		),
 		path.join(packageRoot, "extensions", "prewalk.ts"),
-		path.join(packageRoot, "extensions", "benchmark-attestation.ts"),
+		path.join(packageRoot, "benchmark", "extensions", "benchmark-attestation.ts"),
 	];
 	return {
 		async preflight(manifest) {

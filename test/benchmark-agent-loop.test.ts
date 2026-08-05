@@ -17,8 +17,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import benchmarkAttestation from "../extensions/benchmark-attestation.js";
-import { createBenchmarkToolDefinitions } from "../extensions/benchmark-tools.js";
+import benchmarkAttestation from "../benchmark/extensions/benchmark-attestation.js";
+import { createBenchmarkToolDefinitions } from "../benchmark/extensions/benchmark-tools.js";
 import prewalkExtension from "../extensions/prewalk.js";
 import { PLANNER_MODEL_ID } from "../src/core.js";
 
