@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -847,6 +847,28 @@ describe("Prewalk extension harness", () => {
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
 			reasonCode: "native-compaction-unsupported",
+		});
+	});
+
+	it.each([
+		[
+			"malformed JSON",
+			async () => writeFile(path.join(agentDir, "pi-codex-conversion.json"), "{"),
+		],
+		["unreadable path", async () => mkdir(path.join(agentDir, "pi-codex-conversion.json"))],
+	])("fails closed when Conversion configuration is %s", async (_label, prepare) => {
+		await prepare();
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: configuration-invalid.");
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			reasonCode: "configuration-invalid",
 		});
 	});
 

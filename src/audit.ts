@@ -1,3 +1,8 @@
+import {
+	type AnalyticsConfig,
+	DEFAULT_ANALYTICS_CONFIG,
+	parseAnalyticsConfig,
+} from "./analytics.js";
 import type {
 	EffectiveRoute,
 	ExecutorConfig,
@@ -44,6 +49,7 @@ export interface PrewalkAuditRecord {
 	mode: RunMode;
 	planner: PlannerProfile;
 	executor: ExecutorConfig;
+	analytics?: AnalyticsConfig;
 	overlay: string;
 	planningPromptInjected: boolean;
 	continuePending: boolean;
@@ -103,6 +109,7 @@ const AUDIT_KEYS = new Set([
 	"mode",
 	"planner",
 	"executor",
+	"analytics",
 	"overlay",
 	"planningPromptInjected",
 	"continuePending",
@@ -178,6 +185,7 @@ export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): Prewa
 		mode: run.mode,
 		planner: structuredClone(run.planner),
 		executor: structuredClone(run.config.executor),
+		analytics: structuredClone(run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG),
 		overlay: overlayFingerprint(run.planner, run.config.executor),
 		planningPromptInjected: run.planningPromptInjected,
 		continuePending: run.continuePending,
@@ -218,6 +226,14 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		return undefined;
 	}
 	if (value.trigger !== undefined && !isTrigger(value.trigger)) return undefined;
+	let analytics: AnalyticsConfig | undefined;
+	if (value.analytics !== undefined) {
+		try {
+			analytics = parseAnalyticsConfig(value.analytics);
+		} catch {
+			return undefined;
+		}
+	}
 	if (
 		value.reasonCode !== undefined &&
 		(typeof value.reasonCode !== "string" || !REASON_CODES.has(value.reasonCode))
@@ -234,6 +250,7 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		mode: value.mode,
 		planner: value.planner,
 		executor: value.executor,
+		...(analytics ? { analytics } : {}),
 		overlay: value.overlay,
 		planningPromptInjected: value.planningPromptInjected,
 		continuePending: value.continuePending,
@@ -258,6 +275,7 @@ export function runFromAudit(record: PrewalkAuditRecord): PrewalkRun {
 		todoSeen: record.todoSeen,
 		config: {
 			executor: structuredClone(record.executor),
+			...(record.analytics ? { analytics: structuredClone(record.analytics) } : {}),
 		},
 		...(record.trigger ? { trigger: { ...record.trigger } } : {}),
 		...(record.reasonCode ? { reasonCode: record.reasonCode } : {}),

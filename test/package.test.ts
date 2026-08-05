@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -115,6 +116,28 @@ describe("shipped package contract", () => {
 		expect(tsconfig.compilerOptions.baseUrl).toBeUndefined();
 		expect(tsconfig.compilerOptions.paths).toBeUndefined();
 		expect(JSON.stringify(tsconfig)).not.toContain("earendil-works-pi");
+	});
+
+	it("verifies the actual packed artifact, not only the files allowlist", () => {
+		const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		const files = (JSON.parse(output)[0]?.files ?? []).map(
+			(entry: { path: string }) => entry.path,
+		);
+		expect(files).toEqual(
+			expect.arrayContaining([
+				"extensions/prewalk.ts",
+				"benchmark/extensions/benchmark-tools.ts",
+				"benchmark/extensions/benchmark-attestation.ts",
+				"src/core.ts",
+				"prompts/prewalk-plan.md",
+				"README.md",
+			]),
+		);
+		expect(files.some((file: string) => file.startsWith("test/"))).toBe(false);
+		expect(files.some((file: string) => file.startsWith("docs/plans/"))).toBe(false);
 	});
 
 	it("ships a strict same-provider planner and executor configuration", async () => {

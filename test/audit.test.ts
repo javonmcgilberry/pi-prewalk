@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_ANALYTICS_CONFIG } from "../src/analytics.js";
 import {
 	createAuditRecord,
 	createAutoModeRecord,
@@ -17,6 +18,11 @@ const run: PrewalkRun = {
 	planner: { ...DEFAULT_PLANNER, reasoning: "high" },
 	config: {
 		executor: { ...DEFAULT_EXECUTOR },
+		analytics: {
+			...DEFAULT_ANALYTICS_CONFIG,
+			catalogFallbackEnabled: true,
+			recentReceiptCount: 7,
+		},
 	},
 	planningPromptInjected: true,
 	continuePending: false,
@@ -31,6 +37,7 @@ describe("Prewalk audit records", () => {
 		expect(parseAuditRecord(record)).toEqual(record);
 		expect(runFromAudit(record)).toEqual(run);
 		expect(Object.keys(record).sort()).toEqual([
+			"analytics",
 			"continuePending",
 			"effectiveRoute",
 			"epoch",
@@ -54,6 +61,15 @@ describe("Prewalk audit records", () => {
 		expect(parseAuditRecord({ ...record, headers: { authorization: "secret" } })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, rawError: "/private/path" })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, reasonCode: "raw provider error" })).toBeUndefined();
+		expect(parseAuditRecord({ ...record, analytics: { enabled: "yes" } })).toBeUndefined();
+	});
+
+	it("keeps older audit records readable without inventing analytics settings", () => {
+		const record = createAuditRecord(run, "handoff-triggered");
+		const { analytics: _analytics, ...legacy } = record;
+		const parsed = parseAuditRecord(legacy);
+		expect(parsed).toBeDefined();
+		expect(runFromAudit(parsed as NonNullable<typeof parsed>).config.analytics).toBeUndefined();
 	});
 
 	it("round-trips only versioned, session-bound automatic mode", () => {

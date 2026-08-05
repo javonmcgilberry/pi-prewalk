@@ -54,9 +54,41 @@ The default pair is OpenAI Codex Sol as planner and Luna as executor. Other
 same-provider pairs, such as Opus and Sonnet, work through Pi's normal provider
 stream.
 
+## Why Prewalk is not plan mode
+
+Prewalk is informed by [Stencil's explanation of the frontier-model
+tradeoff](https://stencil.so/blog/prewalk), but it is not a conventional
+"large model writes a plan, small model implements it" pipeline.
+
+Plan mode creates a prose artifact and starts the executor at a new seam. The
+executor must reread the repository, reconstruct the planner's assumptions, and
+translate a postcard into edits. The expensive repository reading therefore
+happens twice, and the plan does not carry the dead ends, tested hypotheses, or
+working context that produced it.
+
+Prewalk keeps one live Pi session. The planner receives a hidden planning
+instruction, explores the repository, records a bounded todo checklist, and
+lands the first successful edit. Only then does the provider overlay route the
+next primary turn to the executor. The executor inherits the same conversation,
+the surviving todo state, the explored context, and a real edit that already
+demonstrated the approach. Prewalk removes the planning instruction before the
+handoff, so the executor is not still being told to plan.
+
+That is the important distinction: Prewalk transfers a **trajectory**, not a
+plan document. Its benefit is not merely a cheaper model name in analytics; the
+session's routing, prompt visibility, todo gate, provider overlay, and handoff
+point all change. The frontier model pays for the difficult orientation once,
+while the executor continues from a code-tested state instead of beginning as a
+second reader.
+
 ## Install
 
 Install the GitHub package:
+
+The package name in `package.json` is provisional while the public npm scope
+and product name are being finalized. Git installation is the supported public
+consumer path for now; do not infer the eventual registry name from the local
+placeholder.
 
 ```sh
 pi install git:github.com/javonmcgilberry/pi-prewalk

@@ -1,7 +1,13 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
-const files = ["README.md", "THIRD_PARTY_NOTICES.md"];
+const files = [
+	"README.md",
+	"THIRD_PARTY_NOTICES.md",
+	"docs/README.md",
+	"docs/analytics.md",
+	"benchmark/README.md",
+];
 const failures = [];
 for (const file of files) {
 	const text = await readFile(file, "utf8");

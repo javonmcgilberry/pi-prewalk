@@ -166,19 +166,25 @@ function configPath(): string {
 	return path.join(getAgentDir(), "prewalk.json");
 }
 
-function nativeResponsesCompactionEnabled(): boolean {
+function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
+	let raw: string;
 	try {
-		const config: unknown = JSON.parse(
-			readFileSync(path.join(getAgentDir(), "pi-codex-conversion.json"), "utf8"),
-		);
-		return (
-			isRecord(config) &&
-			isRecord(config.compaction) &&
-			config.compaction.responsesCompaction === true
-		);
-	} catch {
-		return false;
+		raw = readFileSync(path.join(getAgentDir(), "pi-codex-conversion.json"), "utf8");
+	} catch (error) {
+		return isMissingFile(error) ? "disabled" : "invalid";
 	}
+	let config: unknown;
+	try {
+		config = JSON.parse(raw);
+	} catch {
+		return "invalid";
+	}
+	if (!isRecord(config)) return "invalid";
+	if (config.compaction === undefined) return "disabled";
+	if (!isRecord(config.compaction)) return "invalid";
+	if (config.compaction.responsesCompaction === undefined) return "disabled";
+	if (typeof config.compaction.responsesCompaction !== "boolean") return "invalid";
+	return config.compaction.responsesCompaction ? "enabled" : "disabled";
 }
 
 function helpText(): string {
@@ -1010,7 +1016,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		try {
 			const config = configOverride ?? (await readConfig());
-			if (nativeResponsesCompactionEnabled()) {
+			const compactionState = nativeResponsesCompactionState();
+			if (compactionState === "invalid") throw new Error("configuration-invalid");
+			if (compactionState === "enabled") {
 				throw new Error("native-compaction-unsupported");
 			}
 			if (todoConflict) throw new Error("todo-conflict");
