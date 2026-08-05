@@ -579,6 +579,47 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		return analyticsWrites;
 	};
 
+	const recordDelegationProjection = async (
+		invocation: DelegationInvocation,
+		details: unknown,
+		isError: boolean,
+	): Promise<void> => {
+		const evidence = projectDelegationToolResult({
+			rootSessionId: invocation.rootSessionId,
+			parentSessionId: invocation.parentSessionId,
+			invocationId: invocation.toolCallId,
+			childCount: invocation.childCount,
+			details,
+			isError,
+		});
+		const primaryDelegationRunId = evidence[0]?.delegationRunId;
+		if (primaryDelegationRunId) invocation.delegationRunId = primaryDelegationRunId;
+		for (const item of evidence) {
+			try {
+				if (invocation.analyticsGeneration !== (await analyticsStore.currentGeneration()))
+					continue;
+				const { schemaVersion, ...eventValue } = item;
+				await enqueueAnalytics(async () => {
+					await analyticsStore.writeDelegationEvidence(
+						{ ...eventValue, version: schemaVersion },
+						invocation.analyticsGeneration,
+					);
+				});
+			} catch {}
+		}
+	};
+
+	pi.events.on("subagent:async-complete", (payload) => {
+		if (!isRecord(payload)) return;
+		const runId = typeof payload.runId === "string" ? payload.runId : undefined;
+		if (!runId) return;
+		const invocation = delegationInvocations.find(
+			(candidate) => candidate.delegationRunId === runId,
+		);
+		if (!invocation) return;
+		void recordDelegationProjection(invocation, payload, payload.success === false);
+	});
+
 	const openAnalyticsJournal = async (run: PrewalkRun, ctx: ExtensionContext): Promise<void> => {
 		analyticsState = undefined;
 		analyticsFinalization = undefined;
@@ -1775,37 +1816,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				(candidate) => candidate.toolCallId === event.toolCallId,
 			);
 			if (invocation) {
-				const evidence = projectDelegationToolResult({
-					rootSessionId: invocation.rootSessionId,
-					parentSessionId: invocation.parentSessionId,
-					invocationId: invocation.toolCallId,
-					childCount: invocation.childCount,
-					details: event.details,
-					isError: event.isError,
-				});
-				const primaryDelegationRunId = evidence[0]?.delegationRunId;
-				if (primaryDelegationRunId) invocation.delegationRunId = primaryDelegationRunId;
-				for (const item of evidence) {
-					try {
-						if (
-							invocation.analyticsGeneration !== (await analyticsStore.currentGeneration())
-						) {
-							continue;
-						}
-						const { schemaVersion, ...eventValue } = item;
-						await enqueueAnalytics(async () => {
-							await analyticsStore.writeDelegationEvidence(
-								{
-									...eventValue,
-									version: schemaVersion,
-								},
-								invocation.analyticsGeneration,
-							);
-						});
-					} catch {
-						// Analytics must never affect subagent execution.
-					}
-				}
+				await recordDelegationProjection(invocation, event.details, event.isError);
 			}
 			delegation = delegationFromResult(
 				event.details,

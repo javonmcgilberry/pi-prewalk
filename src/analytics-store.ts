@@ -84,6 +84,7 @@ export interface AnalyticsSnapshot {
 	generation: string;
 	receipts: RunReceipt[];
 	journals: RunJournal[];
+	delegationEvidence?: DelegationEvidence[];
 }
 
 export interface AnalyticsStoreHooks {
@@ -449,11 +450,19 @@ export class AnalyticsStore {
 		const timeZone = query.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const now = query.now ?? new Date();
 		const outcomes = query.outcomes === undefined ? null : new Set(query.outcomes);
+		const delegationEvidence = (snapshot.delegationEvidence ?? []).filter(
+			(item) => query.sessionId === undefined || item.rootSessionId === query.sessionId,
+		);
+		const sessionIds = new Set<string>();
+		if (query.sessionId !== undefined) {
+			sessionIds.add(query.sessionId);
+			for (const item of delegationEvidence) {
+				if (item.childSessionId !== undefined) sessionIds.add(item.childSessionId);
+			}
+		}
 		const receipts = snapshot.receipts
 			.filter((receipt) => outcomes === null || outcomes.has(receipt.outcome))
-			.filter(
-				(receipt) => query.sessionId === undefined || receipt.sessionId === query.sessionId,
-			)
+			.filter((receipt) => query.sessionId === undefined || sessionIds.has(receipt.sessionId))
 			.filter((receipt) =>
 				inWindow(receipt.completedAt ?? receipt.startedAt, query.window, now, timeZone),
 			)
@@ -498,6 +507,24 @@ export class AnalyticsStore {
 			outcomeCounts.unfinished += 1;
 		}
 
+		const receiptEvidenceKeys = new Set(
+			receipts.flatMap((receipt) => receipt.evidenceKeys ?? []),
+		);
+		const successfulRoots = new Set(
+			receipts
+				.filter((receipt) => receipt.outcome === "succeeded")
+				.map((receipt) => receipt.sessionId),
+		);
+		for (const item of delegationEvidence) {
+			if (item.phase !== "terminal") continue;
+			if (!inWindow(new Date(item.observedAt).toISOString(), query.window, now, timeZone))
+				continue;
+			if (outcomes?.has("succeeded") && !successfulRoots.has(item.rootSessionId)) continue;
+			for (const slice of item.usage) {
+				if (!receiptEvidenceKeys.has(slice.evidenceKey)) actualCost += slice.costUsd;
+			}
+		}
+
 		const recentLimit = query.recentLimit ?? receipts.length;
 		return {
 			generation,
@@ -518,9 +545,10 @@ export class AnalyticsStore {
 			const manifest = await this.initialize();
 			const receipts = await this.readReceipts(manifest.generation);
 			const journals = await this.readJournals(manifest.generation);
+			const delegationEvidence = await this.listDelegationEvidence();
 			await this.hooks.beforeSnapshotValidation?.(manifest.generation);
 			if ((await this.readManifest()).generation === manifest.generation) {
-				return { generation: manifest.generation, receipts, journals };
+				return { generation: manifest.generation, receipts, journals, delegationEvidence };
 			}
 		}
 		throw new Error("Analytics ledger changed while reading its snapshot.");

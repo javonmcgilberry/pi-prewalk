@@ -621,6 +621,33 @@ describe("AnalyticsStore", () => {
 		expect(taskTree.costCoverage).toBe("complete");
 	});
 
+	it("includes child-only delegation evidence in lifetime and session spend", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.promoteReceipt(
+			receipt(generation, "root-run", {
+				sessionId: "root",
+				actualCost: 0.5,
+				usage: [usage(1, 0.5)],
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: 0.65,
+					savings: 0.15,
+				},
+			}),
+		);
+		await store.writeDelegationEvidence(
+			delegationEvent(0, "child-without-prewalk", "subagent:child-only:0", 0.2),
+			generation,
+		);
+
+		const lifetime = await store.aggregate();
+		const session = await store.aggregate({ sessionId: "root" });
+
+		expect(lifetime.actualCost).toBeCloseTo(0.7);
+		expect(session.actualCost).toBeCloseTo(0.7);
+	});
+
 	it("uses a linked child receipt when the parent summary has no cost", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
