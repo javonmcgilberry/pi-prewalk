@@ -23,6 +23,7 @@ import {
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_PLAN_MESSAGE_TYPE,
 } from "../src/core.js";
+import { PREWALK_TODO_TOOL_NAME } from "../src/todo.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 
@@ -132,7 +133,7 @@ function createHarness(
 	const delegatedOptions: Array<{ reasoning?: string } | undefined> = [];
 	const delegatedContexts: Array<{ messages: unknown[] }> = [];
 	const activeToolUpdates: string[][] = [];
-	let activeTools = options.activeTools ?? ["todo", "edit", "write", "bash"];
+	let activeTools = options.activeTools ?? [PREWALK_TODO_TOOL_NAME, "edit", "write", "bash"];
 	let terminalInputHandler:
 		| ((data: string) => { consume?: boolean; data?: string } | undefined)
 		| undefined;
@@ -189,21 +190,20 @@ function createHarness(
 		getAllTools: vi.fn(() =>
 			options.todoVisible === false
 				? []
-				: [
-						{
-							name: "todo",
-							description: "todo",
-							parameters: {},
-							sourceInfo: {
-								path: options.foreignTodo
+				: [...tools.values()].map((tool) => ({
+						name: tool.name,
+						description: tool.description,
+						parameters: tool.parameters,
+						sourceInfo: {
+							path:
+								tool.name === "todo"
 									? "/package/extensions/foreign.ts"
 									: "/package/extensions/prewalk.ts",
-								source: "extension",
-								scope: "user",
-								origin: "top-level",
-							},
+							source: "extension",
+							scope: "user",
+							origin: "top-level",
 						},
-					],
+					})),
 		),
 		getActiveTools: vi.fn(() => [...activeTools]),
 		setActiveTools: vi.fn((toolNames: string[]) => {
@@ -322,7 +322,7 @@ async function reachHandoff(harness: ReturnType<typeof createHarness>) {
 	await harness.emit("tool_result", {
 		type: "tool_result",
 		toolCallId: "todo-1",
-		toolName: "todo",
+		toolName: PREWALK_TODO_TOOL_NAME,
 		input: { op: "init" },
 		content: [],
 		isError: false,
@@ -343,7 +343,12 @@ async function reachHandoff(harness: ReturnType<typeof createHarness>) {
 		message: {
 			role: "assistant",
 			content: [
-				{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+				{
+					type: "toolCall",
+					id: "todo-1",
+					name: PREWALK_TODO_TOOL_NAME,
+					arguments: {},
+				},
 				{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
 			],
 		},
@@ -408,7 +413,7 @@ async function openChildTodoGate(harness: ReturnType<typeof createHarness>): Pro
 		toolResults: [],
 	});
 	const todoResult = await harness.tools
-		.get("todo")
+		.get(PREWALK_TODO_TOOL_NAME)
 		?.execute(
 			"child-todo",
 			{ op: "init", list: [{ phase: "Implement", items: ["Change behavior"] }] },
@@ -419,7 +424,7 @@ async function openChildTodoGate(harness: ReturnType<typeof createHarness>): Pro
 	await harness.emit("tool_result", {
 		type: "tool_result",
 		toolCallId: "child-todo",
-		toolName: "todo",
+		toolName: PREWALK_TODO_TOOL_NAME,
 		input: { op: "init" },
 		content: todoResult?.content ?? [],
 		isError: false,
@@ -459,10 +464,12 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 
-		expect(harness.tools.has("todo")).toBe(true);
+		expect(harness.tools.has(PREWALK_TODO_TOOL_NAME)).toBe(true);
 		expect(harness.commands.has("prewalk")).toBe(true);
-		expect(harness.commands.has("todos")).toBe(true);
-		expect(harness.tools.get("todo")?.promptSnippet).toContain("`init` replaces the list");
+		expect(harness.commands.has("todos")).toBe(false);
+		expect(harness.tools.get(PREWALK_TODO_TOOL_NAME)?.promptSnippet).toContain(
+			"`init` replaces the list",
+		);
 		expect(harness.handlers.has("session_start")).toBe(true);
 		expect(harness.handlers.has("context")).toBe(true);
 		expect(harness.handlers.has("session_before_compact")).toBe(true);
@@ -517,7 +524,9 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("evaluates substantial work across turns before queuing the full plan", async () => {
-		const harness = createHarness({ activeTools: ["read", "todo", "edit"] });
+		const harness = createHarness({
+			activeTools: ["read", PREWALK_TODO_TOOL_NAME, "edit"],
+		});
 		prewalkExtension(harness.pi);
 		const beforeStart = await beginAutomaticAssessment(
 			harness,
@@ -550,7 +559,7 @@ describe("Prewalk extension harness", () => {
 		await harness.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" });
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
-		expect(harness.activeTools()).toEqual(["read", "edit", "todo"]);
+		expect(harness.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
@@ -597,7 +606,9 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("quietly bypasses a completed approved plan and restores the exact tool slate", async () => {
-		const harness = createHarness({ activeTools: ["read", "todo", "grep"] });
+		const harness = createHarness({
+			activeTools: ["read", PREWALK_TODO_TOOL_NAME, "grep"],
+		});
 		prewalkExtension(harness.pi);
 		await beginAutomaticAssessment(
 			harness,
@@ -744,7 +755,9 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("cancels and reloads an evaluation without allowing a later decision to revive it", async () => {
-		const cancelled = createHarness({ activeTools: ["read", "todo", "edit"] });
+		const cancelled = createHarness({
+			activeTools: ["read", PREWALK_TODO_TOOL_NAME, "edit"],
+		});
 		prewalkExtension(cancelled.pi);
 		await beginAutomaticAssessment(
 			cancelled,
@@ -756,7 +769,9 @@ describe("Prewalk extension harness", () => {
 			cancelled.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
 		).rejects.toThrow("inactive");
 
-		const first = createHarness({ activeTools: ["read", "todo", "edit"] });
+		const first = createHarness({
+			activeTools: ["read", PREWALK_TODO_TOOL_NAME, "edit"],
+		});
 		prewalkExtension(first.pi);
 		await beginAutomaticAssessment(first, "Build an end-to-end feature across multiple concerns");
 		const restored = createHarness({ activeTools: ["read", "edit", "prewalk_assess"] });
@@ -799,7 +814,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages).toEqual([]);
 	});
 
-	it("preserves a foreign todo owner and fails before arming", async () => {
+	it("keeps a foreign todo outside the Prewalk lifecycle", async () => {
 		const foreignTodo = {
 			name: "todo",
 			label: "Foreign todo",
@@ -807,28 +822,85 @@ describe("Prewalk extension harness", () => {
 			parameters: {},
 			execute: vi.fn(),
 		} as unknown as ToolDefinition;
-		const harness = createHarness({ foreignTodo });
+		const harness = createHarness({ foreignTodo, activeTools: ["read", "todo", "edit"] });
 		prewalkExtension(harness.pi);
 
+		expect(harness.tools.get("todo")).toBe(foreignTodo);
+		expect(harness.tools.has("prewalk_todo")).toBe(true);
+
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
+
 		await harness.commands.get("prewalk")?.("run", harness.context);
+		expect(harness.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.notifications).not.toContain("Prewalk failed: todo-conflict.");
+
 		await harness.emit("tool_result", {
 			type: "tool_result",
-			toolCallId: "todo-1",
+			toolCallId: "foreign-todo-1",
 			toolName: "todo",
-			input: { op: "init" },
+			input: { action: "create", subject: "Foreign task" },
 			content: [],
 			isError: false,
-			details: { phases: [] },
+			details: { tasks: [{ id: 1, subject: "Foreign task", status: "in_progress" }] },
 		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "foreign-todo-1", name: "todo", arguments: {} },
+					{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
+				],
+			},
+			toolResults: [],
+		});
+		expect(
+			harness.entries.some(
+				(entry) =>
+					entry.customType === "prewalk-audit" &&
+					(entry.data as { event?: string }).event === "handoff-triggered",
+			),
+		).toBe(false);
 
-		expect(harness.tools.get("todo")).toBe(foreignTodo);
-		expect(harness.notifications.at(-1)).toBe("Prewalk failed: todo-conflict.");
-		expect(harness.delegated).toEqual([]);
-		expect(harness.entries.at(-1)?.data).toMatchObject({
-			event: "failed",
-			reasonCode: "todo-conflict",
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
+	});
+
+	it("restores a foreign todo slate after a same-session reload", async () => {
+		const foreignTodo = {
+			name: "todo",
+			label: "Foreign todo",
+			description: "Foreign todo",
+			parameters: {},
+			execute: vi.fn(),
+		} as unknown as ToolDefinition;
+		const first = createHarness({ foreignTodo, activeTools: ["read", "todo", "edit"] });
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.commands.get("prewalk")?.("run", first.context);
+
+		const restored = createHarness({
+			foreignTodo,
+			activeTools: ["read", "edit", PREWALK_TODO_TOOL_NAME],
 		});
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+		expect(restored.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
+
+		await restored.commands.get("prewalk")?.("cancel", restored.context);
+		expect(restored.activeTools()).toEqual(["read", "todo", "edit"]);
 	});
 
 	it("refuses to arm when Conversion native Responses compaction is enabled", async () => {
@@ -884,7 +956,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("tool_result", {
 			type: "tool_result",
 			toolCallId: "todo-1",
-			toolName: "todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
 			input: { op: "init" },
 			content: [],
 			isError: false,
@@ -1418,11 +1490,12 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toBe("prewalk: [5.6 Sol · low] / Luna · low");
 
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.content).toContain("the prewalk_todo tool");
 
 		await harness.emit("tool_result", {
 			type: "tool_result",
 			toolCallId: "todo-1",
-			toolName: "todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
 			input: { op: "init" },
 			content: [],
 			isError: false,
@@ -1443,7 +1516,12 @@ describe("Prewalk extension harness", () => {
 			message: {
 				role: "assistant",
 				content: [
-					{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+					{
+						type: "toolCall",
+						id: "todo-1",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
 					{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
 				],
 			},
@@ -1887,7 +1965,7 @@ describe("Prewalk extension harness", () => {
 			message: { role: "assistant", content: [] },
 			toolResults: [],
 		});
-		const todoResult = await harness.tools.get("todo")?.execute(
+		const todoResult = await harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute(
 			"todo-1",
 			{
 				op: "init",
@@ -1900,7 +1978,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("tool_result", {
 			type: "tool_result",
 			toolCallId: "todo-1",
-			toolName: "todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
 			input: { op: "init" },
 			content: todoResult?.content ?? [],
 			isError: false,
@@ -1921,7 +1999,12 @@ describe("Prewalk extension harness", () => {
 			message: {
 				role: "assistant",
 				content: [
-					{ type: "toolCall", id: "todo-1", name: "todo", arguments: {} },
+					{
+						type: "toolCall",
+						id: "todo-1",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
 					{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} },
 				],
 			},
@@ -1929,7 +2012,7 @@ describe("Prewalk extension harness", () => {
 		});
 		await harness.emit("agent_start", { type: "agent_start" });
 		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
-		await harness.commands.get("todos")?.("", harness.context);
+		await harness.commands.get("prewalk")?.("todos", harness.context);
 		expect(harness.notifications.at(-1)).toContain("Finish verification");
 
 		const promptCount = harness.messages.length;
@@ -2235,7 +2318,9 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("disarms evaluation on model selection and keeps automatic mode ready", async () => {
-		const evaluation = createHarness({ activeTools: ["read", "todo", "edit"] });
+		const evaluation = createHarness({
+			activeTools: ["read", PREWALK_TODO_TOOL_NAME, "edit"],
+		});
 		prewalkExtension(evaluation.pi);
 		await beginAutomaticAssessment(
 			evaluation,

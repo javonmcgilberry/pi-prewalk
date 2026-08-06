@@ -67,11 +67,13 @@ import {
 	applyTodoOperation,
 	hasActionableTodo,
 	latestTodoPhases,
+	PREWALK_TODO_TOOL_NAME,
 	type TodoInput,
 	type TodoPhase,
 } from "../src/todo.js";
 
 const STATUS_KEY = "prewalk";
+const PREWALK_TOOL_SLATE_TYPE = "prewalk-tool-slate";
 const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
 const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
 const PREWALK_COMMANDS = [
@@ -81,6 +83,7 @@ const PREWALK_COMMANDS = [
 	"auto",
 	"cancel",
 	"configure",
+	"todos",
 	"help",
 	"--help",
 ];
@@ -135,7 +138,10 @@ function promptFile(name: string): URL {
 
 function loadPrompts(): PromptSet {
 	return {
-		plan: readFileSync(promptFile("prewalk-plan.md"), "utf8"),
+		plan: readFileSync(promptFile("prewalk-plan.md"), "utf8").replace(
+			"the todo tool",
+			`the ${PREWALK_TODO_TOOL_NAME} tool`,
+		),
 		assess: readFileSync(promptFile("prewalk-assess.md"), "utf8"),
 		continue: readFileSync(promptFile("prewalk-continue.md"), "utf8"),
 		checklist: readFileSync(promptFile("prewalk-checklist.md"), "utf8"),
@@ -205,7 +211,7 @@ function helpText(): string {
 		"/prewalk cancel  Disable automatic admission and stop the current Prewalk run.",
 		"/prewalk release Restore the planner after a successful executor handoff.",
 		"/prewalk configure  Choose the executor and control analytics collection and catalog fallback.",
-		"/todos           Show the current Prewalk implementation checklist.",
+		"/prewalk todos  Show the current Prewalk implementation checklist.",
 		"",
 		"Reset the current run: /prewalk cancel, then /prewalk run.",
 		"Type exactly stop or cancel to close only the current task; /prewalk cancel also disables session automatic mode.",
@@ -218,7 +224,7 @@ function helpText(): string {
 		"Prewalk derives the planner from Pi's selected model and reasoning for each epoch. Only primary Agent-loop requests route to the executor after the handoff gate.",
 		"Shift+Tab changes Sol reasoning while Sol is active and Luna reasoning after Luna takes over.",
 		"Sol and Luna reasoning are independent; Luna defaults to low unless you configure another level.",
-		"Subagents run independent Prewalk lifecycles. A strict child without todo still switches after its first successful code change.",
+		"Subagents run independent Prewalk lifecycles. A strict child without prewalk_todo still switches after its first successful code change.",
 		"Parent status reports an observed child outcome, but child code changes never switch the parent.",
 	].join("\n");
 }
@@ -474,6 +480,21 @@ function latestAutoModeRecord(ctx: ExtensionContext) {
 	return undefined;
 }
 
+function latestPrewalkToolSlate(ctx: ExtensionContext, runId: string): string[] | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry?.type !== "custom" || entry.customType !== PREWALK_TOOL_SLATE_TYPE) continue;
+		if (!isRecord(entry.data) || entry.data.runId !== runId || !Array.isArray(entry.data.tools)) {
+			continue;
+		}
+		if (entry.data.tools.every((name) => typeof name === "string")) {
+			return [...entry.data.tools];
+		}
+	}
+	return undefined;
+}
+
 export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
 	const mutations = new MutationTurnBuffer();
@@ -487,7 +508,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let overlay: ProviderOverlay | undefined;
 	let primaryAgentStream = false;
 	let todoPhases: TodoPhase[] = [];
-	let todoConflict = false;
+	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
 	let childDiagnostic: string | undefined;
@@ -495,22 +516,29 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let compactionChecklistRunId: string | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
 	const deactivatePrewalkTools = (): void => {
-		const active = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
-		pi.setActiveTools(todoConflict ? active : active.filter((name) => name !== "todo"));
+		const active =
+			prewalkToolSlate ??
+			pi
+				.getActiveTools()
+				.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
+		prewalkToolSlate = undefined;
+		pi.setActiveTools(active);
 	};
 	const activatePlanningTools = (toolSlate = pi.getActiveTools()): void => {
-		const withoutAssessment = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
-		pi.setActiveTools([...withoutAssessment.filter((name) => name !== "todo"), "todo"]);
+		const baseline = toolSlate.filter(
+			(name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME,
+		);
+		prewalkToolSlate ??= baseline;
+		pi.setActiveTools([...baseline.filter((name) => name !== "todo"), PREWALK_TODO_TOOL_NAME]);
 	};
 	const beginEvaluation = (): EvaluationState => {
-		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		const toolSlate = pi
+			.getActiveTools()
+			.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
 		const state: EvaluationState = { id: randomUUID(), toolSlate, invalid: false };
 		evaluation = state;
 		evaluationMutations.resetForRun();
-		const evaluationTools = todoConflict
-			? toolSlate
-			: toolSlate.filter((name) => name !== "todo");
-		pi.setActiveTools([...evaluationTools, PREWALK_ASSESS_TOOL_NAME]);
+		pi.setActiveTools([...toolSlate.filter((name) => name !== "todo"), PREWALK_ASSESS_TOOL_NAME]);
 		return state;
 	};
 	const restoreEvaluationTools = (): void => {
@@ -826,7 +854,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				randomUUID(),
 				randomUUID(),
 				"automatic",
-				pi.getActiveTools().includes("todo"),
+				pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME),
 				{
 					provider: ctx.model.provider,
 					model: ctx.model.id,
@@ -848,6 +876,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
 			});
 		}
+		deactivatePrewalkTools();
 		ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
 	};
 
@@ -1021,7 +1050,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (compactionState === "enabled") {
 				throw new Error("native-compaction-unsupported");
 			}
-			if (todoConflict) throw new Error("todo-conflict");
 			activatePlanningTools();
 			if (!ctx.model) throw new Error("model-unavailable");
 			const planner: PlannerProfile = {
@@ -1030,7 +1058,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				reasoning: ctx.thinkingLevel ?? "off",
 			};
 			await validateModels(planner, config, ctx);
-			const todoActive = pi.getActiveTools().includes("todo");
+			const todoActive = pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME);
 			const action = coordinator.arm(
 				randomUUID(),
 				randomUUID(),
@@ -1039,8 +1067,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				planner,
 				config,
 			);
-			ensureOverlay(ctx);
 			const armedRun = coordinator.run;
+			if (armedRun && prewalkToolSlate) {
+				pi.appendEntry(PREWALK_TOOL_SLATE_TYPE, {
+					schemaVersion: 1,
+					runId: armedRun.id,
+					tools: [...prewalkToolSlate],
+				});
+			}
+			ensureOverlay(ctx);
 			if (armedRun) {
 				await openAnalyticsJournal(armedRun, ctx).catch(() => {
 					analyticsState = undefined;
@@ -1062,7 +1097,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					"provider-unavailable",
 					"provider-drift",
 					"native-compaction-unsupported",
-					"todo-conflict",
 				].includes(error.message)
 					? error.message
 					: "provider-unavailable";
@@ -1344,13 +1378,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool({
-		name: "todo",
-		label: "Todo",
+		name: PREWALK_TODO_TOOL_NAME,
+		label: "Prewalk Todo",
 		description: "Create and maintain the phased implementation checklist required by Prewalk.",
 		promptSnippet: prompts.todo,
 		promptGuidelines: [
-			"Initialize the todo list before the first implementation mutation.",
-			"Keep todo state current as work advances.",
+			"Initialize prewalk_todo before the first implementation mutation.",
+			"Keep prewalk_todo state current as work advances.",
 		],
 		parameters: TodoParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -1437,6 +1471,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				pendingAdmission = false;
 				if (coordinator.run) {
 					await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+					deactivatePrewalkTools();
 				}
 				ctx.ui.notify("Prewalk automatic mode disabled for this session.", "info");
 				return;
@@ -1475,17 +1510,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				await configure(ctx);
 				return;
 			}
+			if (command === "todos") {
+				ctx.ui.notify(applyTodoOperation(todoPhases, { op: "view" }).text, "info");
+				return;
+			}
 			ctx.ui.notify(
-				"Usage: /prewalk [status|stats|run|auto|cancel|release|configure|help|--help]",
+				"Usage: /prewalk [status|stats|run|auto|cancel|release|configure|todos|help|--help]",
 				"error",
 			);
-		},
-	});
-
-	pi.registerCommand("todos", {
-		description: "Show the current Prewalk todo list.",
-		async handler(_args, ctx) {
-			ctx.ui.notify(applyTodoOperation(todoPhases, { op: "view" }).text, "info");
 		},
 	});
 
@@ -1517,9 +1549,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 			return { consume: true };
 		});
-		const todoTool = pi.getAllTools().find((tool) => tool.name === "todo");
-		todoConflict =
-			todoTool !== undefined && !todoTool.sourceInfo.path.toLowerCase().includes("prewalk");
 		deactivatePrewalkTools();
 		todoPhases = latestTodoPhases(
 			ctx.sessionManager
@@ -1543,16 +1572,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				coordinator.restore(restored);
+				prewalkToolSlate = latestPrewalkToolSlate(ctx, restored.id);
 				if (
 					restored.todoActive &&
-					!todoConflict &&
 					restored.phase !== "cancelled" &&
 					restored.phase !== "failed"
 				) {
-					pi.setActiveTools([
-						...pi.getActiveTools().filter((name) => name !== "todo"),
-						"todo",
-					]);
+					activatePlanningTools();
 				}
 				lastAuditKey = JSON.stringify(record);
 				if (restored.phase === "cancelled") {
@@ -1710,7 +1736,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (evaluation) {
 			const current = evaluation;
 			if (current.decision === "continue" && !current.invalid) {
-				pi.setActiveTools([...current.toolSlate.filter((name) => name !== "todo"), "todo"]);
+				activatePlanningTools(current.toolSlate);
 				evaluation = undefined;
 				await startRun("automatic", ctx, true);
 				const action = coordinator.onTurnEnd({ todoSucceeded: false });
@@ -1766,7 +1792,10 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", async (event, ctx) => {
-		if (evaluation && (event.toolName === "todo" || event.toolName === "subagent")) {
+		if (
+			evaluation &&
+			(event.toolName === PREWALK_TODO_TOOL_NAME || event.toolName === "subagent")
+		) {
 			evaluation.invalid = true;
 		}
 		if (event.toolName !== "subagent") return;

@@ -19,7 +19,7 @@ export const FROZEN_BENCHMARK_PROTOCOL = Object.freeze({
 		continue: "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0",
 		checklist: "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1",
 	},
-	activeTools: ["exec_command", "write_stdin", "apply_patch", "todo"],
+	activeTools: ["exec_command", "write_stdin", "apply_patch", "prewalk_todo"],
 	arms: {
 		sol: { selectedModel: "openai-codex/gpt-5.6-sol", thinking: "high", prewalk: false },
 		luna: { selectedModel: "openai-codex/gpt-5.6-luna", thinking: "low", prewalk: false },

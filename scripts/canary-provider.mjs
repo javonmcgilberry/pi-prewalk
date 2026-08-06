@@ -206,7 +206,7 @@ try {
 		await rpc.send({
 			type: "prompt",
 			message:
-				"Change fixture.txt from exactly `before` to exactly `after`. Use the todo tool for the plan, then one edit or write mutation, and finish the verification.",
+				"Change fixture.txt from exactly `before` to exactly `after`. Use prewalk_todo for the plan, then one edit or write mutation, and finish the verification.",
 		});
 		await rpc.waitFor((event) => event.type === "agent_settled", options.timeoutMs, startIndex);
 		const [messagesResponse, entriesResponse, stateResponse] = await Promise.all([

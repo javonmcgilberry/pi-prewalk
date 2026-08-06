@@ -46,7 +46,7 @@ or quality for this implementation.
 
 - Pi 0.82.1 or 0.83.0
 - Two authorized models on the same provider and Pi API
-- No other extension registered as `todo`
+- No other extension registered as `prewalk_todo`
 - Pi Codex Conversion native Responses compaction disabled when that extension
   is installed
 
@@ -67,9 +67,9 @@ happens twice, and the plan does not carry the dead ends, tested hypotheses, or
 working context that produced it.
 
 Prewalk keeps one live Pi session. The planner receives a hidden planning
-instruction, explores the repository, records a bounded todo checklist, and
-lands the first successful edit. Only then does the provider overlay route the
-next primary turn to the executor. The executor inherits the same conversation,
+instruction, explores the repository, records a bounded checklist with
+Prewalk's namespaced `prewalk_todo` tool, and lands the first successful edit.
+Only then does the provider overlay route the next primary turn to the executor. The executor inherits the same conversation,
 the surviving todo state, the explored context, and a real edit that already
 demonstrated the approach. Prewalk removes the planning instruction before the
 handoff, so the executor is not still being told to plan.
@@ -136,7 +136,7 @@ currently selected planner. It never stores or changes the planner.
 | `/prewalk cancel` | Cancel a pre-handoff run and disable automatic mode |
 | `/prewalk release` | Restore the selected planner after handoff without re-arming |
 | `/prewalk stats` | Show local usage and savings receipts |
-| `/todos` | Show the current implementation checklist |
+| `/prewalk todos` | Show the current Prewalk implementation checklist |
 | `/prewalk help` | Show every command and reset rule |
 
 Manual mode is the simplest place to start:
@@ -153,8 +153,12 @@ receipt is recorded as interrupted rather than silently restoring the route.
 
 ## What triggers the handoff
 
-The `todo` tool must succeed first. Prewalk then waits for positive proof that
-code changed. Successful `edit`, `write`, direct or shell `apply_patch`, and Code
+The `prewalk_todo` tool must succeed first. Prewalk never consumes another
+extension's `todo` state. During a Prewalk run it temporarily hides an active
+foreign `todo`, then restores the exact original tool slate when the Prewalk
+lifecycle is released, cancelled, completed, or fails. Outside that lifecycle,
+general-purpose todo extensions remain available. Prewalk then waits for positive proof that code changed.
+Successful `edit`, `write`, direct or shell `apply_patch`, and Code
 Mode patch results count. Failed, cancelled, partial, still-running, printed,
 quoted, or dynamically assembled patch attempts do not.
 
@@ -294,10 +298,12 @@ not install instructions or promises about current behavior.
 
 ## Attribution
 
-The planning, continuation, and executor-checklist prompts are copied
+The planning, continuation, and executor-checklist prompt assets are copied
 byte-for-byte from Oh My Pi revision
 `f559e7e9dc1e8818d5d8e15ace28da3d42f2457d` from
 `packages/coding-agent/src/prompts/system/prewalk-{plan,continue,checklist}.md`
-under the MIT license. The coordinator remains a stock-Pi public-API adaptation.
+under the MIT license. At runtime, the planning prompt maps OMP's canonical
+`todo` identifier to the stock-Pi adaptation's namespaced `prewalk_todo` tool.
+The coordinator remains a stock-Pi public-API adaptation.
 See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

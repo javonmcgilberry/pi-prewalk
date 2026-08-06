@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../extensions/prewalk.js";
 import { AnalyticsStore } from "../src/analytics-store.js";
 import { DEFAULT_EXECUTOR, EXECUTOR_MODEL_ID, PLANNER_MODEL_ID } from "../src/core.js";
+import { PREWALK_TODO_TOOL_NAME } from "../src/todo.js";
 
 function model(id: string): Model<"openai-codex-responses"> {
 	return {
@@ -143,7 +144,7 @@ describe("stock Pi Agent-loop integration", () => {
 					const solCall = calls.filter((id) => id === PLANNER_MODEL_ID).length;
 					if (solCall === 1) {
 						return response(planner, [
-							toolCall("todo-1", "todo", {
+							toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
 								op: "init",
 								list: [
 									{
@@ -160,7 +161,7 @@ describe("stock Pi Agent-loop integration", () => {
 							oldText: "before",
 							newText: "after",
 						}),
-						toolCall("todo-done-1", "todo", {
+						toolCall("todo-done-1", PREWALK_TODO_TOOL_NAME, {
 							op: "done",
 							task: "Make the first mutation",
 						}),
@@ -400,7 +401,7 @@ describe("stock Pi Agent-loop integration", () => {
 					}
 					if (solCall === 2) {
 						return response(planner, [
-							toolCall("todo-1", "todo", {
+							toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
 								op: "init",
 								list: [{ phase: "Implement", items: ["Finish the task"] }],
 							}),

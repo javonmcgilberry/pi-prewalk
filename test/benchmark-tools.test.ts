@@ -129,14 +129,22 @@ describe("benchmark tool attestation", () => {
 				name: "apply_patch",
 				sourceInfo: { path: "/package/benchmark/extensions/benchmark-tools.ts" },
 			},
-			{ name: "todo", sourceInfo: { path: "/package/extensions/prewalk.ts" } },
+			{
+				name: "prewalk_todo",
+				sourceInfo: { path: "/package/extensions/prewalk.ts" },
+			},
 		];
 		const pi = {
 			on: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => {
 				handlers.set(name, handler);
 			}),
 			setActiveTools,
-			getActiveTools: vi.fn(() => ["exec_command", "write_stdin", "apply_patch", "todo"]),
+			getActiveTools: vi.fn(() => [
+				"exec_command",
+				"write_stdin",
+				"apply_patch",
+				"prewalk_todo",
+			]),
 			getAllTools: vi.fn(() => allTools),
 		};
 		await benchmarkAttestation(pi as never);
@@ -145,7 +153,7 @@ describe("benchmark tool attestation", () => {
 			"exec_command",
 			"write_stdin",
 			"apply_patch",
-			"todo",
+			"prewalk_todo",
 		]);
 		expect(() => handlers.get("before_agent_start")?.({}, {})).not.toThrow();
 	});

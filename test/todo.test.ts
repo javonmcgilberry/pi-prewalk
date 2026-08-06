@@ -3,6 +3,7 @@ import {
 	applyTodoOperation,
 	hasActionableTodo,
 	latestTodoPhases,
+	PREWALK_TODO_TOOL_NAME,
 	type TodoPhase,
 	TodoReminder,
 } from "../src/todo.js";
@@ -95,13 +96,28 @@ describe("todo operations", () => {
 		const phases = initialized();
 		expect(
 			latestTodoPhases([
-				{ role: "toolResult", toolName: "todo", isError: false, details: { phases } },
+				{
+					role: "toolResult",
+					toolName: PREWALK_TODO_TOOL_NAME,
+					isError: false,
+					details: { phases },
+				},
 			]),
 		).toEqual(phases);
 		expect(
 			latestTodoPhases([
-				{ role: "toolResult", toolName: "todo", isError: false, details: { phases } },
-				{ role: "toolResult", toolName: "todo", isError: true, details: { phases: [] } },
+				{
+					role: "toolResult",
+					toolName: PREWALK_TODO_TOOL_NAME,
+					isError: false,
+					details: { phases },
+				},
+				{
+					role: "toolResult",
+					toolName: PREWALK_TODO_TOOL_NAME,
+					isError: true,
+					details: { phases: [] },
+				},
 			]),
 		).toEqual(phases);
 	});

@@ -4,6 +4,7 @@ import {
 	type MutationToolResult,
 	MutationTurnBuffer,
 } from "../src/mutation.js";
+import { PREWALK_TODO_TOOL_NAME } from "../src/todo.js";
 
 function assistant(...calls: Array<{ id: string; name: string }>) {
 	return {
@@ -452,13 +453,13 @@ describe("turn selection", () => {
 	it("opens the todo gate for a successful todo in the same turn", () => {
 		const buffer = new MutationTurnBuffer();
 		buffer.recordResult(result("edit", "edit"));
-		buffer.recordResult(result("todo", "todo"));
+		buffer.recordResult(result("todo", PREWALK_TODO_TOOL_NAME));
 
 		const evidence = finish(
 			buffer,
 			[
 				{ id: "edit", name: "edit" },
-				{ id: "todo", name: "todo" },
+				{ id: "todo", name: PREWALK_TODO_TOOL_NAME },
 			],
 			false,
 		);

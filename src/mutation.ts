@@ -1,4 +1,5 @@
 import { isRecord } from "./guards.js";
+import { PREWALK_TODO_TOOL_NAME } from "./todo.js";
 
 export type MutationKind = "edit" | "write" | "apply_patch";
 export type MutationSource =
@@ -293,7 +294,7 @@ export class MutationTurnBuffer {
 
 	finishTurn(message: unknown, options: MutationTurnOptions): MutationTurnEvidence {
 		const todoSucceeded = [...this.results.values()].some(
-			(result) => result.toolName === "todo" && !result.isError,
+			(result) => result.toolName === PREWALK_TODO_TOOL_NAME && !result.isError,
 		);
 		let mutation: MutationCandidate | undefined;
 		if (!this.triggerChosen && (!options.todoActive || options.todoSeen || todoSucceeded)) {

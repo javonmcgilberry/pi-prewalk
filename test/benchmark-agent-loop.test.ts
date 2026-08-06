@@ -192,7 +192,7 @@ describe("benchmark real Pi Agent loop", () => {
 			"exec_command",
 			"write_stdin",
 			"apply_patch",
-			"todo",
+			"prewalk_todo",
 		]);
 	});
 });

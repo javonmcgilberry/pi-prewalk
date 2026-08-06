@@ -1,4 +1,4 @@
-Use the todo tool to maintain a phased implementation and verification plan.
+Use the prewalk_todo tool to maintain Prewalk's phased implementation and verification plan.
 
 - `init` replaces the list with one or more named phases.
 - `start` makes one task current.

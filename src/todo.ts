@@ -1,5 +1,7 @@
 import { isRecord } from "./guards.js";
 
+export const PREWALK_TODO_TOOL_NAME = "prewalk_todo";
+
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 export type TodoOperation =
 	| "init"
@@ -323,7 +325,11 @@ export function applyTodoOperation(current: readonly TodoPhase[], input: TodoInp
 export function latestTodoPhases(messages: readonly unknown[]): TodoPhase[] {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
-		if (!isRecord(message) || message.role !== "toolResult" || message.toolName !== "todo")
+		if (
+			!isRecord(message) ||
+			message.role !== "toolResult" ||
+			message.toolName !== PREWALK_TODO_TOOL_NAME
+		)
 			continue;
 		if (
 			message.isError === true ||

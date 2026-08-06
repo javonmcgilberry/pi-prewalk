@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const ACTIVE_TOOLS = ["exec_command", "write_stdin", "apply_patch", "todo"];
+const ACTIVE_TOOLS = ["exec_command", "write_stdin", "apply_patch", "prewalk_todo"];
 const REMOTE_TOOLS = new Set(["exec_command", "write_stdin", "apply_patch"]);
 
 function attest(pi: ExtensionAPI): void {
@@ -18,7 +18,7 @@ function attest(pi: ExtensionAPI): void {
 		) {
 			throw new Error("benchmark-host-tool-owner");
 		}
-		if (tool.name === "todo" && !tool.sourceInfo.path.toLowerCase().includes("prewalk")) {
+		if (tool.name === "prewalk_todo" && !tool.sourceInfo.path.toLowerCase().includes("prewalk")) {
 			throw new Error("benchmark-todo-owner");
 		}
 	}

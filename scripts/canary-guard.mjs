@@ -64,7 +64,7 @@ export default function canaryGuard(pi) {
 			block: true,
 			reason: `PREWALK_CANARY_GUARD: ${reason}`,
 		});
-		if (event.toolName === "todo") return undefined;
+		if (event.toolName === "prewalk_todo") return undefined;
 		if (event.toolName !== "edit" && event.toolName !== "write") {
 			return deny(`unexpected tool ${event.toolName}`);
 		}

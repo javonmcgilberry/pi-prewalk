@@ -41,7 +41,7 @@ unreachable objects.
 The benchmark extension registers `exec_command`, `write_stdin`, and
 `apply_patch` before conversion loads, so Pi's supported first-registration rule
 keeps all repository work inside the worker. A final extension freezes the
-active slate to those three tools plus Prewalk's `todo` and verifies ownership
+active slate to those three tools plus Prewalk's `prewalk_todo` and verifies ownership
 before every Agent turn.
 
 After Pi settles or times out, the controller seals a binary candidate patch and
