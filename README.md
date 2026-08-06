@@ -230,6 +230,21 @@ loaded child is disabled or unavailable.
 
 ## Local analytics
 
+Analytics views use Pi session titles from current chat logs or private
+backfill metadata when available, but receipts remain limited to their existing
+allowlisted metadata. Generated session summaries are not stored in Prewalk
+analytics.
+
+In TUI mode, `/prewalk stats` opens an interactive dashboard with the exact
+current Pi session first, followed by this week, this month, all time, and
+recent sessions. Use the arrow keys, Enter, `?`, `R`, and Escape to navigate it.
+The dashboard uses session titles first and keeps stable IDs in details. It
+does not fold delegated child sessions into the current-session section; use
+`/prewalk stats task` for the whole task tree. Active runs show actual spend
+only. Finished runs compare planner + executor call cost with the price of the
+same recorded tokens at planner rates. A planning-only run is shown as no
+executor handoff, not as missing usage.
+
 Analytics are enabled by default and stay under
 `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`. Prewalk stores
 allowlisted run metadata, token counts, Pi-reported cost, pricing evidence,
@@ -237,8 +252,9 @@ outcomes, and timestamps. It does not store prompts, responses, code, tool
 inputs or outputs, credentials, provider payloads, raw errors, or filesystem
 paths.
 
-Savings are a labeled planner-only counterfactual, not a billing statement.
-Missing pricing evidence stays `unavailable`; Prewalk does not invent a rate.
+Historical differences are price-based estimates, not billing statements or
+measured planner-only benchmark runs. Missing pricing is named directly;
+Prewalk does not invent a rate.
 Direct and nested pi-subagents costs are accepted only from terminal public
 result details and counted once. Async or detached work without terminal public
 evidence remains pending or incomplete.

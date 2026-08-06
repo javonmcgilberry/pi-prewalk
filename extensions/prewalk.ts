@@ -12,6 +12,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
+	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -28,6 +29,7 @@ import {
 	type UsageRole,
 	usageEvidenceKey,
 } from "../src/analytics.js";
+import { showAnalyticsDashboard } from "../src/analytics-dashboard.js";
 import {
 	renderAnalyticsOverview,
 	renderReceiptReport,
@@ -62,6 +64,7 @@ import {
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
+import { mergeSessionTitles, readSessionMetadataTitles } from "../src/session-metadata.js";
 import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
 import {
 	applyTodoOperation,
@@ -198,7 +201,7 @@ function helpText(): string {
 		"Prewalk quick guide",
 		"",
 		"/prewalk status  Show the current planner, executor, gate, route, and failure reason.",
-		"/prewalk stats  Show lifetime, month, week, session, and recent local analytics.",
+		"/prewalk stats  Open the current-session dashboard; press ? for cost explanations.",
 		"/prewalk stats --successful  Show successful receipts only.",
 		"/prewalk stats receipt <run-id>  Show one receipt's evidence and calculation.",
 		"/prewalk stats task  Show root and delegated task-tree analytics.",
@@ -218,7 +221,7 @@ function helpText(): string {
 		"Reload extension and config changes: /reload.",
 		`Configuration file: ${configPath()}`,
 		"Configuration is written atomically by /prewalk configure.",
-		"Analytics stay local. Actual means Pi-reported attributed cost; estimated and catalog-estimated values are labeled counterfactuals; unavailable means evidence was insufficient; unfinished means no terminal receipt exists; verified is reserved for accepted benchmark evidence.",
+		"Analytics stay local. Actual spend is provider-reported cost. The comparison prices recorded executor tokens at planner rates; planning-only runs show no handoff, and missing inputs are named directly.",
 		"Disabling collection preserves existing receipts and does not change routing. Export refuses existing destinations. Reset excludes any active prior-generation run, and collection resumes on the next run.",
 		"",
 		"Prewalk derives the planner from Pi's selected model and reasoning for each epoch. Only primary Agent-loop requests route to the executor after the handoff gate.",
@@ -500,6 +503,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const mutations = new MutationTurnBuffer();
 	const evaluationMutations = new MutationTurnBuffer();
 	const analyticsStore = new AnalyticsStore(getAgentDir());
+	const loadSessionTitles = async (): Promise<ReadonlyMap<string, string>> => {
+		const metadataTitles = await readSessionMetadataTitles(getAgentDir());
+		const sessionDirectory = process.env.PI_CODING_AGENT_SESSION_DIR;
+		const sessions = sessionDirectory
+			? await SessionManager.listAll(sessionDirectory)
+			: await SessionManager.listAll();
+		return mergeSessionTitles(metadataTitles, sessions);
+	};
 	let activeSessionId: string | undefined;
 	let autoEnabled = false;
 	let lastOutcome: "bypassed" | "completed" | "released" | undefined;
@@ -639,7 +650,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 						invocation.analyticsGeneration,
 					);
 				});
-			} catch {}
+			} catch {
+				// Delegation analytics are best-effort and must not block routing.
+			}
 		}
 	};
 
@@ -778,6 +791,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				: journal.handoffState;
 			const calculation = calculateSavings({
 				outcome,
+				handoffState: journal.handoffState,
 				usage: journal.usage,
 				modelMetadata: pricing,
 				catalog: state.catalog,
@@ -819,6 +833,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (journal.sessionId !== sessionId) continue;
 			const calculation = calculateSavings({
 				outcome: "interrupted",
+				handoffState: journal.handoffState,
 				usage: journal.usage,
 				catalogFallbackEnabled: false,
 			});
@@ -1297,7 +1312,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			}
 			if (input === "task") {
 				const report = await analyticsStore.taskTree(ctx.sessionManager.getSessionId());
-				ctx.ui.notify(renderTaskTreeReport(report), "info");
+				ctx.ui.notify(renderTaskTreeReport(report, await loadSessionTitles()), "info");
 				return;
 			}
 			if (input.startsWith("receipt ")) {
@@ -1305,12 +1320,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				const receipt = (await analyticsStore.listReceipts()).find(
 					(candidate) => candidate.runId === runId,
 				);
-				ctx.ui.notify(
-					receipt
-						? renderReceiptReport(receipt)
-						: `No analytics receipt found for run ${runId}.`,
-					receipt ? "info" : "error",
-				);
+				if (!receipt) {
+					ctx.ui.notify(`No analytics receipt found for run ${runId}.`, "error");
+					return;
+				}
+				const sessionTitles = await loadSessionTitles();
+				ctx.ui.notify(renderReceiptReport(receipt, sessionTitles), "info");
 				return;
 			}
 			const successfulOnly = input === "--successful";
@@ -1319,44 +1334,55 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				? ["succeeded"]
 				: undefined;
 			const common = outcomes ? { outcomes } : {};
-			const analytics = coordinator.run?.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
-			const snapshot = await analyticsStore.snapshot();
-			const now = new Date();
-			const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-			const [lifetime, month, week, session] = await Promise.all([
-				analyticsStore.aggregate(
-					{
-						...common,
-						window: "lifetime",
-						recentLimit: analytics.recentReceiptCount,
-						now,
-						timeZone,
-					},
-					snapshot,
-				),
-				analyticsStore.aggregate({ ...common, window: "month", now, timeZone }, snapshot),
-				analyticsStore.aggregate({ ...common, window: "week", now, timeZone }, snapshot),
-				analyticsStore.aggregate(
-					{
-						...common,
-						now,
-						timeZone,
-						sessionId: ctx.sessionManager.getSessionId(),
-					},
-					snapshot,
-				),
-			]);
-			const verifiedBenchmark = await analyticsStore.readVerifiedBenchmarkSummary();
-			ctx.ui.notify(
-				renderAnalyticsOverview({
+			const loadOverview = async () => {
+				await analyticsWrites;
+				const analytics = coordinator.run?.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
+				const snapshot = await analyticsStore.snapshot();
+				const now = new Date();
+				const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+				const sessionId = ctx.sessionManager.getSessionId();
+				const [lifetime, month, week, session] = await Promise.all([
+					analyticsStore.aggregate(
+						{
+							...common,
+							window: "lifetime",
+							recentLimit: analytics.recentReceiptCount,
+							now,
+							timeZone,
+						},
+						snapshot,
+					),
+					analyticsStore.aggregate({ ...common, window: "month", now, timeZone }, snapshot),
+					analyticsStore.aggregate({ ...common, window: "week", now, timeZone }, snapshot),
+					analyticsStore.aggregate(
+						{
+							...common,
+							now,
+							timeZone,
+							sessionId,
+						},
+						snapshot,
+					),
+				]);
+				const verifiedBenchmark = await analyticsStore.readVerifiedBenchmarkSummary();
+				const sessionTitles = await loadSessionTitles();
+				return {
+					generatedAt: now.toISOString(),
+					sessionId,
 					lifetime,
 					month,
 					week,
 					session,
 					verifiedBenchmark: verifiedBenchmark ?? undefined,
-				}),
-				"info",
-			);
+					sessionTitles,
+				};
+			};
+			const overview = await loadOverview();
+			if (!input && ctx.mode === "tui") {
+				await showAnalyticsDashboard(ctx, overview, loadOverview);
+				return;
+			}
+			ctx.ui.notify(renderAnalyticsOverview(overview), "info");
 		} catch (error) {
 			if (error instanceof Error && error.message.includes("choose a new filename")) {
 				ctx.ui.notify(error.message, "error");

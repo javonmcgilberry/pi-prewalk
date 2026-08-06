@@ -533,6 +533,39 @@ describe("AnalyticsStore", () => {
 		]);
 	});
 
+	it("does not count legacy planning-only receipts as unavailable comparisons", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.promoteReceipt(
+			receipt(generation, "planning-only", {
+				handoffState: "not-started",
+				usage: [usage(1, 0.25)],
+				actualCost: 0.25,
+				estimate: { kind: "unavailable", reason: "usage-incomplete" },
+				pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
+			}),
+		);
+
+		const aggregate = await store.aggregate();
+		expect(aggregate.unavailableSavingsCount).toBe(0);
+		expect(aggregate.estimatedSavings).toBe(0);
+		expect(aggregate.estimatedExtraCost).toBe(0);
+	});
+
+	it("keeps active journals local to one exact Pi session", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		await store.writeJournal(journal(generation, "root-active", { sessionId: "root" }));
+		await store.writeJournal(
+			journal(generation, "child-active", { epoch: "child-epoch", sessionId: "child" }),
+		);
+
+		const session = await store.aggregate({ sessionId: "root" });
+
+		expect(session.actualCost).toBe(0.25);
+		expect(session.unfinished.map((run) => run.runId)).toEqual(["root-active"]);
+	});
+
 	it("aggregates by outcome, session, recent limit, local week, and DST-aware month", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
@@ -611,9 +644,12 @@ describe("AnalyticsStore", () => {
 		);
 
 		const lifetime = await store.aggregate();
+		const session = await store.aggregate({ sessionId: "root" });
 		const taskTree = await store.taskTree("root");
 
 		expect(lifetime.actualCost).toBeCloseTo(0.7);
+		expect(session.actualCost).toBeCloseTo(0.5);
+		expect(session.receipts.map((item) => item.runId)).toEqual(["root-run"]);
 		expect(taskTree.rootActualCost).toBe(0.5);
 		expect(taskTree.directChildActualCost).toBe(0.2);
 		expect(taskTree.knownTaskTreeActualCost).toBeCloseTo(0.7);
@@ -621,7 +657,7 @@ describe("AnalyticsStore", () => {
 		expect(taskTree.costCoverage).toBe("complete");
 	});
 
-	it("includes child-only delegation evidence in lifetime and session spend", async () => {
+	it("keeps child-only delegation evidence out of exact-session spend", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
 		await store.promoteReceipt(
@@ -643,9 +679,12 @@ describe("AnalyticsStore", () => {
 
 		const lifetime = await store.aggregate();
 		const session = await store.aggregate({ sessionId: "root" });
+		const taskTree = await store.taskTree("root");
 
 		expect(lifetime.actualCost).toBeCloseTo(0.7);
-		expect(session.actualCost).toBeCloseTo(0.7);
+		expect(session.actualCost).toBeCloseTo(0.5);
+		expect(session.receipts.map((item) => item.runId)).toEqual(["root-run"]);
+		expect(taskTree.knownTaskTreeActualCost).toBeCloseTo(0.7);
 	});
 
 	it("uses a linked child receipt when the parent summary has no cost", async () => {

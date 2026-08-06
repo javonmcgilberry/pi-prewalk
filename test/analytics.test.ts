@@ -186,6 +186,29 @@ const completeRates = {
 };
 
 describe("analytics usage attribution", () => {
+	it("treats a successful run with no executor handoff as a zero-dollar difference", () => {
+		const calculation = calculateSavings({
+			outcome: "succeeded",
+			handoffState: "not-started",
+			usage: [
+				usageSlice(1, "planner-primary", {
+					cost: { ...emptyCost, input: 0.4, total: 0.4 },
+				}),
+			],
+			modelMetadata: {
+				capturedAt: "2026-07-30T12:00:00.000Z",
+				rates: completeRates,
+			},
+			catalogFallbackEnabled: false,
+		});
+
+		expect(calculation.estimate).toEqual({
+			kind: "session-counterfactual",
+			plannerOnlyCost: 0.4,
+			savings: 0,
+		});
+	});
+
 	it("normalizes final observations and deduplicates overlapping assistant, tool, and compaction evidence", () => {
 		const reported = {
 			input: 100,
@@ -294,6 +317,7 @@ describe("analytics counterfactual pricing", () => {
 
 		const calculation = calculateSavings({
 			outcome: "succeeded",
+			handoffState: "completed",
 			usage,
 			modelMetadata: { capturedAt: "2026-07-30T12:00:00.000Z", rates: completeRates },
 			catalogFallbackEnabled: false,
@@ -336,6 +360,7 @@ describe("analytics counterfactual pricing", () => {
 
 		const calculation = calculateSavings({
 			outcome: "succeeded",
+			handoffState: "completed",
 			usage,
 			modelMetadata: { capturedAt: "2026-07-30T12:00:00.000Z", rates: tieredRates },
 			catalogFallbackEnabled: false,
@@ -369,6 +394,7 @@ describe("analytics counterfactual pricing", () => {
 	] as const)("returns unavailable for invalid model metadata %#", (modelMetadata, reason) => {
 		const calculation = calculateSavings({
 			outcome: "succeeded",
+			handoffState: "completed",
 			usage: [
 				usageSlice(1, "planner-primary", { inputTokens: 1 }),
 				usageSlice(2, "executor-primary", { inputTokens: 1, outputTokens: 1 }),
@@ -390,12 +416,14 @@ describe("analytics counterfactual pricing", () => {
 		const catalog = { catalogDate: "2026-07-30", rates: completeRates };
 		const disabled = calculateSavings({
 			outcome: "succeeded",
+			handoffState: "completed",
 			usage,
 			catalog,
 			catalogFallbackEnabled: false,
 		});
 		const enabled = calculateSavings({
 			outcome: "succeeded",
+			handoffState: "completed",
 			usage,
 			catalog,
 			catalogFallbackEnabled: true,
@@ -415,6 +443,7 @@ describe("analytics counterfactual pricing", () => {
 		(outcome) => {
 			const calculation = calculateSavings({
 				outcome,
+				handoffState: "completed",
 				usage: [usageSlice(1, "planner-primary", { cost: { ...emptyCost, total: 2 } })],
 				modelMetadata: {
 					capturedAt: "2026-07-30T12:00:00.000Z",

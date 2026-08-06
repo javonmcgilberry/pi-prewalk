@@ -366,6 +366,7 @@ export interface CatalogPricingInput {
 
 export interface SavingsCalculationInput {
 	outcome: RunOutcome;
+	handoffState: HandoffState;
 	usage: readonly UsageSlice[];
 	modelMetadata?: SessionPricingInput;
 	catalog?: CatalogPricingInput;
@@ -448,6 +449,20 @@ export function calculateSavings(input: SavingsCalculationInput): SavingsCalcula
 	);
 	const executorUsage = primaryUsage.filter((slice) => slice.role === "executor-primary");
 	if (executorUsage.length === 0) {
+		if (input.handoffState === "not-started" && input.modelMetadata !== undefined) {
+			return {
+				actualCost: actual.total,
+				estimate: {
+					kind: "session-counterfactual",
+					plannerOnlyCost: actual.plannerPrimary,
+					savings: 0,
+				},
+				pricingEvidence: {
+					source: "model-metadata",
+					capturedAt: input.modelMetadata.capturedAt,
+				},
+			};
+		}
 		return unavailableCalculation(actual.total, "usage-incomplete");
 	}
 
@@ -477,6 +492,33 @@ export function calculateSavings(input: SavingsCalculationInput): SavingsCalcula
 	}
 
 	return unavailableCalculation(actual.total, sessionFailure ?? "pricing-missing");
+}
+
+/**
+ * Makes receipts written before planning-only runs were comparable behave like
+ * new receipts without rewriting the local ledger.
+ */
+export function comparisonEstimate(receipt: RunReceipt): SavingsEstimate {
+	if (
+		isPlanningOnlyReceipt(receipt) &&
+		receipt.estimate.kind === "unavailable" &&
+		receipt.estimate.reason === "usage-incomplete"
+	) {
+		return {
+			kind: "session-counterfactual",
+			plannerOnlyCost: summarizeActualCost(receipt.usage).plannerPrimary,
+			savings: 0,
+		};
+	}
+	return receipt.estimate;
+}
+
+export function isPlanningOnlyReceipt(receipt: RunReceipt): boolean {
+	return (
+		receipt.outcome === "succeeded" &&
+		receipt.handoffState === "not-started" &&
+		!receipt.usage.some((slice) => slice.role === "executor-primary")
+	);
 }
 
 function compareUsageObservations(left: UsageObservation, right: UsageObservation): number {

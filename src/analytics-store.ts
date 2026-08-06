@@ -14,6 +14,7 @@ import {
 import path from "node:path";
 import {
 	ANALYTICS_SCHEMA_VERSION,
+	comparisonEstimate,
 	type DelegationEvidence,
 	deserializeRunJournal,
 	deserializeRunReceipt,
@@ -54,6 +55,7 @@ export interface AnalyticsQuery {
 	now?: Date;
 	timeZone?: string;
 	outcomes?: readonly RunOutcome[];
+	/** Match one exact Pi session. Descendant sessions belong to taskTree(). */
 	sessionId?: string;
 	recentLimit?: number;
 }
@@ -375,18 +377,14 @@ export class AnalyticsStore {
 		const directChildActualCost = receiptActualCost("direct") + fallbackActualCost("direct");
 		const nestedChildActualCost = receiptActualCost("nested") + fallbackActualCost("nested");
 		const estimateReceipts = [...rootReceipts, ...uniqueDescendants];
-		const estimatedSavings = estimateReceipts.reduce(
-			(sum, receipt) =>
-				sum +
-				(receipt.estimate.kind === "unavailable" ? 0 : Math.max(0, receipt.estimate.savings)),
-			0,
-		);
-		const estimatedExtraCost = estimateReceipts.reduce(
-			(sum, receipt) =>
-				sum +
-				(receipt.estimate.kind === "unavailable" ? 0 : Math.max(0, -receipt.estimate.savings)),
-			0,
-		);
+		const estimatedSavings = estimateReceipts.reduce((sum, receipt) => {
+			const estimate = comparisonEstimate(receipt);
+			return sum + (estimate.kind === "unavailable" ? 0 : Math.max(0, estimate.savings));
+		}, 0);
+		const estimatedExtraCost = estimateReceipts.reduce((sum, receipt) => {
+			const estimate = comparisonEstimate(receipt);
+			return sum + (estimate.kind === "unavailable" ? 0 : Math.max(0, -estimate.savings));
+		}, 0);
 		return {
 			rootSessionId,
 			rootReceipts,
@@ -418,7 +416,7 @@ export class AnalyticsStore {
 							: fallbackEvidence.length > 0 || unresolved.length > 0
 								? "incomplete"
 								: estimateReceipts.every(
-											(receipt) => receipt.estimate.kind !== "unavailable",
+											(receipt) => comparisonEstimate(receipt).kind !== "unavailable",
 										)
 									? "complete"
 									: "incomplete",
@@ -450,19 +448,13 @@ export class AnalyticsStore {
 		const timeZone = query.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const now = query.now ?? new Date();
 		const outcomes = query.outcomes === undefined ? null : new Set(query.outcomes);
-		const delegationEvidence = (snapshot.delegationEvidence ?? []).filter(
-			(item) => query.sessionId === undefined || item.rootSessionId === query.sessionId,
-		);
-		const sessionIds = new Set<string>();
-		if (query.sessionId !== undefined) {
-			sessionIds.add(query.sessionId);
-			for (const item of delegationEvidence) {
-				if (item.childSessionId !== undefined) sessionIds.add(item.childSessionId);
-			}
-		}
+		const delegationEvidence =
+			query.sessionId === undefined ? (snapshot.delegationEvidence ?? []) : [];
 		const receipts = snapshot.receipts
 			.filter((receipt) => outcomes === null || outcomes.has(receipt.outcome))
-			.filter((receipt) => query.sessionId === undefined || sessionIds.has(receipt.sessionId))
+			.filter(
+				(receipt) => query.sessionId === undefined || receipt.sessionId === query.sessionId,
+			)
 			.filter((receipt) =>
 				inWindow(receipt.completedAt ?? receipt.startedAt, query.window, now, timeZone),
 			)
@@ -485,9 +477,10 @@ export class AnalyticsStore {
 		for (const receipt of receipts) {
 			actualCost += receipt.actualCost;
 			outcomeCounts[receipt.outcome] += 1;
-			if (receipt.estimate.kind === "unavailable") unavailableSavingsCount += 1;
-			else if (receipt.estimate.savings >= 0) estimatedSavings += receipt.estimate.savings;
-			else estimatedExtraCost += Math.abs(receipt.estimate.savings);
+			const estimate = comparisonEstimate(receipt);
+			if (estimate.kind === "unavailable") unavailableSavingsCount += 1;
+			else if (estimate.savings >= 0) estimatedSavings += estimate.savings;
+			else estimatedExtraCost += Math.abs(estimate.savings);
 		}
 
 		const unfinished = snapshot.journals

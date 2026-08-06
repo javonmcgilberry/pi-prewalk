@@ -116,12 +116,16 @@ describe("analytics receipt report", () => {
 	it("renders verified benchmark evidence separately from personal totals", () => {
 		const lifetime = aggregate({ actualCost: 0.6 });
 		const before = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
 			lifetime,
 			month: aggregate(),
 			week: aggregate(),
 			session: aggregate(),
 		});
 		const after = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
 			lifetime,
 			month: aggregate(),
 			week: aggregate(),
@@ -139,11 +143,30 @@ describe("analytics receipt report", () => {
 		expect(renderReceiptReport(receipt)).toBe(
 			[
 				"Run run-report: outcome succeeded; handoff completed",
+				"Session: session-report",
 				"Models: planner provider-a/planner -> executor provider-b/executor",
-				"Actual spend (Pi-reported): $0.600000",
-				"Actual detail: planner primary $0.300000; executor primary $0.200000; auxiliary $0.100000",
-				"Session counterfactual estimate (model metadata captured 2026-07-30T12:01:00.000Z): estimated savings $0.300000; planner-only cost $0.800000.",
+				"Actual spend reported by provider: $0.600000",
+				"Actual spend by call type: planner $0.300000; executor $0.200000; helper/compaction $0.100000",
+				"Price comparison (model pricing captured 2026-07-30T12:01:00.000Z): $0.300000 less than planner alone; planner-alone estimate $0.800000.",
 			].join("\n"),
+		);
+	});
+
+	it("uses available session titles while retaining stable session and run identifiers", () => {
+		const titles = new Map([["session-report", "Authentication cleanup"]]);
+		const rendered = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
+			lifetime: aggregate({ recentReceipts: [receipt] }),
+			month: aggregate(),
+			week: aggregate(),
+			session: aggregate(),
+			sessionTitles: titles,
+		});
+		expect(rendered).toContain("Authentication cleanup (session-report)");
+		expect(rendered).toContain("run-report");
+		expect(renderReceiptReport(receipt, titles)).toContain(
+			"Session: Authentication cleanup (session-report)",
 		);
 	});
 
@@ -154,7 +177,7 @@ describe("analytics receipt report", () => {
 				{ source: "catalog", catalogDate: "2026-07-30" },
 			),
 		).toBe(
-			"Catalog estimate (catalog dated 2026-07-30): estimated savings $0.250000; planner-only cost $1.250000.",
+			"Catalog price comparison (catalog dated 2026-07-30): $0.250000 less than planner alone; planner-alone estimate $1.250000.",
 		);
 	});
 
@@ -169,7 +192,7 @@ describe("analytics receipt report", () => {
 				source: "model-metadata",
 				capturedAt: "2026-07-30T12:01:00.000Z",
 			}),
-		).toContain("estimated extra cost $0.200000");
+		).toContain("$0.200000 more than planner alone");
 	});
 
 	it("renders aggregate evidence classes and unfinished state in text", () => {
@@ -214,19 +237,42 @@ describe("analytics receipt report", () => {
 			],
 		});
 		const rendered = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
 			lifetime,
 			month: aggregate(),
 			week: aggregate(),
-			session: aggregate(),
+			session: aggregate({
+				receiptCount: 1,
+				actualCost: 0.7,
+				receipts: [receipt],
+				unfinished: [
+					{
+						runId: "run-active",
+						epoch: "epoch-active",
+						sessionId: "session-report",
+						startedAt: "2026-07-30T12:02:00.000Z",
+						outcome: "unfinished",
+						actualCost: 0.1,
+					},
+				],
+			}),
 		});
-		expect(rendered).toContain("Observed spend (all recorded runs)");
-		expect(rendered).toContain("Cost comparison (successful runs with complete pricing)");
-		expect(rendered).toContain("1 / 2");
+		expect(rendered.indexOf("Current Pi session: session-report")).toBeLessThan(
+			rendered.indexOf("History"),
+		);
+		expect(rendered).toContain("Snapshot: 2026-07-30T13:00:00.000Z");
+		expect(rendered).toContain("Active runs: 1");
+		expect(rendered).toContain("Finished runs: 1");
+		expect(rendered).toContain("This current-session section excludes delegated child sessions");
+		expect(rendered).toContain("History · actual spend");
+		expect(rendered).toContain("History · planner-alone price comparison");
+		expect(rendered).toContain("1 of 2 completed");
 		expect(rendered).toContain("$1.30");
 		expect(rendered).toContain("$0.80");
-		expect(rendered).toContain("Save $0.30 (37.5%)");
+		expect(rendered).toContain("$0.30 less than planner alone (37.5%)");
 		expect(rendered).toContain("run-report");
-		expect(rendered).toContain("Unfinished runs (1; observed spend only)");
+		expect(rendered).toContain("run-active");
 	});
 
 	it("distinguishes catalog estimates and unavailable comparisons in overview tables", () => {
@@ -237,13 +283,52 @@ describe("analytics receipt report", () => {
 			pricingEvidence: { source: "catalog", catalogDate: "2026-07-30" },
 		};
 		const rendered = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
 			lifetime: aggregate({ recentReceipts: [catalogReceipt] }),
 			month: aggregate(),
 			week: aggregate(),
 			session: aggregate(),
 		});
-		expect(rendered).toContain("Catalog save $0.30");
-		expect(rendered).toContain("No comparable runs");
+		expect(rendered).toContain("$0.30 less than planner alone");
+		expect(rendered).toContain("No completed runs yet");
+	});
+
+	it("keeps unavailable evidence visible beside comparable history", () => {
+		const missingPricing: RunReceipt = {
+			...receipt,
+			runId: "run-missing-pricing",
+			estimate: { kind: "unavailable", reason: "pricing-missing" },
+			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+		};
+		const rendered = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
+			lifetime: aggregate({
+				receiptCount: 2,
+				receipts: [receipt, missingPricing],
+				recentReceipts: [receipt, missingPricing],
+			}),
+			month: aggregate(),
+			week: aggregate(),
+			session: aggregate(),
+		});
+		expect(rendered).toContain("1 of 2 completed");
+		expect(rendered).toContain("1 run: model prices were not available");
+	});
+
+	it("explains planning-only runs without calling their comparison unavailable", () => {
+		const planningOnly: RunReceipt = {
+			...receipt,
+			handoffState: "not-started",
+			usage: receipt.usage.slice(0, 1),
+			actualCost: 0.3,
+			estimate: { kind: "unavailable", reason: "usage-incomplete" },
+			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
+		};
+		expect(renderReceiptReport(planningOnly)).toContain(
+			"No executor handoff was needed, so the compared cost is the same as actual planner cost",
+		);
 	});
 
 	it("renders every task-tree subtotal and coverage dimension as a visible reconciliation", () => {
@@ -288,16 +373,16 @@ describe("analytics receipt report", () => {
 	});
 
 	it.each([
-		["run-not-successful", "run was not successful"],
-		["pricing-missing", "pricing is missing"],
-		["pricing-incomplete", "pricing is incomplete for used token categories"],
-		["pricing-zero", "pricing contains a zero or invalid rate"],
-		["usage-incomplete", "executor usage is incomplete"],
+		["run-not-successful", "the run did not complete successfully"],
+		["pricing-missing", "model prices were not available"],
+		["pricing-incomplete", "a price was missing for a token type the run used"],
+		["pricing-zero", "a recorded model price was zero or invalid"],
+		["usage-incomplete", "recorded executor usage was missing"],
 		["analytics-disabled", "analytics collection was disabled"],
 		["unfinished-run", "run is active or unfinished"],
 	] as const)("explains unavailable reason %s", (reason, label) => {
 		expect(
 			renderSavingsEstimate({ kind: "unavailable", reason }, { source: "unavailable", reason }),
-		).toBe(`Savings unavailable: ${label}.`);
+		).toBe(`Cannot compare with planner alone: ${label}.`);
 	});
 });

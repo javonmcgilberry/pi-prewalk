@@ -1192,7 +1192,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("Prewalk quick guide");
 		expect(harness.notifications.at(-1)).toContain("/prewalk status");
 		expect(harness.notifications.at(-1)).toContain("/prewalk stats");
-		expect(harness.notifications.at(-1)).toContain("Actual means Pi-reported");
+		expect(harness.notifications.at(-1)).toContain("Actual spend is provider-reported cost");
 		expect(harness.notifications.at(-1)).toContain("Export refuses existing destinations");
 		expect(harness.notifications.at(-1)).toContain("/prewalk cancel, then /prewalk run");
 		expect(harness.notifications.at(-1)).toContain("/prewalk run");
@@ -1202,6 +1202,37 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain(
 			"derives the planner from Pi's selected model and reasoning",
 		);
+	});
+
+	it("opens the interactive dashboard for a TUI stats request", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		const custom = vi.fn(async () => undefined);
+		(harness.context as unknown as { mode: string }).mode = "tui";
+		(harness.context.ui as unknown as { custom: typeof custom }).custom = custom;
+
+		await harness.commands.get("prewalk")?.("stats", harness.context);
+
+		expect(custom).toHaveBeenCalledTimes(1);
+	});
+
+	it("reports a completed planning-only run as no cost difference", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.planner),
+		});
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("outcome succeeded; handoff not-started");
+		expect(harness.notifications.at(-1)).toContain("No executor handoff was needed");
+		expect(harness.notifications.at(-1)).not.toContain("Cannot compare");
 	});
 
 	it("collects planner and later executor turns until shutdown, then reports the receipt", async () => {
@@ -1226,6 +1257,11 @@ describe("Prewalk extension harness", () => {
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		await harness.commands.get("prewalk")?.("stats", harness.context);
+		expect(harness.notifications.at(-1)).toContain("Current Pi session");
+		expect(harness.notifications.at(-1)).toContain("Snapshot:");
+		expect(harness.notifications.at(-1)).toContain(
+			"This current-session section excludes delegated child sessions",
+		);
 		expect(harness.notifications.at(-1)).toContain("All time");
 		expect(harness.notifications.at(-1)).toContain("$4.00");
 		expect(harness.notifications.at(-1)).toContain(runId);
@@ -1234,9 +1270,11 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("All time");
 
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
-		expect(harness.notifications.at(-1)).toContain("Actual detail: planner primary $2.000000");
-		expect(harness.notifications.at(-1)).toContain("executor primary $2.000000");
-		expect(harness.notifications.at(-1)).toContain("Savings unavailable");
+		expect(harness.notifications.at(-1)).toContain(
+			"Actual spend by call type: planner $2.000000",
+		);
+		expect(harness.notifications.at(-1)).toContain("executor $2.000000");
+		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
 	});
 
 	it("refuses an existing export destination without changing its bytes", async () => {
@@ -1892,7 +1930,7 @@ describe("Prewalk extension harness", () => {
 		});
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain("outcome cancelled");
-		expect(harness.notifications.at(-1)).toContain("Savings unavailable");
+		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
 	});
 
 	it("detects provider replacement before the next Agent-loop request", async () => {
@@ -1936,7 +1974,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain("outcome failed");
-		expect(harness.notifications.at(-1)).toContain("Savings unavailable");
+		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {
