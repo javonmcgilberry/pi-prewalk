@@ -8,13 +8,14 @@ import {
 	readFile,
 	rename,
 	rm,
+	stat,
 	unlink,
 	writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import {
 	ANALYTICS_SCHEMA_VERSION,
-	comparisonEstimate,
+	type ComparisonSummary,
 	type DelegationEvidence,
 	deserializeRunJournal,
 	deserializeRunReceipt,
@@ -27,11 +28,16 @@ import {
 	serializeRunJournal,
 	serializeRunReceipt,
 	summarizeActualCost,
+	summarizeComparisons,
 	type TaskTreeReport,
 	type TaskTreeUnresolvedDescendant,
 	type VerifiedBenchmarkSummary,
 } from "./analytics.js";
-import { delegationEvidenceKey, parseDelegationAnalyticsEvent } from "./analytics-subagents.js";
+import {
+	delegationEvidenceKey,
+	isTerminalDelegation,
+	parseDelegationAnalyticsEvent,
+} from "./analytics-subagents.js";
 import { isRecord } from "./guards.js";
 
 const STORE_DIRECTORY = "prewalk/analytics";
@@ -69,6 +75,12 @@ export interface UnfinishedRunSummary {
 	actualCost: number;
 }
 
+export interface UnfinishedJournalRecord {
+	journal: RunJournal;
+	/** Epoch milliseconds of the journal file's last write. */
+	modifiedAt: number;
+}
+
 export interface AnalyticsAggregate {
 	generation: string;
 	receiptCount: number;
@@ -76,6 +88,7 @@ export interface AnalyticsAggregate {
 	estimatedSavings: number;
 	estimatedExtraCost: number;
 	unavailableSavingsCount: number;
+	comparison: ComparisonSummary;
 	outcomes: Record<RunOutcome, number>;
 	receipts: RunReceipt[];
 	recentReceipts: RunReceipt[];
@@ -178,14 +191,19 @@ export class AnalyticsStore {
 	async writeJournal(value: RunJournal): Promise<void> {
 		const journal = parseRunJournal(value);
 		await this.requireCurrentGeneration(journal.generation);
+		if (await this.receiptExists(journal.generation, journal.runId, journal.epoch)) return;
 		const target = this.journalPath(journal.generation, journal.runId, journal.epoch);
 		await this.hooks.beforeLedgerPublish?.("journal", journal.generation, target);
 		await this.requireCurrentGeneration(journal.generation);
 		await this.atomicReplace(target, `${serializeRunJournal(journal)}\n`);
+		if (await this.receiptExists(journal.generation, journal.runId, journal.epoch)) {
+			await unlink(target).catch(ignoreMissingFile);
+		}
 	}
 
 	async restoreJournal(runId: string, epoch: string): Promise<RunJournal | null> {
 		const manifest = await this.initialize();
+		if (await this.receiptExists(manifest.generation, runId, epoch)) return null;
 		let stored: string;
 		try {
 			stored = await readFile(this.journalPath(manifest.generation, runId, epoch), "utf8");
@@ -217,6 +235,9 @@ export class AnalyticsStore {
 				);
 			}
 			await this.requireCurrentGeneration(receipt.generation);
+			await unlink(this.journalPath(receipt.generation, receipt.runId, receipt.epoch)).catch(
+				ignoreMissingFile,
+			);
 			return existing;
 		}
 		await unlink(this.journalPath(receipt.generation, receipt.runId, receipt.epoch)).catch(
@@ -225,20 +246,47 @@ export class AnalyticsStore {
 		return receipt;
 	}
 
+	/**
+	 * Replaces a receipt that orphan recovery produced when the session that owns
+	 * the run finalizes it later with strictly more evidence.
+	 *
+	 * Recovery is a safety net for sessions that never came back. If it claims a
+	 * journal whose session was only idle, the owning session must still win, so
+	 * a recovered snapshot can never discard the fuller record. Returns null when
+	 * the stored receipt is not a strict subset, leaving the conflict to the
+	 * caller.
+	 */
+	async supersedeRecoveredReceipt(value: RunReceipt): Promise<RunReceipt | null> {
+		const receipt = parseRunReceipt(value);
+		await this.requireCurrentGeneration(receipt.generation);
+		const target = this.receiptPath(receipt.generation, receipt.runId, receipt.epoch);
+		let stored: string;
+		try {
+			stored = await readFile(target, "utf8");
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) return null;
+			throw error;
+		}
+		const existing = parseStoredReceipt(
+			stored,
+			ledgerEntryIdentifier(receipt.runId, receipt.epoch),
+		);
+		const incoming = new Set(receipt.evidenceKeys ?? []);
+		const held = existing.evidenceKeys ?? [];
+		const isStrictSubset = held.length < incoming.size && held.every((key) => incoming.has(key));
+		if (!isStrictSubset) return null;
+		await this.hooks.beforeLedgerPublish?.("receipt", receipt.generation, target);
+		await this.requireCurrentGeneration(receipt.generation);
+		await writeFile(target, `${serializeRunReceipt(receipt)}\n`, { mode: 0o600 });
+		await unlink(this.journalPath(receipt.generation, receipt.runId, receipt.epoch)).catch(
+			ignoreMissingFile,
+		);
+		return receipt;
+	}
+
 	async listReceipts(): Promise<RunReceipt[]> {
 		const manifest = await this.initialize();
-		const receiptsDirectory = this.receiptsDirectoryFor(manifest.generation);
-		const names = (await readdir(receiptsDirectory)).filter((name) => name.endsWith(".json"));
-		const receipts: RunReceipt[] = [];
-		for (const name of names.sort()) {
-			const identifier = name.slice(0, -".json".length);
-			const receipt = parseStoredReceipt(
-				await readFile(path.join(receiptsDirectory, name), "utf8"),
-				identifier,
-			);
-			if (receipt.generation === manifest.generation) receipts.push(receipt);
-		}
-		return receipts;
+		return this.readReceipts(manifest.generation);
 	}
 
 	async writeDelegationEvidence(value: unknown, generation: string): Promise<DelegationEvidence> {
@@ -304,24 +352,17 @@ export class AnalyticsStore {
 		const evidence = (await this.listDelegationEvidence()).filter(
 			(item) => item.rootSessionId === rootSessionId,
 		);
-		const descendantReceipts = evidence
-			.filter((item) => item.childSessionId !== undefined)
-			.flatMap((item) =>
-				allReceipts.some((receipt) => receipt.sessionId === item.childSessionId)
-					? allReceipts.filter((receipt) => receipt.sessionId === item.childSessionId)
-					: [],
-			);
+		const descendantReceipts = evidence.flatMap((item) =>
+			allReceipts.filter((receipt) => receiptBelongsToEvidence(receipt, item)),
+		);
 		const uniqueDescendants = [
 			...new Map(
-				descendantReceipts.map((receipt) => [`${receipt.runId}:${receipt.epoch}`, receipt]),
+				descendantReceipts.map((receipt) => [
+					ledgerEntryKey(receipt.runId, receipt.epoch),
+					receipt,
+				]),
 			).values(),
 		];
-		const receiptRelationships = new Map<string, DelegationEvidence["relationship"]>();
-		for (const item of evidence) {
-			if (item.childSessionId !== undefined) {
-				receiptRelationships.set(item.childSessionId, item.relationship);
-			}
-		}
 		const receiptEvidenceKeys = new Set(
 			uniqueDescendants.flatMap((receipt) => receipt.evidenceKeys ?? []),
 		);
@@ -336,12 +377,12 @@ export class AnalyticsStore {
 				...(item.childSessionId === undefined ? {} : { childSessionId: item.childSessionId }),
 				reason,
 			});
-			if (item.phase !== "terminal") {
+			if (!isTerminalDelegation(item)) {
 				unresolved.push(unresolvedEntry("pending"));
 				continue;
 			}
-			const childHasReceipt = uniqueDescendants.some(
-				(receipt) => receipt.sessionId === item.childSessionId,
+			const childHasReceipt = uniqueDescendants.some((receipt) =>
+				receiptBelongsToEvidence(receipt, item),
 			);
 			if (item.usage.length === 0) {
 				if (!childHasReceipt) unresolved.push(unresolvedEntry("missing-cost"));
@@ -364,7 +405,12 @@ export class AnalyticsStore {
 		const rootActualCost = rootReceipts.reduce((sum, receipt) => sum + receipt.actualCost, 0);
 		const receiptActualCost = (relationship: DelegationEvidence["relationship"]): number =>
 			uniqueDescendants
-				.filter((receipt) => receiptRelationships.get(receipt.sessionId) === relationship)
+				.filter((receipt) =>
+					evidence.some(
+						(item) =>
+							item.relationship === relationship && receiptBelongsToEvidence(receipt, item),
+					),
+				)
 				.reduce((sum, receipt) => sum + receipt.actualCost, 0);
 		const fallbackActualCost = (relationship: DelegationEvidence["relationship"]): number =>
 			fallbackEvidence
@@ -377,14 +423,7 @@ export class AnalyticsStore {
 		const directChildActualCost = receiptActualCost("direct") + fallbackActualCost("direct");
 		const nestedChildActualCost = receiptActualCost("nested") + fallbackActualCost("nested");
 		const estimateReceipts = [...rootReceipts, ...uniqueDescendants];
-		const estimatedSavings = estimateReceipts.reduce((sum, receipt) => {
-			const estimate = comparisonEstimate(receipt);
-			return sum + (estimate.kind === "unavailable" ? 0 : Math.max(0, estimate.savings));
-		}, 0);
-		const estimatedExtraCost = estimateReceipts.reduce((sum, receipt) => {
-			const estimate = comparisonEstimate(receipt);
-			return sum + (estimate.kind === "unavailable" ? 0 : Math.max(0, -estimate.savings));
-		}, 0);
+		const comparison = summarizeComparisons(estimateReceipts);
 		return {
 			rootSessionId,
 			rootReceipts,
@@ -402,8 +441,8 @@ export class AnalyticsStore {
 						uniqueDescendants.some((receipt) => receipt.sessionId === item.childSessionId)),
 			).length,
 			expectedChildCount: evidence.length,
-			estimatedSavings,
-			estimatedExtraCost,
+			estimatedSavings: Math.max(0, comparison.difference),
+			estimatedExtraCost: Math.max(0, -comparison.difference),
 			costCoverage: costCoverageState(evidence, unresolved),
 			tokenCoverage: tokenCoverageState(evidence, unresolved),
 			estimateCoverage:
@@ -415,28 +454,52 @@ export class AnalyticsStore {
 							? "overlap-unresolved"
 							: fallbackEvidence.length > 0 || unresolved.length > 0
 								? "incomplete"
-								: estimateReceipts.every(
-											(receipt) => comparisonEstimate(receipt).kind !== "unavailable",
-										)
+								: comparison.unavailableRuns === 0
 									? "complete"
 									: "incomplete",
 		};
 	}
 
 	async listUnfinishedJournals(): Promise<RunJournal[]> {
+		return (await this.listUnfinishedJournalRecords()).map((record) => record.journal);
+	}
+
+	/**
+	 * Pairs each unfinished journal with the last time its file changed. Prewalk
+	 * rewrites a journal on every recorded usage observation, so the modification
+	 * time is the most recent proof that the owning session was still running.
+	 */
+	async listUnfinishedJournalRecords(): Promise<UnfinishedJournalRecord[]> {
 		const manifest = await this.initialize();
 		const journalsDirectory = this.journalsDirectoryFor(manifest.generation);
 		const names = (await readdir(journalsDirectory)).filter((name) => name.endsWith(".json"));
-		const journals: RunJournal[] = [];
+		const records: UnfinishedJournalRecord[] = [];
+		const receiptsByKey = new Map(
+			(await this.listReceipts()).map((receipt) => [
+				ledgerEntryKey(receipt.runId, receipt.epoch),
+				receipt,
+			]),
+		);
 		for (const name of names.sort()) {
 			const identifier = name.slice(0, -".json".length);
-			const journal = parseStoredJournal(
-				await readFile(path.join(journalsDirectory, name), "utf8"),
-				identifier,
-			);
-			if (journal.generation === manifest.generation) journals.push(journal);
+			const journalPath = path.join(journalsDirectory, name);
+			const journal = parseStoredJournal(await readFile(journalPath, "utf8"), identifier);
+			if (journal.generation !== manifest.generation) continue;
+			// A journal normally disappears when its receipt is written. One that
+			// outlived its receipt kept recording after finalization, so it holds the
+			// fuller record and is offered for recovery; a journal that only repeats
+			// what the receipt already has is finished.
+			const receipt = receiptsByKey.get(ledgerEntryKey(journal.runId, journal.epoch));
+			if (receipt !== undefined && !addsEvidenceBeyond(journal, receipt)) continue;
+			let modifiedAt = Date.parse(journal.startedAt);
+			try {
+				modifiedAt = (await stat(journalPath)).mtimeMs;
+			} catch {
+				// A journal that disappeared mid-scan keeps its recorded start time.
+			}
+			records.push({ journal, modifiedAt });
 		}
-		return journals;
+		return records;
 	}
 
 	async aggregate(
@@ -461,9 +524,6 @@ export class AnalyticsStore {
 			.sort(compareReceiptsNewestFirst);
 
 		let actualCost = 0;
-		let estimatedSavings = 0;
-		let estimatedExtraCost = 0;
-		let unavailableSavingsCount = 0;
 		const outcomeCounts: Record<RunOutcome, number> = {
 			active: 0,
 			succeeded: 0,
@@ -477,11 +537,8 @@ export class AnalyticsStore {
 		for (const receipt of receipts) {
 			actualCost += receipt.actualCost;
 			outcomeCounts[receipt.outcome] += 1;
-			const estimate = comparisonEstimate(receipt);
-			if (estimate.kind === "unavailable") unavailableSavingsCount += 1;
-			else if (estimate.savings >= 0) estimatedSavings += estimate.savings;
-			else estimatedExtraCost += Math.abs(estimate.savings);
 		}
+		const comparison = summarizeComparisons(receipts);
 
 		const unfinished = snapshot.journals
 			.filter(() => outcomes === null || outcomes.has("unfinished"))
@@ -501,20 +558,27 @@ export class AnalyticsStore {
 		}
 
 		const receiptEvidenceKeys = new Set(
-			receipts.flatMap((receipt) => receipt.evidenceKeys ?? []),
+			snapshot.receipts.flatMap((receipt) => receipt.evidenceKeys ?? []),
 		);
-		const successfulRoots = new Set(
-			receipts
-				.filter((receipt) => receipt.outcome === "succeeded")
-				.map((receipt) => receipt.sessionId),
-		);
+		const includedRootSessions =
+			query.outcomes === undefined
+				? undefined
+				: new Set(receipts.map((receipt) => receipt.sessionId));
+		const countedFallbackEvidence = new Set<string>();
 		for (const item of delegationEvidence) {
-			if (item.phase !== "terminal") continue;
+			if (!isTerminalDelegation(item)) continue;
 			if (!inWindow(new Date(item.observedAt).toISOString(), query.window, now, timeZone))
 				continue;
-			if (outcomes?.has("succeeded") && !successfulRoots.has(item.rootSessionId)) continue;
+			if (includedRootSessions !== undefined && !includedRootSessions.has(item.rootSessionId))
+				continue;
 			for (const slice of item.usage) {
-				if (!receiptEvidenceKeys.has(slice.evidenceKey)) actualCost += slice.costUsd;
+				if (
+					!receiptEvidenceKeys.has(slice.evidenceKey) &&
+					!countedFallbackEvidence.has(slice.evidenceKey)
+				) {
+					countedFallbackEvidence.add(slice.evidenceKey);
+					actualCost += slice.costUsd;
+				}
 			}
 		}
 
@@ -523,9 +587,10 @@ export class AnalyticsStore {
 			generation,
 			receiptCount: receipts.length,
 			actualCost,
-			estimatedSavings,
-			estimatedExtraCost,
-			unavailableSavingsCount,
+			estimatedSavings: Math.max(0, comparison.difference),
+			estimatedExtraCost: Math.max(0, -comparison.difference),
+			unavailableSavingsCount: comparison.unavailableRuns,
+			comparison,
 			outcomes: outcomeCounts,
 			receipts,
 			recentReceipts: receipts.slice(0, Math.max(0, recentLimit)),
@@ -537,7 +602,12 @@ export class AnalyticsStore {
 		for (let attempt = 0; attempt < 2; attempt += 1) {
 			const manifest = await this.initialize();
 			const receipts = await this.readReceipts(manifest.generation);
-			const journals = await this.readJournals(manifest.generation);
+			const receiptKeys = new Set(
+				receipts.map((receipt) => ledgerEntryKey(receipt.runId, receipt.epoch)),
+			);
+			const journals = (await this.readJournals(manifest.generation)).filter(
+				(journal) => !receiptKeys.has(ledgerEntryKey(journal.runId, journal.epoch)),
+			);
 			const delegationEvidence = await this.listDelegationEvidence();
 			await this.hooks.beforeSnapshotValidation?.(manifest.generation);
 			if ((await this.readManifest()).generation === manifest.generation) {
@@ -677,7 +747,19 @@ export class AnalyticsStore {
 		);
 		if (receipts.some((receipt) => receipt.generation !== generation))
 			throw new Error("Analytics receipt belongs to an unexpected ledger generation.");
-		return receipts;
+		const unique = new Map<string, RunReceipt>();
+		for (const receipt of receipts) {
+			const key = ledgerEntryKey(receipt.runId, receipt.epoch);
+			const existing = unique.get(key);
+			if (
+				existing !== undefined &&
+				serializeRunReceipt(existing) !== serializeRunReceipt(receipt)
+			) {
+				throw new Error(`Analytics contains conflicting receipt data for ${key}.`);
+			}
+			unique.set(key, receipt);
+		}
+		return [...unique.values()];
 	}
 	private async readJournals(generation: string): Promise<RunJournal[]> {
 		const directory = this.journalsDirectoryFor(generation);
@@ -759,6 +841,15 @@ export class AnalyticsStore {
 			`${ledgerEntryIdentifier(runId, epoch)}.json`,
 		);
 	}
+	private async receiptExists(generation: string, runId: string, epoch: string): Promise<boolean> {
+		try {
+			await readFile(this.receiptPath(generation, runId, epoch), "utf8");
+			return true;
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) return false;
+			throw error;
+		}
+	}
 
 	private benchmarkSummaryPath(generation: string): string {
 		return path.join(this.generationDirectory(generation), "verified-benchmark.json");
@@ -801,9 +892,24 @@ function ledgerEntryIdentifier(runId: string, epoch: string): string {
 	return `${safePathPart(runId)}--${safePathPart(epoch)}`;
 }
 
+function ledgerEntryKey(runId: string, epoch: string): string {
+	return JSON.stringify([runId, epoch]);
+}
+
 function safePathPart(value: string): string {
 	if (!/^[A-Za-z0-9._:-]+$/.test(value)) throw new Error("Analytics identifier is unsafe.");
 	return value;
+}
+
+function receiptBelongsToEvidence(receipt: RunReceipt, evidence: DelegationEvidence): boolean {
+	if (evidence.childSessionId !== undefined) return receipt.sessionId === evidence.childSessionId;
+	const lineage = receipt.lineage;
+	return (
+		lineage?.rootSessionId === evidence.rootSessionId &&
+		lineage.parentSessionId === evidence.parentSessionId &&
+		lineage.delegationRunId === evidence.delegationRunId &&
+		lineage.childIndex === evidence.childIndex
+	);
 }
 
 function parseStoredJournal(contents: string, identifier: string): RunJournal {
@@ -894,6 +1000,16 @@ function compareReceiptsOldestFirst(left: RunReceipt, right: RunReceipt): number
 
 function compareReceiptTimestamps(left: RunReceipt, right: RunReceipt): number {
 	return (left.completedAt ?? left.startedAt).localeCompare(right.completedAt ?? right.startedAt);
+}
+
+/**
+ * Reports whether a journal holds usage evidence its receipt never captured.
+ * Comparing recorded evidence keys keeps this independent of how the split
+ * happened.
+ */
+function addsEvidenceBeyond(journal: RunJournal, receipt: RunReceipt): boolean {
+	const captured = new Set(receipt.evidenceKeys ?? []);
+	return (journal.evidenceKeys ?? []).some((key) => !captured.has(key));
 }
 
 function inWindow(

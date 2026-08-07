@@ -102,6 +102,7 @@ export interface UsageSlice {
 	outputTokens: number;
 	cacheReadTokens: number;
 	cacheWriteTokens: number;
+	cacheWrite1hTokens?: number;
 	reasoningTokens: number;
 	totalTokens: number;
 	cost: UsageCost;
@@ -276,6 +277,13 @@ export interface RunReceipt {
 	actualCost: number;
 	estimate: SavingsEstimate;
 	pricingEvidence: PricingEvidence;
+	/**
+	 * Rates the estimate was priced with. Storing them lets a later Prewalk
+	 * recompute an estimate that was refused when the receipt was written, which
+	 * is what left earlier released and session-ended runs permanently
+	 * uncomparable. Optional so receipts written before this field stay valid.
+	 */
+	pricing?: ModelPricingPair;
 	evidenceKeys?: string[];
 	lineage?: SessionLineage;
 }
@@ -312,6 +320,7 @@ export interface ProviderReportedUsage {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	cacheWrite1h?: number;
 	reasoning?: number;
 	totalTokens: number;
 	cost: UsageCost;
@@ -379,6 +388,25 @@ export interface SavingsCalculation {
 	pricingEvidence: PricingEvidence;
 }
 
+export interface ComparisonSummary {
+	finishedRuns: number;
+	comparedRuns: number;
+	noHandoffRuns: number;
+	unavailableRuns: number;
+	plannerOnlyCost: number;
+	actualPrimaryCost: number;
+	difference: number;
+	/**
+	 * Recorded spend of the runs behind `difference`. Reporting this alongside a
+	 * period's total recorded spend keeps the difference from being read as a
+	 * rate over spend it never covered.
+	 */
+	comparedActualCost: number;
+	/** Recorded spend of every finished run considered, compared or not. */
+	finishedActualCost: number;
+	unavailableReasons: Partial<Record<UnavailabilityReason, number>>;
+}
+
 const TOKENS_PER_MILLION = 1_000_000;
 
 export function normalizeUsageObservations(
@@ -402,6 +430,9 @@ export function normalizeUsageObservations(
 			outputTokens: observation.usage.output,
 			cacheReadTokens: observation.usage.cacheRead,
 			cacheWriteTokens: observation.usage.cacheWrite,
+			...(observation.usage.cacheWrite1h === undefined
+				? {}
+				: { cacheWrite1hTokens: observation.usage.cacheWrite1h }),
 			reasoningTokens: observation.usage.reasoning ?? 0,
 			totalTokens: observation.usage.totalTokens,
 			cost: { ...observation.usage.cost },
@@ -466,7 +497,7 @@ export function calculateSavings(input: SavingsCalculationInput): SavingsCalcula
 		return unavailableCalculation(actual.total, "usage-incomplete");
 	}
 
-	const sessionFailure = pricingFailure(input.modelMetadata?.rates, primaryUsage);
+	const sessionFailure = pricingFailure(input.modelMetadata?.rates, executorUsage);
 	if (sessionFailure === null && input.modelMetadata !== undefined) {
 		return pricedCalculation(
 			actual,
@@ -478,7 +509,7 @@ export function calculateSavings(input: SavingsCalculationInput): SavingsCalcula
 	}
 
 	if (input.catalogFallbackEnabled && input.catalog !== undefined) {
-		const catalogFailure = pricingFailure(input.catalog.rates, primaryUsage);
+		const catalogFailure = pricingFailure(input.catalog.rates, executorUsage);
 		if (catalogFailure === null) {
 			return pricedCalculation(
 				actual,
@@ -510,14 +541,80 @@ export function comparisonEstimate(receipt: RunReceipt): SavingsEstimate {
 			savings: 0,
 		};
 	}
+	// A receipt that recorded its rates can be repriced when the run has since
+	// become comparable, so a rule change no longer strands finished handoffs.
+	if (
+		receipt.estimate.kind === "unavailable" &&
+		receipt.pricing !== undefined &&
+		outcomeUnavailabilityReason(receipt.outcome) === null
+	) {
+		const executorUsage = receipt.usage.filter((slice) => slice.role === "executor-primary");
+		if (executorUsage.length > 0 && pricingFailure(receipt.pricing, executorUsage) === null) {
+			return pricedCalculation(
+				summarizeActualCost(receipt.usage),
+				executorUsage,
+				receipt.pricing.planner,
+				"session-counterfactual",
+				{ source: "model-metadata", capturedAt: receipt.startedAt },
+			).estimate;
+		}
+	}
 	return receipt.estimate;
 }
 
 export function isPlanningOnlyReceipt(receipt: RunReceipt): boolean {
 	return (
-		receipt.outcome === "succeeded" &&
+		isComparisonFinished(receipt) &&
 		receipt.handoffState === "not-started" &&
 		!receipt.usage.some((slice) => slice.role === "executor-primary")
+	);
+}
+
+export function summarizeComparisons(receipts: readonly RunReceipt[]): ComparisonSummary {
+	const finished = receipts.filter(isComparisonFinished);
+	const noHandoffRuns = finished.filter(isPlanningOnlyReceipt);
+	const candidates = finished.filter((receipt) => !isPlanningOnlyReceipt(receipt));
+	const evaluations = candidates.map((receipt) => ({
+		receipt,
+		estimate: comparisonEstimate(receipt),
+	}));
+	const comparable = evaluations.filter(({ estimate }) => estimate.kind !== "unavailable");
+	const unavailable = evaluations.filter(({ estimate }) => estimate.kind === "unavailable");
+	const unavailableReasons: Partial<Record<UnavailabilityReason, number>> = {};
+	for (const { estimate } of unavailable) {
+		if (estimate.kind === "unavailable") {
+			unavailableReasons[estimate.reason] = (unavailableReasons[estimate.reason] ?? 0) + 1;
+		}
+	}
+	let plannerOnlyCost = 0;
+	let difference = 0;
+	let comparedActualCost = 0;
+	for (const { receipt, estimate } of comparable) {
+		if (estimate.kind === "unavailable") continue;
+		plannerOnlyCost += estimate.plannerOnlyCost;
+		difference += estimate.savings;
+		comparedActualCost += receipt.actualCost;
+	}
+	return {
+		finishedRuns: finished.length,
+		comparedRuns: comparable.length,
+		noHandoffRuns: noHandoffRuns.length,
+		unavailableRuns: unavailable.length,
+		plannerOnlyCost,
+		actualPrimaryCost: plannerOnlyCost - difference,
+		difference,
+		comparedActualCost,
+		finishedActualCost: finished.reduce((total, receipt) => total + receipt.actualCost, 0),
+		unavailableReasons,
+	};
+}
+
+function isComparisonFinished(receipt: RunReceipt): boolean {
+	return (
+		receipt.outcome === "succeeded" ||
+		receipt.outcome === "released" ||
+		receipt.outcome === "session-ended" ||
+		receipt.outcome === "interrupted"
 	);
 }
 
@@ -544,6 +641,7 @@ export function usageEvidenceKey(observation: UsageObservation): string {
 		usage.output,
 		usage.cacheRead,
 		usage.cacheWrite,
+		usage.cacheWrite1h ?? 0,
 		usage.reasoning ?? 0,
 		usage.totalTokens,
 		usage.cost.input,
@@ -555,8 +653,20 @@ export function usageEvidenceKey(observation: UsageObservation): string {
 	return createHash("sha256").update(evidence).digest("hex");
 }
 
+/**
+ * Comparability follows the recorded evidence rather than how the run ended. An
+ * interrupted run still executed real executor work at recorded prices, so it
+ * can be priced against the planner; `calculateSavings` separately refuses any
+ * run that has no executor usage.
+ */
 function outcomeUnavailabilityReason(outcome: RunOutcome): UnavailabilityReason | null {
-	if (outcome === "succeeded") return null;
+	if (
+		outcome === "succeeded" ||
+		outcome === "released" ||
+		outcome === "session-ended" ||
+		outcome === "interrupted"
+	)
+		return null;
 	if (outcome === "unfinished" || outcome === "active") return "unfinished-run";
 	return "run-not-successful";
 }
@@ -594,11 +704,11 @@ function pricedCalculation(
 
 function pricingFailure(
 	pair: ModelPricingPair | undefined,
-	primaryUsage: readonly UsageSlice[],
+	usageToPrice: readonly UsageSlice[],
 ): UnavailabilityReason | null {
 	if (pair === undefined) return "pricing-missing";
-	const usedCategories = usedTokenCategories(primaryUsage);
-	for (const request of primaryUsage) {
+	for (const request of usageToPrice) {
+		const usedCategories = usedTokenCategories([request]);
 		const plannerFailure = ratesFailure(
 			selectPricingRates(pair.planner, request),
 			usedCategories,
@@ -618,6 +728,7 @@ interface UsedTokenCategories {
 	output: boolean;
 	cacheRead: boolean;
 	cacheWrite: boolean;
+	cacheWrite1h: boolean;
 }
 
 function usedTokenCategories(usage: readonly UsageSlice[]): UsedTokenCategories {
@@ -626,6 +737,7 @@ function usedTokenCategories(usage: readonly UsageSlice[]): UsedTokenCategories 
 		output: usage.some((slice) => slice.outputTokens > 0),
 		cacheRead: usage.some((slice) => slice.cacheReadTokens > 0),
 		cacheWrite: usage.some((slice) => slice.cacheWriteTokens > 0),
+		cacheWrite1h: usage.some((slice) => (slice.cacheWrite1hTokens ?? 0) > 0),
 	};
 }
 
@@ -638,6 +750,7 @@ function ratesFailure(
 		used.output ? rates.output : 1,
 		used.cacheRead ? rates.cacheRead : 1,
 		used.cacheWrite ? rates.cacheWrite : 1,
+		used.cacheWrite1h ? rates.input : 1,
 	];
 	if (values.some((value) => value === undefined || !Number.isFinite(value))) {
 		return "pricing-incomplete";
@@ -664,7 +777,8 @@ function priceUsage(usage: UsageSlice, rates: ModelPricingRates): number {
 		(usage.inputTokens * (rates.input ?? 0) +
 			usage.outputTokens * (rates.output ?? 0) +
 			usage.cacheReadTokens * (rates.cacheRead ?? 0) +
-			usage.cacheWriteTokens * (rates.cacheWrite ?? 0)) /
+			(usage.cacheWriteTokens - (usage.cacheWrite1hTokens ?? 0)) * (rates.cacheWrite ?? 0) +
+			(usage.cacheWrite1hTokens ?? 0) * (rates.input ?? 0) * 2) /
 		TOKENS_PER_MILLION
 	);
 }
@@ -706,9 +820,14 @@ const RECEIPT_KEYS = new Set([
 	"actualCost",
 	"estimate",
 	"pricingEvidence",
+	"pricing",
 	"evidenceKeys",
 	"lineage",
 ]);
+const PRICING_PAIR_KEYS = new Set(["planner", "executor"]);
+const PRICING_RATE_KEYS = new Set(["input", "output", "cacheRead", "cacheWrite"]);
+const PRICING_SCHEDULE_KEYS = new Set([...PRICING_RATE_KEYS, "tiers"]);
+const PRICING_TIER_KEYS = new Set([...PRICING_RATE_KEYS, "inputTokensAbove"]);
 const CONFIGURATION_KEYS = new Set(["analytics", "planner", "executor"]);
 const SESSION_LINEAGE_KEYS = new Set([
 	"rootSessionId",
@@ -726,6 +845,7 @@ const USAGE_KEYS = new Set([
 	"outputTokens",
 	"cacheReadTokens",
 	"cacheWriteTokens",
+	"cacheWrite1hTokens",
 	"reasoningTokens",
 	"totalTokens",
 	"cost",
@@ -885,7 +1005,7 @@ export function parseRunJournal(value: unknown): RunJournal {
 export function parseRunReceipt(value: unknown): RunReceipt {
 	const record = requireRecord(value, "Analytics receipt");
 	rejectUnknownKeys(record, RECEIPT_KEYS, "analytics receipt");
-	const receipt: RunReceipt = {
+	const receipt = normalizeLegacyReceipt({
 		schemaVersion: requireSchemaVersion(record.schemaVersion, "Analytics receipt"),
 		runId: requireSafeIdentifier(record.runId, "Analytics receipt runId"),
 		epoch: requireSafeIdentifier(record.epoch, "Analytics receipt epoch"),
@@ -901,11 +1021,12 @@ export function parseRunReceipt(value: unknown): RunReceipt {
 		actualCost: requireNonNegativeNumber(record.actualCost, "Analytics receipt actualCost"),
 		estimate: parseSavingsEstimate(record.estimate),
 		pricingEvidence: parsePricingEvidence(record.pricingEvidence),
+		...(record.pricing === undefined ? {} : { pricing: parseModelPricingPair(record.pricing) }),
 		...(record.evidenceKeys === undefined
 			? {}
 			: { evidenceKeys: parseReceiptEvidenceKeys(record.evidenceKeys) }),
 		...(record.lineage === undefined ? {} : { lineage: parseSessionLineage(record.lineage) }),
-	};
+	});
 	validateReceiptFinancials(receipt);
 	return receipt;
 }
@@ -924,6 +1045,31 @@ export function deserializeRunJournal(value: string): RunJournal {
 
 export function deserializeRunReceipt(value: string): RunReceipt {
 	return parseRunReceipt(parseJson(value, "analytics receipt"));
+}
+
+/**
+ * Preserves receipts written before released, session-ended, and interrupted
+ * became comparable outcomes. Their stored reason still says the run was not
+ * successful, which no longer reconciles with the outcome, so it is restated as
+ * missing pricing: these receipts recorded no rates and cannot be repriced.
+ */
+function normalizeLegacyReceipt(receipt: RunReceipt): RunReceipt {
+	if (
+		(receipt.outcome === "released" ||
+			receipt.outcome === "session-ended" ||
+			receipt.outcome === "interrupted") &&
+		receipt.estimate.kind === "unavailable" &&
+		receipt.estimate.reason === "run-not-successful" &&
+		receipt.pricingEvidence.source === "unavailable" &&
+		receipt.pricingEvidence.reason === "run-not-successful"
+	) {
+		return {
+			...receipt,
+			estimate: { kind: "unavailable", reason: "pricing-missing" },
+			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+		};
+	}
+	return receipt;
 }
 
 function parseRunConfiguration(value: unknown): RunConfigurationSnapshot {
@@ -1007,6 +1153,17 @@ function parseUsage(value: unknown, name: string): UsageSlice[] {
 function parseUsageSlice(value: unknown, name: string): UsageSlice {
 	const record = requireRecord(value, name);
 	rejectUnknownKeys(record, USAGE_KEYS, name.toLowerCase());
+	const cacheWriteTokens = requireNonNegativeInteger(
+		record.cacheWriteTokens,
+		`${name} cacheWriteTokens`,
+	);
+	const cacheWrite1hTokens =
+		record.cacheWrite1hTokens === undefined
+			? undefined
+			: requireNonNegativeInteger(record.cacheWrite1hTokens, `${name} cacheWrite1hTokens`);
+	if (cacheWrite1hTokens !== undefined && cacheWrite1hTokens > cacheWriteTokens) {
+		throw new Error(`${name} cacheWrite1hTokens cannot exceed cacheWriteTokens.`);
+	}
 	return {
 		sequence: requireNonNegativeInteger(record.sequence, `${name} sequence`),
 		provider: requireNonEmptyString(record.provider, `${name} provider`),
@@ -1015,10 +1172,8 @@ function parseUsageSlice(value: unknown, name: string): UsageSlice {
 		inputTokens: requireNonNegativeInteger(record.inputTokens, `${name} inputTokens`),
 		outputTokens: requireNonNegativeInteger(record.outputTokens, `${name} outputTokens`),
 		cacheReadTokens: requireNonNegativeInteger(record.cacheReadTokens, `${name} cacheReadTokens`),
-		cacheWriteTokens: requireNonNegativeInteger(
-			record.cacheWriteTokens,
-			`${name} cacheWriteTokens`,
-		),
+		cacheWriteTokens,
+		...(cacheWrite1hTokens === undefined ? {} : { cacheWrite1hTokens }),
 		reasoningTokens: requireNonNegativeInteger(record.reasoningTokens, `${name} reasoningTokens`),
 		totalTokens: requireNonNegativeInteger(record.totalTokens, `${name} totalTokens`),
 		cost: parseUsageCost(record.cost, `${name} cost`),
@@ -1063,11 +1218,34 @@ function validateReceiptFinancials(receipt: RunReceipt): void {
 				"Analytics receipt unavailable reason does not reconcile with its outcome.",
 			);
 		}
+		if (
+			isComparisonFinished(receipt) &&
+			(receipt.estimate.reason === "run-not-successful" ||
+				receipt.estimate.reason === "unfinished-run")
+		) {
+			throw new Error(
+				"Analytics receipt unavailable reason does not reconcile with its outcome.",
+			);
+		}
 		return;
 	}
 
-	if (receipt.outcome !== "succeeded") {
+	if (!isComparisonFinished(receipt)) {
 		throw new Error("Analytics receipt unsuccessful outcome cannot contain an estimate.");
+	}
+	const hasExecutorUsage = receipt.usage.some((slice) => slice.role === "executor-primary");
+	if (!hasExecutorUsage) {
+		if (!isPlanningOnlyReceipt(receipt)) {
+			throw new Error("Analytics receipt estimate requires executor usage after handoff.");
+		}
+		if (
+			receipt.estimate.plannerOnlyCost !== actual.plannerPrimary ||
+			receipt.estimate.savings !== 0
+		) {
+			throw new Error(
+				"Analytics planning-only estimate must match planner spend with no savings.",
+			);
+		}
 	}
 	if (
 		(receipt.estimate.kind === "session-counterfactual" &&
@@ -1115,6 +1293,52 @@ function parseSavingsEstimate(value: unknown): SavingsEstimate {
 		return { kind: "catalog-estimated", plannerOnlyCost, savings };
 	}
 	throw new Error("Analytics receipt estimate kind is invalid.");
+}
+
+function parseModelPricingPair(value: unknown): ModelPricingPair {
+	const record = requireRecord(value, "Analytics receipt pricing");
+	rejectUnknownKeys(record, PRICING_PAIR_KEYS, "analytics receipt pricing");
+	return {
+		planner: parseModelPricingSchedule(record.planner, "Analytics receipt pricing planner"),
+		executor: parseModelPricingSchedule(record.executor, "Analytics receipt pricing executor"),
+	};
+}
+
+function parseModelPricingSchedule(value: unknown, name: string): ModelPricingSchedule {
+	const record = requireRecord(value, name);
+	rejectUnknownKeys(record, PRICING_SCHEDULE_KEYS, name);
+	if (record.tiers !== undefined && !Array.isArray(record.tiers)) {
+		throw new Error(`${name} tiers must be an array.`);
+	}
+	return {
+		...parseModelPricingRates(record, name),
+		...(record.tiers === undefined
+			? {}
+			: {
+					tiers: record.tiers.map((tier, index) => {
+						const tierName = `${name} tier ${index}`;
+						const tierRecord = requireRecord(tier, tierName);
+						rejectUnknownKeys(tierRecord, PRICING_TIER_KEYS, tierName);
+						return {
+							...parseModelPricingRates(tierRecord, tierName),
+							inputTokensAbove: requireNonNegativeNumber(
+								tierRecord.inputTokensAbove,
+								`${tierName} inputTokensAbove`,
+							),
+						};
+					}),
+				}),
+	};
+}
+
+function parseModelPricingRates(record: Record<string, unknown>, name: string): ModelPricingRates {
+	const rates: ModelPricingRates = {};
+	for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+		const value = record[key];
+		if (value === undefined) continue;
+		rates[key] = requireNonNegativeNumber(value, `${name} ${key}`);
+	}
+	return rates;
 }
 
 function parsePricingEvidence(value: unknown): PricingEvidence {

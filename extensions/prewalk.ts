@@ -25,6 +25,7 @@ import {
 	type RunJournal,
 	type RunOutcome,
 	type RunReceipt,
+	type SavingsCalculationInput,
 	type UsageObservationSource,
 	type UsageRole,
 	usageEvidenceKey,
@@ -76,6 +77,14 @@ import {
 } from "../src/todo.js";
 
 const STATUS_KEY = "prewalk";
+/**
+ * How long an unfinished journal must sit untouched before another session may
+ * finalize it. Prewalk rewrites a journal on every usage observation, so this
+ * gap means the owning session stopped working, not that it paused mid-turn. It
+ * clears an overnight idle session; if recovery still claims a run whose
+ * session returns, `supersedeRecoveredReceipt` lets the owner reclaim it.
+ */
+const ORPHAN_JOURNAL_STALE_MS = 24 * 60 * 60 * 1000;
 const PREWALK_TOOL_SLATE_TYPE = "prewalk-tool-slate";
 const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
 const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
@@ -221,7 +230,7 @@ function helpText(): string {
 		"Reload extension and config changes: /reload.",
 		`Configuration file: ${configPath()}`,
 		"Configuration is written atomically by /prewalk configure.",
-		"Analytics stay local. Actual spend is provider-reported cost. The comparison prices recorded executor tokens at planner rates; planning-only runs show no handoff, and missing inputs are named directly.",
+		"Analytics stay local. Recorded spend is the cost Pi reports. The estimated difference prices recorded executor tokens at planner rates; runs finished before handoff are not compared, and missing inputs are named directly.",
 		"Disabling collection preserves existing receipts and does not change routing. Export refuses existing destinations. Reset excludes any active prior-generation run, and collection resumes on the next run.",
 		"",
 		"Prewalk derives the planner from Pi's selected model and reasoning for each epoch. Only primary Agent-loop requests route to the executor after the handoff gate.",
@@ -247,6 +256,58 @@ function pricingSchedule(cost: ModelCost) {
 		cacheWrite: cost.cacheWrite,
 		...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ ...tier })) } : {}),
 	};
+}
+
+/**
+ * Rebuilds pricing for a journal that is being recovered rather than finalized
+ * in its own session. Rates come from the registry as it stands now, so
+ * `capturedAt` records the recovery time rather than the time of the run.
+ */
+function journalPricingInputs(
+	journal: RunJournal,
+	ctx: ExtensionContext,
+): Pick<SavingsCalculationInput, "modelMetadata" | "catalog" | "catalogFallbackEnabled"> {
+	const catalogFallbackEnabled = journal.configuration.analytics.catalogFallbackEnabled;
+	const planner = ctx.modelRegistry.find(
+		journal.configuration.planner.provider,
+		journal.configuration.planner.model,
+	);
+	const executor = ctx.modelRegistry.find(
+		journal.configuration.executor.provider,
+		journal.configuration.executor.model,
+	);
+	if (!planner || !executor) return { catalogFallbackEnabled };
+	const capturedAt = new Date().toISOString();
+	const rates = {
+		planner: pricingSchedule(planner.cost),
+		executor: pricingSchedule(executor.cost),
+	};
+	return {
+		catalogFallbackEnabled,
+		modelMetadata: { capturedAt, rates },
+		catalog: { catalogDate: capturedAt.slice(0, 10), rates },
+	};
+}
+
+/**
+ * Attributes a primary call by run phase as well as model identity. Matching on
+ * the model alone books ordinary planner-model turns as planning for as long as
+ * a run object exists, which inflates planner spend on runs that never handed
+ * off and on work that continues after a handoff.
+ */
+function usageRoleFor(run: PrewalkRun, provider: string, model: string): UsageRole {
+	const handedOff = handoffState(run) === "completed";
+	if (
+		handedOff &&
+		provider === run.config.executor.provider &&
+		model === run.config.executor.model
+	) {
+		return "executor-primary";
+	}
+	if (!handedOff && provider === run.planner.provider && model === run.planner.model) {
+		return "planner-primary";
+	}
+	return "auxiliary";
 }
 
 function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
@@ -765,6 +826,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (evidenceKeys.includes(key)) return Promise.resolve();
 		state.journal.lastObservedSequence = observation.sequence;
 		evidenceKeys.push(key);
+		// Keep the journal's handoff state current so a journal recovered after a
+		// crash reports the handoff that actually happened.
+		if (coordinator.run) state.journal.handoffState = handoffState(coordinator.run);
 		const [slice] = normalizeUsageObservations([observation]);
 		if (slice) state.journal.usage.push(slice);
 		return enqueueAnalytics(async () => {
@@ -813,10 +877,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				actualCost: calculation.actualCost,
 				estimate: calculation.estimate,
 				pricingEvidence: calculation.pricingEvidence,
+				pricing: pricing.rates,
 				evidenceKeys: [...(journal.evidenceKeys ?? [])],
 				...(journal.lineage === undefined ? {} : { lineage: journal.lineage }),
 			};
-			await analyticsStore.promoteReceipt(receipt);
+			try {
+				await analyticsStore.promoteReceipt(receipt);
+			} catch (error) {
+				// Another session may have recovered this run while it was idle. The
+				// owning session holds the fuller record, so it reclaims the receipt.
+				if ((await analyticsStore.supersedeRecoveredReceipt(receipt)) === null) throw error;
+			}
 			if (analyticsState === state) analyticsState = undefined;
 		}).catch((error) => {
 			if (analyticsFinalization?.promise === promise) analyticsFinalization = undefined;
@@ -826,18 +897,29 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		return promise;
 	};
 
-	const finalizeInterruptedAnalytics = async (sessionId: string): Promise<void> => {
+	const finalizeInterruptedAnalytics = async (
+		sessionId: string,
+		ctx: ExtensionContext,
+	): Promise<void> => {
 		await analyticsWrites;
-		const journals = await analyticsStore.listUnfinishedJournals();
-		for (const journal of journals) {
-			if (journal.sessionId !== sessionId) continue;
+		const records = await analyticsStore.listUnfinishedJournalRecords();
+		const staleBefore = Date.now() - ORPHAN_JOURNAL_STALE_MS;
+		for (const { journal, modifiedAt } of records) {
+			// The owning session recovers its own journals immediately. Another
+			// session's journal is only claimed once it has gone quiet long enough
+			// that the session cannot still be writing to it.
+			if (journal.sessionId !== sessionId && modifiedAt > staleBefore) continue;
+			// A journal whose finalization already recorded a terminal outcome keeps
+			// it; only genuinely mid-flight runs are recorded as interrupted.
+			const outcome: RunOutcome = journal.outcome === "active" ? "interrupted" : journal.outcome;
+			const pricingInputs = journalPricingInputs(journal, ctx);
 			const calculation = calculateSavings({
-				outcome: "interrupted",
+				outcome,
 				handoffState: journal.handoffState,
 				usage: journal.usage,
-				catalogFallbackEnabled: false,
+				...pricingInputs,
 			});
-			await analyticsStore.promoteReceipt({
+			const recovered: RunReceipt = {
 				schemaVersion: ANALYTICS_SCHEMA_VERSION,
 				runId: journal.runId,
 				epoch: journal.epoch,
@@ -845,7 +927,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				generation: journal.generation,
 				startedAt: journal.startedAt,
 				completedAt: new Date().toISOString(),
-				outcome: "interrupted",
+				outcome,
 				handoffState: journal.handoffState,
 				planner: journal.configuration.planner,
 				executor: journal.configuration.executor,
@@ -853,9 +935,19 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				actualCost: calculation.actualCost,
 				estimate: calculation.estimate,
 				pricingEvidence: calculation.pricingEvidence,
+				...(pricingInputs.modelMetadata === undefined
+					? {}
+					: { pricing: pricingInputs.modelMetadata.rates }),
 				evidenceKeys: [...(journal.evidenceKeys ?? [])],
 				...(journal.lineage === undefined ? {} : { lineage: journal.lineage }),
-			});
+			};
+			try {
+				await analyticsStore.promoteReceipt(recovered);
+			} catch (error) {
+				// The journal outlived a receipt that captured only part of the run.
+				// Supersession accepts it only because it holds strictly more evidence.
+				if ((await analyticsStore.supersedeRecoveredReceipt(recovered)) === null) throw error;
+			}
 		}
 	};
 
@@ -1638,7 +1730,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		evaluation = undefined;
 		mutations.resetForRun();
 		lastAuditKey = undefined;
-		await finalizeInterruptedAnalytics(activeSessionId).catch(() => {
+		await finalizeInterruptedAnalytics(activeSessionId, ctx).catch(() => {
 			ctx.ui.notify(
 				"Prewalk could not finalize interrupted analytics; planner routing is unchanged.",
 				"error",
@@ -1711,7 +1803,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					: run?.phase === "failed"
 						? "failed"
 						: "cancelled";
-			await finalizeAnalytics(outcome);
+			// Analytics must never block shutdown; a lost receipt is recoverable from
+			// its journal, an unfinished shutdown is not.
+			await finalizeAnalytics(outcome).catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Prewalk could not record the final analytics receipt (${message}).`,
+					"error",
+				);
+			});
 		} else {
 			await analyticsWrites;
 		}
@@ -1735,18 +1835,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", async (event) => {
 		const run = coordinator.run;
 		if (!analyticsState || !run || event.message.role !== "assistant") return;
-		let role: UsageRole = "auxiliary";
-		if (
-			event.message.provider === run.planner.provider &&
-			event.message.model === run.planner.model
-		) {
-			role = "planner-primary";
-		} else if (
-			event.message.provider === run.config.executor.provider &&
-			event.message.model === run.config.executor.model
-		) {
-			role = "executor-primary";
-		}
+		const role = usageRoleFor(run, event.message.provider, event.message.model);
 		await recordAnalyticsUsage(
 			"assistant",
 			`message:${event.message.timestamp}:${event.message.provider}:${event.message.model}`,

@@ -1,4 +1,5 @@
 import {
+	type ComparisonSummary,
 	comparisonEstimate,
 	isPlanningOnlyReceipt,
 	type PricingEvidence,
@@ -6,7 +7,6 @@ import {
 	type SavingsEstimate,
 	summarizeActualCost,
 	type TaskTreeReport,
-	type UnavailabilityReason,
 	type VerifiedBenchmarkSummary,
 } from "./analytics.js";
 import type { AnalyticsAggregate } from "./analytics-store.js";
@@ -25,18 +25,19 @@ export interface AnalyticsOverview {
 export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 	return [
 		"Prewalk analytics",
-		"Actual spend includes every recorded run. Price comparisons use completed runs with the required usage and pricing.",
+		"Spent counts every run. Savings only count runs that switched models and had price data.",
+		"Those cover different runs. Judge savings against the compared figure on the same row, not against everything you spent.",
 		"",
 		`Current Pi session: ${sessionLabel(overview.sessionId, overview.sessionTitles)}`,
 		`Snapshot: ${overview.generatedAt}`,
-		`Actual spend: ${formatCompactUsd(overview.session.actualCost)}`,
+		`Recorded spend: ${formatCompactUsd(overview.session.actualCost)}`,
 		`Active runs: ${overview.session.unfinished.length}`,
 		`Finished runs: ${overview.session.receiptCount}`,
 		...(overview.session.unfinished.length === 0
 			? ["No active Prewalk run in this Pi session."]
 			: [
 					renderTable(
-						["ACTIVE RUN", "STARTED", "ACTUAL SPEND"],
+						["ACTIVE RUN", "STARTED", "RECORDED SPEND"],
 						overview.session.unfinished.map((run) => [
 							run.runId,
 							run.startedAt,
@@ -48,7 +49,7 @@ export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 			? ["No finished Prewalk runs in this Pi session."]
 			: [
 					renderTable(
-						["FINISHED RUN", "OUTCOME", "ACTUAL SPEND", "VS PLANNER ALONE"],
+						["FINISHED RUN", "OUTCOME", "SPENT", "ESTIMATED DIFFERENCE"],
 						overview.session.receipts.map((receipt) => [
 							receipt.runId,
 							receipt.outcome,
@@ -59,9 +60,9 @@ export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 				]),
 		"This current-session section excludes delegated child sessions. Use /prewalk stats task for the whole task tree.",
 		"",
-		"History · actual spend",
+		"History \u00b7 what you spent",
 		renderTable(
-			["PERIOD", "FINISHED RUNS", "ACTUAL SPEND", "ACTIVE"],
+			["PERIOD", "RUNS DONE", "SPENT", "ACTIVE"],
 			[
 				renderObservedSpendRow("This week", overview.week),
 				renderObservedSpendRow("This month", overview.month),
@@ -69,9 +70,16 @@ export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 			],
 		),
 		"",
-		"History · planner-alone price comparison",
+		"History \u00b7 what switching saved",
 		renderTable(
-			["PERIOD", "RUNS COMPARED", "PLANNER ALONE", "PLANNER + EXECUTOR", "DIFFERENCE"],
+			[
+				"PERIOD",
+				"RUNS COMPARED",
+				"COMPARED",
+				"IF NEVER SWITCHED",
+				"ACTUALLY PAID",
+				"SAVED BY SWITCHING",
+			],
 			[
 				renderComparisonRow("This week", overview.week),
 				renderComparisonRow("This month", overview.month),
@@ -87,7 +95,7 @@ export function renderAnalyticsOverview(overview: AnalyticsOverview): string {
 			? ["No finished runs yet."]
 			: [
 					renderTable(
-						["SESSION", "RUN ID", "OUTCOME", "ACTUAL SPEND", "VS PLANNER ALONE"],
+						["SESSION", "RUN ID", "OUTCOME", "SPENT", "ESTIMATED DIFFERENCE"],
 						overview.lifetime.recentReceipts.map((receipt) => [
 							sessionLabel(receipt.sessionId, overview.sessionTitles),
 							receipt.runId,
@@ -110,43 +118,56 @@ function renderObservedSpendRow(label: string, aggregate: AnalyticsAggregate): s
 }
 
 function renderComparisonRow(label: string, aggregate: AnalyticsAggregate): string[] {
-	const successful = aggregate.receipts.filter((receipt) => receipt.outcome === "succeeded");
-	const comparable = successful
-		.map((receipt) => ({ receipt, estimate: comparisonEstimate(receipt) }))
-		.filter(({ estimate }) => estimate.kind !== "unavailable");
-	const evidence = `${comparable.length} of ${successful.length} completed${
-		comparable.length < successful.length ? `; ${unavailableSummary(successful)}` : ""
-	}`;
-	if (comparable.length === 0) {
+	const summary = aggregate.comparison;
+	const evidence = comparisonCoverage(summary);
+	if (summary.comparedRuns === 0) {
 		return [
 			label,
 			evidence,
+			coveredSpend(summary, aggregate),
 			"—",
 			"—",
-			successful.length === 0
+			summary.finishedRuns === 0
 				? aggregate.receipts.length === 0
-					? "No completed runs yet"
-					: `No completed runs: ${unsuccessfulSummary(aggregate.receipts)}`
-				: `Cannot compare: ${unavailableSummary(successful)}`,
+					? "No finished runs yet"
+					: `No finished runs: ${unsuccessfulSummary(aggregate.receipts)}`
+				: summary.noHandoffRuns === summary.finishedRuns
+					? "Never switched models"
+					: `Cannot compare: ${unavailableSummary(summary)}`,
 		];
 	}
-	const plannerOnlyCost = comparable.reduce(
-		(total, { estimate }) =>
-			total + (estimate.kind === "unavailable" ? 0 : estimate.plannerOnlyCost),
-		0,
-	);
-	const netSavings = comparable.reduce(
-		(total, { estimate }) => total + (estimate.kind === "unavailable" ? 0 : estimate.savings),
-		0,
-	);
-	const prewalkPrimaryCost = plannerOnlyCost - netSavings;
 	return [
 		label,
 		evidence,
-		formatCompactUsd(plannerOnlyCost),
-		formatCompactUsd(prewalkPrimaryCost),
-		formatNetResult(netSavings, plannerOnlyCost),
+		coveredSpend(summary, aggregate),
+		formatCompactUsd(summary.plannerOnlyCost),
+		formatCompactUsd(summary.actualPrimaryCost),
+		formatNetResult(summary.difference, summary.plannerOnlyCost),
 	];
+}
+
+/**
+ * States how much of the period's recorded spend the difference is built from,
+ * so a small difference beside a large recorded total reads as narrow coverage
+ * rather than a poor result.
+ */
+function coveredSpend(summary: ComparisonSummary, aggregate: AnalyticsAggregate): string {
+	if (aggregate.actualCost === 0) return "—";
+	const share = (summary.comparedActualCost / aggregate.actualCost) * 100;
+	return `${formatCompactUsd(summary.comparedActualCost)} of ${formatCompactUsd(aggregate.actualCost)} (${share.toFixed(0)}%)`;
+}
+
+function comparisonCoverage(summary: ComparisonSummary): string {
+	const parts = [
+		`${summary.comparedRuns} ${summary.comparedRuns === 1 ? "run" : "runs"} compared`,
+	];
+	if (summary.noHandoffRuns > 0) {
+		parts.push(
+			`${summary.noHandoffRuns} ${summary.noHandoffRuns === 1 ? "run" : "runs"} never switched`,
+		);
+	}
+	if (summary.unavailableRuns > 0) parts.push(unavailableSummary(summary));
+	return parts.join("; ");
 }
 
 function renderTable(headers: string[], rows: string[][]): string {
@@ -167,25 +188,25 @@ function renderTable(headers: string[], rows: string[][]): string {
 
 function compactEstimate(receipt: RunReceipt): string {
 	const estimate = comparisonEstimate(receipt);
-	if (isPlanningOnlyReceipt(receipt)) return "No executor handoff; no cost difference";
+	if (isPlanningOnlyReceipt(receipt)) return "Never switched models; nothing to compare";
 	if (estimate.kind === "unavailable" && estimate.reason === "run-not-successful") {
-		return `${finishedOutcomeLabel(receipt.outcome)} run not compared`;
+		return `${finishedOutcomeLabel(receipt.outcome)}, so not compared`;
 	}
 	if (estimate.kind === "unavailable")
-		return `Cannot compare: ${unavailabilityLabel(estimate.reason)}`;
+		return `Not compared: ${unavailabilityLabel(estimate.reason)}`;
 	if (estimate.savings < 0) {
-		return `${formatCompactUsd(-estimate.savings)} more than planner alone`;
+		return `cost ${formatCompactUsd(-estimate.savings)} extra`;
 	}
-	return `${formatCompactUsd(estimate.savings)} less than planner alone`;
+	return `saved up to ${formatCompactUsd(estimate.savings)}`;
 }
 
 function formatNetResult(netSavings: number, plannerOnlyCost: number): string {
 	if (netSavings === 0) return "No cost difference";
-	if (plannerOnlyCost === 0) return "Cannot calculate percentage";
+	if (plannerOnlyCost === 0) return "No percentage available";
 	const percentage = `${Math.abs((netSavings / plannerOnlyCost) * 100).toFixed(1)}%`;
 	return netSavings < 0
-		? `${formatCompactUsd(-netSavings)} more than planner alone (${percentage})`
-		: `${formatCompactUsd(netSavings)} less than planner alone (${percentage})`;
+		? `cost ${formatCompactUsd(-netSavings)} extra (${percentage})`
+		: `saved up to ${formatCompactUsd(netSavings)} (${percentage})`;
 }
 
 export function renderVerifiedBenchmarkSummary(summary: VerifiedBenchmarkSummary): string {
@@ -203,13 +224,13 @@ export function renderTaskTreeReport(
 ): string {
 	return [
 		`Prewalk task tree for root session ${sessionLabel(report.rootSessionId, sessionTitles)}`,
-		`Root session actual cost: ${formatUsd(report.rootActualCost)}.`,
-		`Unique direct-child actual cost: ${formatUsd(report.directChildActualCost)}.`,
-		`Unique nested-child actual cost: ${formatUsd(report.nestedChildActualCost)}.`,
-		`Known task-tree actual cost: ${formatUsd(report.knownTaskTreeActualCost)} = ${formatUsd(report.rootActualCost)} + ${formatUsd(report.directChildActualCost)} + ${formatUsd(report.nestedChildActualCost)}.`,
+		`Root session recorded spend: ${formatUsd(report.rootActualCost)}.`,
+		`Unique direct-child recorded spend: ${formatUsd(report.directChildActualCost)}.`,
+		`Unique nested-child recorded spend: ${formatUsd(report.nestedChildActualCost)}.`,
+		`Known task-tree recorded spend: ${formatUsd(report.knownTaskTreeActualCost)} = ${formatUsd(report.rootActualCost)} + ${formatUsd(report.directChildActualCost)} + ${formatUsd(report.nestedChildActualCost)}.`,
 		`Reported children: ${report.reportedChildCount} of ${report.expectedChildCount} expected.`,
 		`Cost coverage: ${report.costCoverage}. Token-breakdown coverage: ${report.tokenCoverage}.`,
-		`Task-tree estimate: savings ${formatUsd(report.estimatedSavings)}; extra cost ${formatUsd(report.estimatedExtraCost)}; estimate coverage ${report.estimateCoverage}.`,
+		`Across this task: switching saved up to ${formatUsd(report.estimatedSavings)}; extra cost ${formatUsd(report.estimatedExtraCost)}; coverage ${report.estimateCoverage}.`,
 		...(report.unresolved.length === 0
 			? []
 			: [
@@ -225,21 +246,29 @@ export function renderReceiptReport(
 	const actual = summarizeActualCost(receipt.usage);
 	const estimate = comparisonEstimate(receipt);
 	return [
-		`Run ${receipt.runId}: outcome ${receipt.outcome}; handoff ${receipt.handoffState}`,
+		`Run ${receipt.runId}: ${receipt.outcome}; ${handoffPhrase(receipt.handoffState)}`,
 		`Session: ${sessionLabel(receipt.sessionId, sessionTitles)}`,
-		`Models: planner ${formatModel(receipt.planner.provider, receipt.planner.model)} -> executor ${formatModel(receipt.executor.provider, receipt.executor.model)}`,
-		`Actual spend reported by provider: ${formatUsd(receipt.actualCost)}`,
-		`Actual spend by call type: planner ${formatUsd(actual.plannerPrimary)}; executor ${formatUsd(actual.executorPrimary)}; helper/compaction ${formatUsd(actual.auxiliary)}`,
+		`Models: started on ${formatModel(receipt.planner.provider, receipt.planner.model)}, switched to ${formatModel(receipt.executor.provider, receipt.executor.model)}`,
+		`Spent: ${formatUsd(receipt.actualCost)}`,
+		`Spent before the switch ${formatUsd(actual.plannerPrimary)}; after the switch ${formatUsd(actual.executorPrimary)}; background calls ${formatUsd(actual.auxiliary)}`,
 		renderReceiptComparison(receipt, estimate),
 	].join("\n");
 }
 
+/** Says what happened to the model switch without exposing the internal state name. */
+function handoffPhrase(state: RunReceipt["handoffState"]): string {
+	if (state === "completed") return "switched models";
+	if (state === "pending") return "switch was still in progress";
+	if (state === "failed") return "the switch failed";
+	return "never switched";
+}
+
 function renderReceiptComparison(receipt: RunReceipt, estimate: SavingsEstimate): string {
-	if (isPlanningOnlyReceipt(receipt) && estimate.kind !== "unavailable") {
-		return `No executor handoff was needed, so the compared cost is the same as actual planner cost (${formatUsd(estimate.plannerOnlyCost)}).`;
+	if (isPlanningOnlyReceipt(receipt)) {
+		return "This run never switched models, so there is nothing to compare.";
 	}
 	if (estimate.kind === "unavailable" && estimate.reason === "run-not-successful") {
-		return `Cannot compare with planner alone because this run ended as ${finishedOutcomeLabel(receipt.outcome).toLowerCase()}.`;
+		return `Not compared because this run ended as ${finishedOutcomeLabel(receipt.outcome).toLowerCase()}.`;
 	}
 	return renderSavingsEstimate(estimate, receipt.pricingEvidence);
 }
@@ -249,19 +278,19 @@ export function renderSavingsEstimate(
 	pricingEvidence: PricingEvidence,
 ): string {
 	if (estimate.kind === "unavailable") {
-		return `Cannot compare with planner alone: ${unavailabilityLabel(estimate.reason)}.`;
+		return `Not compared: ${unavailabilityLabel(estimate.reason)}.`;
 	}
 
 	const source = pricingSourceLabel(pricingEvidence);
 	if (estimate.savings < 0) {
-		return `${estimateLabel(estimate.kind)} (${source}): ${formatUsd(-estimate.savings)} more than planner alone; planner-alone estimate ${formatUsd(estimate.plannerOnlyCost)}.`;
+		return `${estimateLabel(estimate.kind)} (${source}): switching cost ${formatUsd(-estimate.savings)} extra; without switching this run was worth ${formatUsd(estimate.plannerOnlyCost)}.`;
 	}
-	return `${estimateLabel(estimate.kind)} (${source}): ${formatUsd(estimate.savings)} less than planner alone; planner-alone estimate ${formatUsd(estimate.plannerOnlyCost)}.`;
+	return `${estimateLabel(estimate.kind)} (${source}): switching saved up to ${formatUsd(estimate.savings)}; without switching this run was worth ${formatUsd(estimate.plannerOnlyCost)}.`;
 }
 
 function estimateLabel(kind: Exclude<SavingsEstimate["kind"], "unavailable">): string {
-	if (kind === "catalog-estimated") return "Catalog price comparison";
-	return "Price comparison";
+	if (kind === "catalog-estimated") return "Estimate from the price catalog";
+	return "Estimate from recorded prices";
 }
 
 function pricingSourceLabel(evidence: PricingEvidence): string {
@@ -269,30 +298,26 @@ function pricingSourceLabel(evidence: PricingEvidence): string {
 		return `model pricing captured ${evidence.capturedAt}`;
 	}
 	if (evidence.source === "catalog") return `catalog dated ${evidence.catalogDate}`;
-	if (evidence.source === "pi-reported-actual") return "Pi-reported actual only";
+	if (evidence.source === "pi-reported-actual") return "Pi-reported spend only";
 	return `unavailable: ${unavailabilityLabel(evidence.reason)}`;
 }
 
-function unavailabilityLabel(reason: UnavailabilityReason): string {
-	if (reason === "run-not-successful") return "the run did not complete successfully";
+function unavailabilityLabel(reason: string): string {
+	if (reason === "run-not-successful") return "the run stopped early";
 	if (reason === "pricing-missing") return "model prices were not available";
-	if (reason === "pricing-incomplete") return "a price was missing for a token type the run used";
-	if (reason === "pricing-zero") return "a recorded model price was zero or invalid";
-	if (reason === "usage-incomplete") return "recorded executor usage was missing";
-	if (reason === "analytics-disabled") return "analytics collection was disabled";
-	return "run is active or unfinished";
+	if (reason === "pricing-incomplete") return "we had no price for part of what this run used";
+	if (reason === "pricing-zero") return "a recorded price was zero, which cannot be right";
+	if (reason === "usage-incomplete") return "no work was recorded after the switch";
+	if (reason === "analytics-disabled") return "tracking was turned off";
+	return "the run is still going";
 }
 
-function unavailableSummary(receipts: readonly RunReceipt[]): string {
-	const reasons = new Map<string, number>();
-	for (const receipt of receipts) {
-		const estimate = comparisonEstimate(receipt);
-		if (estimate.kind !== "unavailable") continue;
-		const label = unavailabilityLabel(estimate.reason);
-		reasons.set(label, (reasons.get(label) ?? 0) + 1);
-	}
-	return [...reasons.entries()]
-		.map(([label, count]) => `${count} ${count === 1 ? "run" : "runs"}: ${label}`)
+function unavailableSummary(summary: ComparisonSummary): string {
+	return Object.entries(summary.unavailableReasons)
+		.map(
+			([reason, count]) =>
+				`${count} ${count === 1 ? "run" : "runs"}: ${unavailabilityLabel(reason)}`,
+		)
 		.join("; ");
 }
 

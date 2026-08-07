@@ -222,15 +222,20 @@ export function hasProvableApplyPatch(command: string): boolean {
 		}
 		if (commandPosition && token.value === "apply_patch" && !token.quoted) {
 			const suffix = tokens.slice(index + 1);
-			const unsafe = suffix.some(
-				(candidate) =>
-					candidate.kind === "operator" &&
-					(candidate.value === "|" ||
-						candidate.value === "|&" ||
-						candidate.value === "||" ||
-						candidate.value === ";" ||
-						candidate.value === "\n"),
-			);
+			const unsafe = suffix.some((candidate, candidateIndex) => {
+				if (candidate.kind !== "operator") return false;
+				if (
+					candidate.value === "|" ||
+					candidate.value === "|&" ||
+					candidate.value === "||" ||
+					candidate.value === ";"
+				)
+					return true;
+				if (candidate.value !== "\n") return false;
+				return suffix
+					.slice(candidateIndex + 1)
+					.some((next) => !(next.kind === "operator" && next.value === "\n"));
+			});
 			return !unsafe;
 		}
 		if (commandPosition && /^[A-Za-z_][A-Za-z0-9_]*=[^$]*$/.test(token.value) && !token.quoted) {
