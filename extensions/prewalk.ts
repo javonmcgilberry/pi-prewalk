@@ -62,6 +62,12 @@ import {
 	parseConfig,
 	REASONING_LEVELS,
 } from "../src/core.js";
+import {
+	type ExecutorChainResolution,
+	type ExecutorRejection,
+	type RejectedExecutor,
+	resolveExecutorChain,
+} from "../src/executor-chain.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
@@ -1083,53 +1089,45 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		return false;
 	};
 
-	const validateModels = async (
+	/**
+	 * Validates the planner, then picks the first usable executor from the
+	 * configured chain.
+	 *
+	 * Planner problems still throw: with no valid selected model there is nothing
+	 * to hand off from. An unusable executor chain is returned rather than thrown,
+	 * so the caller can leave Prewalk unarmed instead of taking the session down
+	 * with it.
+	 */
+	const resolveExecutor = async (
 		plannerProfile: PlannerProfile,
 		config: PrewalkConfig,
 		ctx: ExtensionContext,
-	): Promise<void> => {
+	): Promise<ExecutorChainResolution> => {
 		const planner = ctx.modelRegistry.find(plannerProfile.provider, plannerProfile.model);
-		const executor = ctx.modelRegistry.find(config.executor.provider, config.executor.model);
-		if (!planner || !executor || !isPlannerSelected(ctx.model, plannerProfile)) {
+		if (!planner || !isPlannerSelected(ctx.model, plannerProfile)) {
 			throw new Error("model-unavailable");
 		}
+		if (planner.contextWindow <= 0 || planner.maxTokens <= 0) {
+			throw new Error("model-unavailable");
+		}
+		const plannerAuth = await ctx.modelRegistry.getApiKeyAndHeaders(planner);
+		if (!plannerAuth.ok) throw new Error("authorization-unavailable");
+
 		// Planner and executor may sit on different providers and APIs. Pi
 		// normalizes replayed history for whichever model receives the request:
 		// api/transform-messages.ts downgrades another model's thinking blocks to
 		// plain text, drops redacted thinking and signatures, and renormalizes tool
 		// call ids. A same-provider pair on two different model ids already takes
 		// that same path, so a cross-provider pair adds no further degradation.
-		//
-		// The executor still must not be smaller than the planner. Pi sizes
-		// compaction against its selected model, which stays the planner for the
-		// whole run, so a smaller executor would receive requests that no automatic
-		// compaction is protecting.
-		if (
-			planner.contextWindow <= 0 ||
-			executor.contextWindow < planner.contextWindow ||
-			planner.maxTokens <= 0 ||
-			executor.maxTokens <= 0
-		) {
-			throw new Error("model-unavailable");
-		}
-		// An executor identical to the planner satisfies every check above by
-		// definition, so reject it explicitly. Handing off to the running model is
-		// a no-op that still costs a planning nudge and a checklist. A same-model
-		// executor at a different reasoning level remains a real downgrade.
-		if (
-			planner.provider === executor.provider &&
-			planner.id === executor.id &&
-			plannerProfile.reasoning === config.executor.reasoning
-		) {
-			throw new Error("configuration-invalid");
-		}
-		const [plannerAuth, executorAuth] = await Promise.all([
-			ctx.modelRegistry.getApiKeyAndHeaders(planner),
-			ctx.modelRegistry.getApiKeyAndHeaders(executor),
-		]);
-		if (!plannerAuth.ok || !executorAuth.ok) {
-			throw new Error("authorization-unavailable");
-		}
+		return resolveExecutorChain(
+			planner,
+			plannerProfile.reasoning,
+			[config.executor, ...(config.executorFallbacks ?? [])],
+			{
+				find: (provider, model) => ctx.modelRegistry.find(provider, model),
+				hasAuth: async (target) => (await ctx.modelRegistry.getApiKeyAndHeaders(target)).ok,
+			},
+		);
 	};
 
 	const sendPrompt = async (
@@ -1186,7 +1184,18 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				model: ctx.model.id,
 				reasoning: ctx.thinkingLevel ?? "off",
 			};
-			await validateModels(planner, config, ctx);
+			const resolution = await resolveExecutor(planner, config, ctx);
+			if (!resolution.ok) {
+				// Prewalk is an optimization, not a prerequisite. An unusable executor
+				// leaves the session on its planner rather than failing the run, which
+				// is the correction Oh My Pi made in issue #6064 after the strict
+				// version locked users out.
+				deactivatePrewalkTools();
+				ctx.ui.notify(unavailableExecutorNotice(resolution.rejected), "error");
+				updateStatus(ctx);
+				return;
+			}
+			const effectiveConfig: PrewalkConfig = { ...config, executor: resolution.executor };
 			const todoActive = pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME);
 			const action = coordinator.arm(
 				randomUUID(),
@@ -1194,7 +1203,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				mode,
 				todoActive,
 				planner,
-				config,
+				effectiveConfig,
 			);
 			const armedRun = coordinator.run;
 			if (armedRun && prewalkToolSlate) {
@@ -1281,7 +1290,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		childDiagnostic = undefined;
-		await startRun("automatic", ctx, false, { ...config, executor: target.executor });
+		// A child runs the executor its own agent entry names. Session-level
+		// fallbacks belong to the parent and must not silently redirect a child to
+		// a model nobody opted it into.
+		await startRun("automatic", ctx, false, {
+			...config,
+			executor: target.executor,
+			executorFallbacks: [],
+		});
 	};
 
 	const configure = async (ctx: ExtensionContext): Promise<void> => {
@@ -1295,15 +1311,23 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Select a planner model in Pi before configuring Prewalk.", "error");
 			return;
 		}
-		const executorCandidates = available.filter(
-			(model) =>
-				model.provider === planner.provider &&
-				model.api === planner.api &&
-				model.id !== planner.id,
-		);
+		// Any authorized model can execute, including one on another provider. The
+		// planner's own provider is offered first because it is the least surprising
+		// pairing, not because the others are unsupported.
+		const executorCandidates = available
+			// The planner's own model stays on the list: routing it at a lower effort
+			// is a real downgrade, and only the exact same effort is a no-op. The
+			// reasoning step below is what rejects that pairing.
+			.filter((model) => model.contextWindow >= planner.contextWindow && model.maxTokens > 0)
+			.sort((left, right) => {
+				const leftHome = left.provider === planner.provider ? 0 : 1;
+				const rightHome = right.provider === planner.provider ? 0 : 1;
+				if (leftHome !== rightHome) return leftHome - rightHome;
+				return `${left.provider}/${left.id}`.localeCompare(`${right.provider}/${right.id}`);
+			});
 		if (executorCandidates.length === 0) {
 			ctx.ui.notify(
-				"That planner has no second available model on the same provider and API.",
+				"No authorized model can execute for that planner. An executor needs at least the planner's context window.",
 				"error",
 			);
 			return;
@@ -1336,6 +1360,19 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		];
 		const reasoningChoice = await ctx.ui.select("Luna/executor reasoning", reasoningChoices);
 		if (!isReasoningLevel(reasoningChoice)) return;
+		// Mirrors the resolver's same-as-planner rule, so the wizard cannot save a
+		// pairing that would immediately be rejected at arm time.
+		if (
+			executor.provider === planner.provider &&
+			executor.id === planner.id &&
+			reasoningChoice === (ctx.thinkingLevel ?? "off")
+		) {
+			ctx.ui.notify(
+				"That is the model already running at the same reasoning level, so there is nothing to hand off to. Pick a different model or a lower reasoning level.",
+				"error",
+			);
+			return;
+		}
 		const savedAnalytics = savedConfig?.analytics ?? DEFAULT_ANALYTICS_CONFIG;
 		const collectionChoice = await ctx.ui.select("Analytics collection", [
 			savedAnalytics.enabled ? "enabled" : "disabled",
@@ -1359,6 +1396,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				recentReceiptCount: savedAnalytics.recentReceiptCount,
 				schemaVersion: ANALYTICS_SCHEMA_VERSION,
 			},
+			// The wizard only edits the primary executor. A hand-written fallback
+			// chain survives it rather than being silently dropped.
+			...(savedConfig?.executorFallbacks === undefined
+				? {}
+				: { executorFallbacks: savedConfig.executorFallbacks }),
 			...(savedConfig?.experimentalChild === undefined
 				? {}
 				: { experimentalChild: savedConfig.experimentalChild }),
@@ -1728,7 +1770,26 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				try {
-					await validateModels(restored.planner, restored.config, ctx);
+					// A restored run already chose its executor; re-running the chain
+					// could silently move a live run onto a different model.
+					const restoredResolution = await resolveExecutor(
+						restored.planner,
+						{ ...restored.config, executorFallbacks: [] },
+						ctx,
+					);
+					if (!restoredResolution.ok) {
+						// The executor went away while the session was closed. That is the
+						// same situation as arming without one: drop back to the planner
+						// with an explanation instead of resurrecting the run as failed.
+						coordinator.reset();
+						overlay?.restore();
+						overlay = undefined;
+						mutations.resetForRun();
+						deactivatePrewalkTools();
+						ctx.ui.notify(unavailableExecutorNotice(restoredResolution.rejected), "error");
+						updateStatus(ctx);
+						return;
+					}
 					ensureOverlay(ctx);
 					if (restored.phase !== "failed") {
 						await restoreAnalyticsJournal(restored, ctx).catch(() => {
@@ -2148,6 +2209,34 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		updateStatus(ctx);
 	});
+}
+
+function executorRejectionLabel(reason: ExecutorRejection): string {
+	if (reason === "not-registered") return "not available";
+	if (reason === "authorization-unavailable") return "no credentials";
+	if (reason === "context-window-too-small") return "context window smaller than the planner";
+	if (reason === "output-capacity-unavailable") return "no usable output capacity";
+	return "same as the planner";
+}
+
+/**
+ * Names every candidate and why it was passed over, so a configuration problem
+ * is legible without opening the audit log.
+ */
+function unavailableExecutorNotice(rejected: readonly RejectedExecutor[]): string {
+	const tried = rejected
+		.map(
+			({ candidate, reason }) =>
+				`${candidate.provider}/${candidate.model} (${executorRejectionLabel(reason)})`,
+		)
+		.join(", ");
+	// A no-op pairing is a configuration mistake rather than an outage, so it
+	// reads differently from a model that genuinely is not there.
+	const summary =
+		rejected.length > 0 && rejected.every(({ reason }) => reason === "same-as-planner")
+			? "the configured executor is the model already running"
+			: "no executor is available";
+	return `Prewalk stayed unarmed: ${summary}. Tried ${tried}.`;
 }
 
 function modelLabelForNotice(model: string): string {

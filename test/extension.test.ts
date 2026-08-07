@@ -109,6 +109,8 @@ function createHarness(
 		sessionId?: string;
 		todoVisible?: boolean;
 		activeTools?: string[];
+		/** Model ids the registry pretends not to know, e.g. an executor gone missing. */
+		unresolvableModelIds?: string[];
 	} = {},
 ) {
 	const handlers = new Map<string, Handler[]>();
@@ -228,9 +230,10 @@ function createHarness(
 	const modelRegistry = {
 		getAvailable: () => options.availableModels ?? [planner, executor],
 		find: (_provider: string, id: string) => {
+			if (options.unresolvableModelIds?.includes(id)) return undefined;
 			if (id === planner.id) return planner;
 			if (id === executor.id) return executor;
-			return undefined;
+			return options.availableModels?.find((entry) => entry.id === id);
 		},
 		getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
 		getRegisteredProviderConfig: vi.fn(() => providerConfig),
@@ -1758,6 +1761,62 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toBe("prewalk: [gpt-5.4 · high] / Luna · low");
 	});
 
+	it("leaves Prewalk unarmed with a notice when no executor candidate resolves", async () => {
+		// Oh My Pi shipped the harsh version of this and had to soften it in issue
+		// #6064: an unusable hand-off target must not take the session down with it.
+		const harness = createHarness({ unresolvableModelIds: [EXECUTOR_MODEL_ID] });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("no executor is available");
+		expect(harness.messages).toEqual([]);
+	});
+
+	it("arms on a fallback executor when the primary one is missing", async () => {
+		const harness = createHarness({
+			unresolvableModelIds: [EXECUTOR_MODEL_ID],
+			availableModels: [model(PLANNER_MODEL_ID), model("gpt-5.4")],
+		});
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({
+				executor: DEFAULT_EXECUTOR,
+				executorFallbacks: [{ provider: "openai-codex", model: "gpt-5.4", reasoning: "low" }],
+			})}\n`,
+		);
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "plan-injected",
+			executor: { model: "gpt-5.4" },
+		});
+	});
+
+	it("drops back to the planner when a restored run's executor has gone away", async () => {
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		await first.commands.get("prewalk")?.("run", first.context);
+
+		const restored = createHarness({ unresolvableModelIds: [EXECUTOR_MODEL_ID] });
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+
+		// A vanished executor must not resurrect the run as failed; the session
+		// keeps working on its planner.
+		expect(restored.notifications.at(-1)).toContain("no executor is available");
+		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
+		expect(restored.entries.map((entry) => entry.data)).not.toContainEqual(
+			expect.objectContaining({ event: "failed" }),
+		);
+	});
+
 	it("leaves upstream child model, thinking, fallback, and scheduling inputs unchanged", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
@@ -1874,8 +1933,12 @@ describe("Prewalk extension harness", () => {
 
 		await harness.commands.get("prewalk")?.("run", harness.context);
 
+		// Oh My Pi treats a no-op target as a notice and skips the hand-off rather
+		// than failing, so the run survives a bad pairing.
 		expect(harness.messages).toEqual([]);
-		expect(harness.notifications.at(-1)).toContain("configuration-invalid");
+		expect(harness.notifications.at(-1)).toContain(
+			"the configured executor is the model already running",
+		);
 	});
 
 	it("still arms a same-model executor when the reasoning level differs", async () => {
@@ -1919,7 +1982,7 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(unavailable.pi);
 		await unavailable.emit("session_start", { type: "session_start", reason: "startup" });
 		expect(unavailable.messages).toEqual([]);
-		expect(unavailable.notifications.at(-1)).toContain("model-unavailable");
+		expect(unavailable.notifications.at(-1)).toContain("no executor is available");
 	});
 
 	it("hands an opted-in child to a lower-effort same-model executor only after proven mutation", async () => {

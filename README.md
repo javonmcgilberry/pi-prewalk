@@ -44,8 +44,9 @@ savings or quality.
 
 ## Requirements
 
-- Two authorized models, whose context window for the executor is at least the
-  planner's
+- An authorized executor whose context window is at least the planner's. It may
+  be the planner's own model at a lower reasoning level, or a model on another
+  provider
 - No other extension registered as `prewalk_todo`
 - Pi Codex Conversion native Responses compaction disabled when that extension
   is installed
@@ -59,6 +60,23 @@ Google Gemini Flash routes through each model's own provider stream.
 Prewalk keeps `prewalk_todo` available for the full session. Calls outside an
 active Prewalk run fail without changing the checklist. During a run, the
 hidden planning and executor prompts explain how to use it.
+
+An optional `executorFallbacks` array lists alternates to try in order when the
+primary executor is unavailable:
+
+```json
+{
+  "executor": { "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "low" },
+  "executorFallbacks": [
+    { "provider": "google", "model": "gemini-3.5-flash", "reasoning": "low" }
+  ]
+}
+```
+
+Prewalk takes the first candidate that is registered, authorized, large enough,
+and not the model already running at the same reasoning level. When none
+qualifies it stays unarmed and names each candidate it passed over, leaving the
+session on its planner instead of failing the run.
 
 A handoff to a different model always replays history without that model's own
 reasoning signatures, because Pi keeps signed reasoning only for an exact model
@@ -213,7 +231,8 @@ Prewalk works without pi-subagents, Context Mode, or Pi Codex Conversion.
   native Responses compaction is explicitly enabled because hook order could
   otherwise compact planning-only context before Prewalk filters it.
 
-Cross-provider routing and guessed mutation results are deliberately unsupported.
+Guessed mutation results are deliberately unsupported: Prewalk hands off only on
+a positively proven code mutation.
 
 ### Context limits and compaction
 

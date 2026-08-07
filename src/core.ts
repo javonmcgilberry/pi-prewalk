@@ -27,6 +27,11 @@ export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 
 export interface PrewalkConfig {
 	executor: ExecutorConfig;
+	/**
+	 * Alternates tried in order when the primary executor is unavailable, so a
+	 * planner change or a lapsed credential degrades instead of stranding the run.
+	 */
+	executorFallbacks?: ExecutorConfig[];
 	analytics?: AnalyticsConfig;
 	experimentalChild?: ExperimentalChildConfig;
 }
@@ -100,7 +105,7 @@ export type CoordinatorAction =
 	| { type: "send-continuation" }
 	| { type: "handoff"; trigger: MutationTrigger };
 
-const CONFIG_KEYS = new Set(["executor", "analytics", "experimentalChild"]);
+const CONFIG_KEYS = new Set(["executor", "executorFallbacks", "analytics", "experimentalChild"]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
 const EXPERIMENTAL_CHILD_KEYS = new Set(["enabled", "agents"]);
 const EXPERIMENTAL_CHILD_TARGET_KEYS = new Set(["mode", "executor"]);
@@ -130,12 +135,14 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 		throw new Error(`Unknown Prewalk config field: ${unknownKeys.join(", ")}.`);
 	}
 	const executor = parseExecutorConfig(value.executor, "executor");
+	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
 	const analytics =
 		value.analytics === undefined
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
 			: parseAnalyticsConfig(value.analytics);
 	return {
 		executor,
+		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
 		analytics,
 		...(value.experimentalChild === undefined
 			? {}
@@ -149,6 +156,14 @@ function parseExecutorConfig(value: unknown, name: string): ExecutorConfig {
 		throw new Error(`Prewalk config ${name}.reasoning is invalid.`);
 	}
 	return { ...model, reasoning: value.reasoning };
+}
+
+function parseExecutorFallbacks(value: unknown): ExecutorConfig[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error("Prewalk config executorFallbacks must be an array.");
+	}
+	return value.map((entry, index) => parseExecutorConfig(entry, `executorFallbacks[${index}]`));
 }
 
 function parseExperimentalChildConfig(value: unknown): ExperimentalChildConfig {

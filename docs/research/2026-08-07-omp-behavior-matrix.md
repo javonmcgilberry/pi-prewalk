@@ -68,14 +68,15 @@ Several rows below are consequences of that, not preferences.
 | 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | `pi.on("context")` filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts` context hook |
 | 9 | Cross-provider planner/executor | Yes, and it is the default | **Yes, as of this change** | Same | `priority.json` `smol`; `src/provider-overlay.ts` executor delegate |
 | 10 | Cross-API planner/executor | Yes | Yes | Same | see "Cross-provider evidence" below |
-| 11 | Default executor | `smol` role, resolved from a priority list | One configured `executor` in `prewalk.json` | **Chosen** | `priority.json`; `src/core.ts` `parseConfig` |
-| 12 | Executor auto-selected for the current planner | Yes, by role resolution | No, explicit config only | **Gap** | `commit/model-selection.ts:82`; no equivalent here |
-| 13 | Executor context window must be >= planner's | No such rule | Yes, enforced at startup | **Forced** | no OMP check; `extensions/prewalk.ts` `validateModels` |
+| 11 | Default executor | `smol` role, resolved from a priority list | Configured `executor` plus an ordered `executorFallbacks` chain | **Chosen** | `priority.json`; `src/core.ts` `parseConfig` |
+| 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks the configured chain** | Same | `model-resolver.ts:966`; `src/executor-chain.ts` |
+| 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | No, the chain is written by hand | **Gap** | `priority.json`; no built-in default chain here |
+| 13 | Executor context window must be >= planner's | No such rule | Yes, enforced per candidate | **Forced** | no OMP check; `src/executor-chain.ts` `context-window-too-small` |
 | 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | No, Pi sizes against the planner | **Forced** | `agent-session.js:1517` uses `this.model` |
 | 14b | Context-overflow *recovery* covers the executor | Yes | No, the check is skipped entirely | **Forced** | `agent-session.js:1522` `sameModel` gate |
-| 15 | Same model + same effort handoff | Graceful no-op with a notice | Hard `configuration-invalid` error | **Divergence** | `thinking.ts:169` `prewalkWouldBeNoop`; `validateModels` |
-| 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `validateModels` allows differing reasoning |
-| 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | Fails the run with a reason code | **Divergence** | `task/executor.ts:2706`; `fail("authorization-unavailable")` |
+| 15 | Same model + same effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `same-as-planner` |
+| 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares reasoning before rejecting |
+| 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | **Stays unarmed with a notice, session continues** | Same | `main.ts:1007-1019` (issue #6064); `unavailableExecutorNotice` |
 | 18 | Subagent/child prewalk | Yes, per-agent frontmatter and settings | Behind `experimentalChild`, default off | **Chosen** | `docs/task-agent-discovery.md:39`; `src/core.ts` |
 | 19 | Plan-yolo | Yes, separate feature | Not implemented | **Chosen** | `session/prewalk.ts:238` |
 | 20 | Status line annotation | Yes | Yes | Same | `src/status.ts` |
@@ -83,7 +84,8 @@ Several rows below are consequences of that, not preferences.
 | 22 | Local cost analytics and receipts | Not present | Yes | **Addition** | `src/analytics*.ts` |
 | 23 | Provider-ownership drift detection | Not needed | Yes, `provider-drift`, for both the planner registration and the executor model | **Forced** | `verifyOverlayOwnership`; `resolveExecutor` |
 | 24 | Native Responses compaction | Supported | Refused, `native-compaction-unsupported` | **Forced** | `nativeResponsesCompactionState` |
-| 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/status.ts:17`; `extensions/prewalk.ts:2141` |
+| 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/status.ts:17`; `extensions/prewalk.ts` `modelLabelForNotice` |
+| 26 | `configure` offers cross-provider executors | n/a, no wizard | **Yes, planner's provider ranked first** | **Addition** | `extensions/prewalk.ts` `configure` |
 
 ## Cross-provider evidence
 
@@ -149,18 +151,29 @@ which covers the reserve for those families but not for a custom transport.
 Removing the floor without executor-aware compaction would trade a clear startup
 error for provider errors mid-run.
 
-Rows 15 and 17 are stricter than OMP on purpose: this extension holds a provider
-registration, so it prefers refusing a run to leaving an overlay installed in a
-state it did not plan for. OMP can degrade to "carry on unswitched" because
-nothing is installed. Both are defensible; row 17 in particular is worth
-revisiting, since failing an entire run because a cheap executor lost auth is
-harsher than continuing on the planner.
+Rows 15 and 17 used to be stricter than OMP: an unusable executor failed the
+whole run. That is no longer the case. Oh My Pi shipped the strict version too
+and had to reverse it in issue #6064, after an unresolvable hand-off target
+locked users out of the app; `main.ts:1007-1019` now warns and leaves prewalk
+unarmed. Prewalk does the same, and the overlay is restored on the way out so
+nothing is left installed.
 
-Row 12 is the most valuable remaining gap. OMP resolves an executor from a
-priority list against whatever models are available, so a planner change does
-not strand the user. Here a planner on a provider the configured executor does
-not match produced a bare `model-unavailable`. Cross-provider removes the hard
-failure; automatic selection would remove the surprise.
+The planner keeps the strict treatment. A missing or unauthorized *planner* is
+not a degraded hand-off, it is a session with nothing to hand off from, so
+`resolveExecutor` still throws for that case.
+
+Row 12b is the remaining half of that gap. Oh My Pi ships `priority.json`, so a
+user who has configured nothing still gets a sensible hand-off target and a
+chain to fall back through. Prewalk now degrades through a chain, but only one
+written by hand, so an unconfigured install still has a single point of failure.
+Shipping a default chain, ordered by the planner's provider first, would close
+it.
+
+One caution learned from reading Oh My Pi: `priority.json` is a *preference
+order*, not an allowlist. Nothing in `session/prewalk.ts` validates a target
+against it, and `--prewalk-into` accepts any pattern the ordinary model resolver
+accepts (`main.ts:1002`). A default chain here should behave the same way, as a
+starting point a user can override rather than a set of permitted models.
 
 ## Not verified
 

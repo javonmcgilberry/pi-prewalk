@@ -30,6 +30,24 @@ describe("provider-neutral configuration", () => {
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");
 	});
 
+	it("keeps an ordered executor fallback chain", () => {
+		const haiku = { provider: "anthropic", model: "claude-haiku-4-5", reasoning: "low" as const };
+		const flash = { provider: "google", model: "gemini-3.5-flash", reasoning: "low" as const };
+		expect(parseConfig({ ...config, executorFallbacks: [haiku, flash] })).toMatchObject({
+			executor: DEFAULT_EXECUTOR,
+			executorFallbacks: [haiku, flash],
+		});
+	});
+
+	it("rejects a malformed executor fallback chain", () => {
+		expect(() => parseConfig({ ...config, executorFallbacks: {} })).toThrow(
+			"Prewalk config executorFallbacks must be an array.",
+		);
+		expect(() =>
+			parseConfig({ ...config, executorFallbacks: [{ provider: "anthropic", model: "x" }] }),
+		).toThrow("Prewalk config executorFallbacks[0].reasoning is invalid.");
+	});
+
 	it("accepts explicitly disabled analytics", () => {
 		expect(
 			parseConfig({
