@@ -153,7 +153,7 @@ describe("shipped package contract", () => {
 		expect(files.some((file: string) => file.startsWith("docs/plans/"))).toBe(false);
 	});
 
-	it("ships a strict same-provider planner and executor configuration", async () => {
+	it("ships a strict executor configuration that rejects unknown fields", async () => {
 		const example = JSON.parse(await text("prewalk.example.json"));
 		expect(parseConfig(example)).toEqual(example);
 		for (const key of ["target", "thinkingLevel", "crossProviderPairs", "provider"]) {

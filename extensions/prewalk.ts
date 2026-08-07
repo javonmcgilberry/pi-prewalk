@@ -1091,9 +1091,18 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (!planner || !executor || !isPlannerSelected(ctx.model, plannerProfile)) {
 			throw new Error("model-unavailable");
 		}
+		// Planner and executor may sit on different providers and APIs. Pi
+		// normalizes replayed history for whichever model receives the request:
+		// api/transform-messages.ts downgrades another model's thinking blocks to
+		// plain text, drops redacted thinking and signatures, and renormalizes tool
+		// call ids. A same-provider pair on two different model ids already takes
+		// that same path, so a cross-provider pair adds no further degradation.
+		//
+		// The executor still must not be smaller than the planner. Pi sizes
+		// compaction against its selected model, which stays the planner for the
+		// whole run, so a smaller executor would receive requests that no automatic
+		// compaction is protecting.
 		if (
-			planner.provider !== executor.provider ||
-			planner.api !== executor.api ||
 			planner.contextWindow <= 0 ||
 			executor.contextWindow < planner.contextWindow ||
 			planner.maxTokens <= 0 ||

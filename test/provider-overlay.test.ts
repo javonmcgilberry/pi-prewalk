@@ -34,6 +34,21 @@ function model(id: string): Model<"openai-codex-responses"> {
 	};
 }
 
+function anthropicModel(id: string): Model<"anthropic-messages"> {
+	return {
+		id,
+		name: id,
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://anthropic.test",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 2000,
+		maxTokens: 200,
+	};
+}
+
 function assistant(selected: Model<Api>): AssistantMessage {
 	return {
 		role: "assistant",
@@ -169,6 +184,111 @@ function setup() {
 	};
 }
 
+/**
+ * Planner and executor on different providers, each with its own registered
+ * provider transport. Only the planner's provider carries the overlay.
+ */
+function setupCrossProvider() {
+	const planner = model(PLANNER_MODEL_ID);
+	const executor = anthropicModel("claude-haiku-4-5");
+	const plannerDelegateModels: Model<Api>[] = [];
+	const executorDelegateModels: Model<Api>[] = [];
+	const executorDelegateOptions: Array<SimpleStreamOptions | undefined> = [];
+
+	const plannerDelegate: NonNullable<ProviderConfig["streamSimple"]> = (selected) => {
+		plannerDelegateModels.push(selected);
+		return successfulStream(selected);
+	};
+	const executorDelegate: NonNullable<ProviderConfig["streamSimple"]> = (
+		selected,
+		_context,
+		options,
+	) => {
+		executorDelegateModels.push(selected);
+		executorDelegateOptions.push(options);
+		return successfulStream(selected);
+	};
+
+	let plannerConfig: ProviderConfig | undefined = {
+		api: "openai-codex-responses",
+		streamSimple: plannerDelegate,
+	};
+	const executorConfig: ProviderConfig = {
+		api: "anthropic-messages",
+		streamSimple: executorDelegate,
+	};
+
+	const pi = {
+		registerProvider: vi.fn((provider: string, next: ProviderConfig) => {
+			if (provider === PLANNER_PROVIDER) plannerConfig = next;
+		}),
+		unregisterProvider: vi.fn((provider: string) => {
+			if (provider === PLANNER_PROVIDER) plannerConfig = undefined;
+		}),
+	};
+	let route = false;
+	let primary = false;
+	const state: ProviderOverlayState = {
+		shouldRouteToExecutor: () => route,
+		isPrimaryAgentStream: () => primary,
+		currentRunId: () => "run-1",
+		onExecutorStreamStarted: vi.fn(),
+		onExecutorStreamSucceeded: vi.fn(),
+		onExecutorStreamFailed: vi.fn(),
+		onProviderDrift: vi.fn(),
+	};
+	const registry = {
+		find: (provider: string, id: string): Model<Api> | undefined => {
+			if (provider === PLANNER_PROVIDER && id === PLANNER_MODEL_ID) return planner;
+			if (provider === "anthropic" && id === executor.id) return executor;
+			return undefined;
+		},
+		getRegisteredProviderConfig: (provider: string) => {
+			if (provider === PLANNER_PROVIDER) return plannerConfig;
+			if (provider === "anthropic") return executorConfig;
+			return undefined;
+		},
+		getApiKeyAndHeaders: vi.fn(
+			async (): Promise<{
+				ok: true;
+				apiKey: string;
+				headers: Record<string, string>;
+				env: Record<string, string>;
+			}> => ({
+				ok: true,
+				apiKey: "anthropic-token",
+				headers: { "x-anthropic": "true" },
+				env: {},
+			}),
+		),
+	};
+	const overlay = createProviderOverlay(
+		pi,
+		registry,
+		{ ...DEFAULT_PLANNER, reasoning: "high" },
+		{ executor: { provider: "anthropic", model: executor.id, reasoning: "low" } },
+		state,
+	);
+	const context: Context = { messages: [] };
+	return {
+		planner,
+		executor,
+		plannerDelegateModels,
+		executorDelegateModels,
+		executorDelegateOptions,
+		state,
+		overlay,
+		context,
+		plannerConfig: () => plannerConfig,
+		setRoute: (value: boolean) => {
+			route = value;
+		},
+		setPrimary: (value: boolean) => {
+			primary = value;
+		},
+	};
+}
+
 describe("provider overlay", () => {
 	it("delegates Sol unchanged before handoff", async () => {
 		const fixture = setup();
@@ -287,6 +407,64 @@ describe("provider overlay", () => {
 		expect(fixture.delegatedModels).toEqual([]);
 		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
 		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
+	});
+
+	it("sends a cross-provider executor through its own provider transport", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context, { reasoning: "high" })
+			.result();
+
+		// The planner's own transport must never receive the executor model: it
+		// speaks a different wire format and carries the wrong credentials.
+		expect(fixture.plannerDelegateModels).toEqual([]);
+		expect(fixture.executorDelegateModels).toEqual([fixture.executor]);
+		expect(fixture.executorDelegateOptions).toEqual([
+			{
+				reasoning: "low",
+				apiKey: "anthropic-token",
+				headers: { "x-anthropic": "true" },
+				env: {},
+			},
+		]);
+		expect(result?.provider).toBe("anthropic");
+		expect(result?.model).toBe(fixture.executor.id);
+		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
+	});
+
+	it("still routes a pre-handoff planner request through the planner transport when the executor is cross-provider", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+
+		await fixture.plannerConfig()?.streamSimple?.(fixture.planner, fixture.context).result();
+
+		expect(fixture.plannerDelegateModels).toEqual([fixture.planner]);
+		expect(fixture.executorDelegateModels).toEqual([]);
+		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
+	});
+
+	it("resolves a same-provider executor against the pre-overlay delegate rather than its own live registration", async () => {
+		// A same-provider pair must not resolve the executor delegate from the live
+		// registration, because that registration is this overlay. Doing so would
+		// re-enter the overlay for every executor request.
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(fixture.delegatedModels).toEqual([fixture.executor]);
+		expect(result?.stopReason).toBe("stop");
+		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
 	});
 
 	it("terminalizes a delegated Luna iterator failure", async () => {

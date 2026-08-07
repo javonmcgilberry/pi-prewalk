@@ -45,14 +45,28 @@ or quality for this implementation.
 ## Requirements
 
 - Pi 0.82.1 or 0.83.0
-- Two authorized models on the same provider and Pi API
+- Two authorized models, whose context window for the executor is at least the
+  planner's
 - No other extension registered as `prewalk_todo`
 - Pi Codex Conversion native Responses compaction disabled when that extension
   is installed
 
-The default pair is OpenAI Codex Sol as planner and Luna as executor. Other
-same-provider pairs, such as Opus and Sonnet, work through Pi's normal provider
-stream.
+The default pair is OpenAI Codex Sol as planner and Luna as executor. The
+planner is whichever model Pi has selected, and the executor may sit on a
+different provider and Pi API. Pi normalizes replayed history for whichever
+model receives a request, so a cross-provider pair such as Anthropic Opus to
+Google Gemini Flash routes through each model's own provider stream.
+
+A handoff to a different model always replays history without that model's own
+reasoning signatures, because Pi keeps signed reasoning only for an exact model
+match. That applies equally to the same-provider default pair, so a
+cross-provider pair does not lose anything extra.
+
+The executor must not have a smaller context window than the planner. Pi sizes
+automatic compaction against its selected model, and Prewalk keeps the planner
+selected for the whole run, so a smaller executor would receive requests that no
+compaction is watching. `docs/research/2026-08-07-omp-behavior-matrix.md` records
+this and the other differences from Oh My Pi's built-in prewalk.
 
 ## Why Prewalk is not plan mode
 

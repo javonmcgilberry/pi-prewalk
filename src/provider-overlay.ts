@@ -144,12 +144,21 @@ export function createProviderOverlay(
 		const executor = modelRegistry.find(config.executor.provider, config.executor.model);
 		if (!planner) throw new Error("Prewalk requires the configured planner model.");
 		if (!executor) throw new Error("Prewalk requires the configured executor model.");
-		if (planner.provider !== executor.provider || planner.api !== executor.api) {
-			throw new Error("Prewalk requires planner and executor to use the same provider and API.");
-		}
 
 		previous = modelRegistry.getRegisteredProviderConfig(plannerProfile.provider);
 		const delegate = previous?.streamSimple ?? builtinStreamSimple;
+		// The executor rides its own provider transport. Reusing the planner's
+		// stream would hand an executor model to the wrong provider's wire format
+		// and credentials, which is why a cross-provider pair cannot share one
+		// delegate. Only the planner's provider carries this overlay, so resolving
+		// a different provider's registration here cannot recurse into it; a
+		// same-provider pair deliberately reuses the pre-overlay delegate instead
+		// of the live registration, which is this overlay itself.
+		const executorDelegate =
+			executor.provider === plannerProfile.provider
+				? delegate
+				: (modelRegistry.getRegisteredProviderConfig(executor.provider)?.streamSimple ??
+					builtinStreamSimple);
 
 		const stream: StreamSimple = (
 			model: Model<Api>,
@@ -177,7 +186,7 @@ export function createProviderOverlay(
 				(async () => {
 					const auth = await modelRegistry.getApiKeyAndHeaders(executor);
 					if (!auth.ok) throw new Error("Executor authorization is unavailable.");
-					const delegated = delegate(
+					const delegated = executorDelegate(
 						executor,
 						context,
 						executorOptions(options, auth, config),
