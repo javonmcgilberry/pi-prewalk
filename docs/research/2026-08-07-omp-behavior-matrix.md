@@ -12,6 +12,28 @@ References are `file:line` at the time of writing.
   at 0.82.1, read from `node_modules`.
 - **This extension** — `extensions/prewalk.ts`, `src/`.
 
+## Relationship to the pinned parity fixture
+
+This document does not replace `test/fixtures/omp-prewalk-parity.json`. That
+fixture is the authority for *scenario* parity: it pins an Oh My Pi revision,
+hashes the three prompt assets, and classifies each upstream coordinator and
+degradation scenario as `direct`, `pi-adapted`, or `excluded` with a rationale.
+`test/omp-parity.test.ts` enforces it, so scenario drift fails a test run.
+
+This document covers what the fixture deliberately does not: architecture-level
+differences such as the handoff mechanism, compaction ownership, the context
+window floor, and features that exist on only one side. Scenario-level claims
+belong in the fixture, where they are machine-checked. Add rows here only for
+behavior a scenario cannot express.
+
+Two fixture rationales predate cross-provider support and now read as stale:
+"treats a target effort the model clamps back to the active effort as a no-op"
+and "switches when a same-model target clears auto mode even though efforts both
+resolve to undefined". Both are `excluded` on the grounds that "phase one" has no
+same-model target or provider-agnostic effort routing. Refreshing them requires
+re-reading those scenarios at the pinned revision, so they are left alone here
+rather than edited from inference.
+
 ## The one difference everything else follows from
 
 OMP owns its harness, so its handoff is a real session model switch:
