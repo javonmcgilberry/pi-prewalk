@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	ANALYTICS_SCHEMA_VERSION,
 	calculateSavings,
+	comparisonEstimate,
 	DEFAULT_ANALYTICS_CONFIG,
 	deserializeRunReceipt,
 	HANDOFF_STATES,
@@ -51,12 +52,31 @@ const receipt: RunReceipt = {
 				total: 0.33,
 			},
 		},
+		{
+			sequence: 2,
+			provider: "openai-codex",
+			model: "gpt-5.6-luna",
+			role: "executor-primary",
+			inputTokens: 10,
+			outputTokens: 5,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			reasoningTokens: 0,
+			totalTokens: 15,
+			cost: {
+				input: 0.05,
+				output: 0.05,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0.1,
+			},
+		},
 	],
-	actualCost: 0.33,
+	actualCost: 0.43,
 	estimate: {
 		kind: "session-counterfactual",
 		plannerOnlyCost: 0.5,
-		savings: 0.17,
+		savings: 0.07,
 	},
 	pricingEvidence: {
 		source: "model-metadata",
@@ -155,6 +175,49 @@ describe("analytics domain contract", () => {
 			}),
 		).toThrow("savings does not reconcile");
 	});
+
+	it("rejects a one-hour cache-write count larger than total cache writes", () => {
+		expect(() =>
+			parseRunReceipt({
+				...receipt,
+				usage: [{ ...receipt.usage[0], cacheWrite1hTokens: 11 }],
+			}),
+		).toThrow("cacheWrite1hTokens cannot exceed cacheWriteTokens");
+	});
+
+	it.each(["released", "session-ended"] as const)(
+		"accepts a priced estimate for a %s receipt",
+		(outcome) => {
+			expect(parseRunReceipt({ ...receipt, outcome })).toEqual({ ...receipt, outcome });
+		},
+	);
+
+	it.each(["released", "session-ended"] as const)(
+		"normalizes legacy unavailable reasons for a %s receipt",
+		(outcome) => {
+			const parsed = parseRunReceipt({
+				...receipt,
+				outcome,
+				estimate: { kind: "unavailable", reason: "run-not-successful" },
+				pricingEvidence: { source: "unavailable", reason: "run-not-successful" },
+			});
+			expect(parsed.estimate).toEqual({ kind: "unavailable", reason: "pricing-missing" });
+			expect(parsed.pricingEvidence).toEqual({
+				source: "unavailable",
+				reason: "pricing-missing",
+			});
+		},
+	);
+
+	it("rejects a priced handoff estimate when executor usage is missing", () => {
+		expect(() =>
+			parseRunReceipt({
+				...receipt,
+				usage: [receipt.usage[0]],
+				actualCost: 0.33,
+			}),
+		).toThrow("estimate requires executor usage after handoff");
+	});
 });
 
 const emptyCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
@@ -186,7 +249,7 @@ const completeRates = {
 };
 
 describe("analytics usage attribution", () => {
-	it("treats a successful run with no executor handoff as a zero-dollar difference", () => {
+	it("keeps a planning-only receipt financially valid with no estimated difference", () => {
 		const calculation = calculateSavings({
 			outcome: "succeeded",
 			handoffState: "not-started",
@@ -273,6 +336,33 @@ describe("analytics usage attribution", () => {
 		]);
 	});
 
+	it("preserves the provider's one-hour cache-write split", () => {
+		const normalized = normalizeUsageObservations([
+			{
+				sequence: 1,
+				source: "assistant",
+				provider: "provider",
+				model: "executor",
+				role: "executor-primary",
+				final: true,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 1_000_000,
+					cacheWrite1h: 1_000_000,
+					totalTokens: 1_000_000,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 2, total: 2 },
+				},
+			},
+		]);
+
+		expect(normalized[0]).toMatchObject({
+			cacheWriteTokens: 1_000_000,
+			cacheWrite1hTokens: 1_000_000,
+		});
+	});
+
 	it("reconciles Pi-reported category totals and keeps auxiliary cost separate", () => {
 		const summary = summarizeActualCost([
 			usageSlice(1, "planner-primary", {
@@ -335,6 +425,52 @@ describe("analytics counterfactual pricing", () => {
 		});
 	});
 
+	it("reprices one-hour cache writes at twice the planner input rate", () => {
+		const calculation = calculateSavings({
+			outcome: "succeeded",
+			handoffState: "completed",
+			usage: [
+				usageSlice(1, "planner-primary", { cost: { ...emptyCost, total: 0.5 } }),
+				usageSlice(2, "executor-primary", {
+					cacheWriteTokens: 1_000_000,
+					cacheWrite1hTokens: 1_000_000,
+					totalTokens: 1_000_000,
+					cost: { ...emptyCost, cacheWrite: 2, total: 2 },
+				}),
+			],
+			modelMetadata: { capturedAt: "2026-07-30T12:00:00.000Z", rates: completeRates },
+			catalogFallbackEnabled: false,
+		});
+
+		expect(calculation.estimate).toEqual({
+			kind: "session-counterfactual",
+			plannerOnlyCost: 20.5,
+			savings: 18,
+		});
+	});
+
+	it("requires both model prices before repricing executor usage", () => {
+		const calculation = calculateSavings({
+			outcome: "succeeded",
+			handoffState: "completed",
+			usage: [
+				usageSlice(1, "planner-primary", { cost: { ...emptyCost, total: 0.5 } }),
+				usageSlice(2, "executor-primary", {
+					inputTokens: 100_000,
+					outputTokens: 20_000,
+					cost: { input: 0.5, output: 0.16, cacheRead: 0, cacheWrite: 0, total: 0.66 },
+				}),
+			],
+			modelMetadata: {
+				capturedAt: "2026-07-30T12:00:00.000Z",
+				rates: { planner: completeRates.planner, executor: {} },
+			},
+			catalogFallbackEnabled: false,
+		});
+
+		expect(calculation.estimate).toEqual({ kind: "unavailable", reason: "pricing-incomplete" });
+	});
+
 	it("applies request-wide tiers independently at the strict threshold boundary", () => {
 		const usage = [
 			usageSlice(1, "planner-primary", {
@@ -387,7 +523,7 @@ describe("analytics counterfactual pricing", () => {
 		[
 			{
 				capturedAt: "2026-07-30T12:00:00.000Z",
-				rates: { planner: completeRates.planner, executor: { input: 1 } },
+				rates: { planner: { input: 1 }, executor: completeRates.executor },
 			},
 			"pricing-incomplete",
 		],
@@ -439,7 +575,7 @@ describe("analytics counterfactual pricing", () => {
 	});
 
 	it.each(["failed", "cancelled"] as const)(
-		"retains actual cost but refuses estimates for %s runs",
+		"retains recorded spend but refuses estimates for %s runs",
 		(outcome) => {
 			const calculation = calculateSavings({
 				outcome,
@@ -455,6 +591,107 @@ describe("analytics counterfactual pricing", () => {
 			expect(calculation.estimate).toEqual({
 				kind: "unavailable",
 				reason: "run-not-successful",
+			});
+		},
+	);
+
+	it.each(["released", "session-ended"] as const)(
+		"keeps a completed handoff comparable when the session %s",
+		(outcome) => {
+			const calculation = calculateSavings({
+				outcome,
+				handoffState: "completed",
+				usage: [
+					usageSlice(1, "planner-primary", { cost: { ...emptyCost, total: 0.5 } }),
+					usageSlice(2, "executor-primary", {
+						inputTokens: 100_000,
+						cost: { ...emptyCost, total: 0.5 },
+					}),
+				],
+				modelMetadata: { capturedAt: "2026-07-30T12:00:00.000Z", rates: completeRates },
+				catalogFallbackEnabled: false,
+			});
+
+			expect(calculation.estimate).toEqual({
+				kind: "session-counterfactual",
+				plannerOnlyCost: 1.5,
+				savings: 0.5,
+			});
+		},
+	);
+});
+
+describe("analytics receipt repricing", () => {
+	const strandedReceipt: RunReceipt = {
+		...receipt,
+		outcome: "session-ended",
+		estimate: { kind: "unavailable", reason: "pricing-missing" },
+		pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+	};
+
+	it("leaves a stranded receipt uncomparable when it recorded no rates", () => {
+		expect(comparisonEstimate(strandedReceipt)).toEqual({
+			kind: "unavailable",
+			reason: "pricing-missing",
+		});
+	});
+
+	it("reprices a stranded receipt that recorded its rates", () => {
+		const estimate = comparisonEstimate({
+			...strandedReceipt,
+			pricing: {
+				planner: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+				executor: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+			},
+		});
+		// 10 input and 5 output executor tokens at planner rates, against a
+		// recorded primary cost of 0.33 planner + 0.10 executor.
+		expect(estimate.kind).toBe("session-counterfactual");
+		if (estimate.kind === "unavailable") throw new Error("Expected a priced estimate.");
+		expect(estimate.plannerOnlyCost).toBeCloseTo(0.33 + (10 * 5 + 5 * 30) / 1_000_000, 10);
+		expect(estimate.savings).toBeCloseTo(estimate.plannerOnlyCost - 0.43, 10);
+	});
+
+	it("round-trips recorded rates through receipt serialization", () => {
+		const withPricing: RunReceipt = {
+			...receipt,
+			pricing: {
+				planner: {
+					input: 5,
+					output: 30,
+					cacheRead: 0.5,
+					cacheWrite: 6.25,
+					tiers: [{ inputTokensAbove: 272_000, input: 10, output: 45, cacheRead: 1 }],
+				},
+				executor: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+			},
+		};
+		expect(deserializeRunReceipt(serializeRunReceipt(withPricing))).toEqual(withPricing);
+	});
+
+	it("rejects an unknown key inside recorded rates", () => {
+		expect(() =>
+			parseRunReceipt({
+				...receipt,
+				pricing: { planner: { input: 5, surcharge: 1 }, executor: { input: 0.2 } },
+			}),
+		).toThrow(/pricing planner/);
+	});
+});
+
+describe("analytics legacy receipt compatibility", () => {
+	it.each(["released", "session-ended", "interrupted"] as const)(
+		"still reads a stored %s receipt written before that outcome was comparable",
+		(outcome) => {
+			const stored = {
+				...receipt,
+				outcome,
+				estimate: { kind: "unavailable", reason: "run-not-successful" },
+				pricingEvidence: { source: "unavailable", reason: "run-not-successful" },
+			};
+			expect(parseRunReceipt(stored).estimate).toEqual({
+				kind: "unavailable",
+				reason: "pricing-missing",
 			});
 		},
 	);

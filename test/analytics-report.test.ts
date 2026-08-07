@@ -5,6 +5,7 @@ import type {
 	TaskTreeReport,
 	VerifiedBenchmarkSummary,
 } from "../src/analytics.js";
+import { summarizeComparisons } from "../src/analytics.js";
 import {
 	renderAnalyticsOverview,
 	renderReceiptReport,
@@ -73,6 +74,7 @@ const receipt: RunReceipt = {
 };
 
 function aggregate(overrides: Partial<AnalyticsAggregate> = {}): AnalyticsAggregate {
+	const receipts = overrides.receipts ?? [];
 	return {
 		generation: "generation-1",
 		receiptCount: 0,
@@ -80,6 +82,7 @@ function aggregate(overrides: Partial<AnalyticsAggregate> = {}): AnalyticsAggreg
 		estimatedSavings: 0,
 		estimatedExtraCost: 0,
 		unavailableSavingsCount: 0,
+		comparison: summarizeComparisons(receipts),
 		outcomes: {
 			active: 0,
 			succeeded: 0,
@@ -142,12 +145,12 @@ describe("analytics receipt report", () => {
 	it("labels actual and session-counterfactual evidence without relying on color", () => {
 		expect(renderReceiptReport(receipt)).toBe(
 			[
-				"Run run-report: outcome succeeded; handoff completed",
+				"Run run-report: succeeded; switched models",
 				"Session: session-report",
-				"Models: planner provider-a/planner -> executor provider-b/executor",
-				"Actual spend reported by provider: $0.600000",
-				"Actual spend by call type: planner $0.300000; executor $0.200000; helper/compaction $0.100000",
-				"Price comparison (model pricing captured 2026-07-30T12:01:00.000Z): $0.300000 less than planner alone; planner-alone estimate $0.800000.",
+				"Models: started on provider-a/planner, switched to provider-b/executor",
+				"Spent: $0.600000",
+				"Spent before the switch $0.300000; after the switch $0.200000; background calls $0.100000",
+				"Estimate from recorded prices (model pricing captured 2026-07-30T12:01:00.000Z): switching saved up to $0.300000; without switching this run was worth $0.800000.",
 			].join("\n"),
 		);
 	});
@@ -177,7 +180,7 @@ describe("analytics receipt report", () => {
 				{ source: "catalog", catalogDate: "2026-07-30" },
 			),
 		).toBe(
-			"Catalog price comparison (catalog dated 2026-07-30): $0.250000 less than planner alone; planner-alone estimate $1.250000.",
+			"Estimate from the price catalog (catalog dated 2026-07-30): switching saved up to $0.250000; without switching this run was worth $1.250000.",
 		);
 	});
 
@@ -192,7 +195,7 @@ describe("analytics receipt report", () => {
 				source: "model-metadata",
 				capturedAt: "2026-07-30T12:01:00.000Z",
 			}),
-		).toContain("$0.200000 more than planner alone");
+		).toContain("switching cost $0.200000 extra");
 	});
 
 	it("renders aggregate evidence classes and unfinished state in text", () => {
@@ -265,12 +268,12 @@ describe("analytics receipt report", () => {
 		expect(rendered).toContain("Active runs: 1");
 		expect(rendered).toContain("Finished runs: 1");
 		expect(rendered).toContain("This current-session section excludes delegated child sessions");
-		expect(rendered).toContain("History · actual spend");
-		expect(rendered).toContain("History · planner-alone price comparison");
-		expect(rendered).toContain("1 of 2 completed");
+		expect(rendered).toContain("History · what you spent");
+		expect(rendered).toContain("History · what switching saved");
+		expect(rendered).toContain("1 run compared; 1 run: model prices were not available");
 		expect(rendered).toContain("$1.30");
 		expect(rendered).toContain("$0.80");
-		expect(rendered).toContain("$0.30 less than planner alone (37.5%)");
+		expect(rendered).toContain("saved up to $0.30 (37.5%)");
 		expect(rendered).toContain("run-report");
 		expect(rendered).toContain("run-active");
 	});
@@ -290,8 +293,8 @@ describe("analytics receipt report", () => {
 			week: aggregate(),
 			session: aggregate(),
 		});
-		expect(rendered).toContain("$0.30 less than planner alone");
-		expect(rendered).toContain("No completed runs yet");
+		expect(rendered).toContain("saved up to $0.30");
+		expect(rendered).toContain("No finished runs yet");
 	});
 
 	it("keeps unavailable evidence visible beside comparable history", () => {
@@ -313,7 +316,7 @@ describe("analytics receipt report", () => {
 			week: aggregate(),
 			session: aggregate(),
 		});
-		expect(rendered).toContain("1 of 2 completed");
+		expect(rendered).toContain("1 run compared; 1 run: model prices were not available");
 		expect(rendered).toContain("1 run: model prices were not available");
 	});
 
@@ -327,8 +330,31 @@ describe("analytics receipt report", () => {
 			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
 		};
 		expect(renderReceiptReport(planningOnly)).toContain(
-			"No executor handoff was needed, so the compared cost is the same as actual planner cost",
+			"This run never switched models, so there is nothing to compare.",
 		);
+	});
+
+	it("does not dilute handoff counts with runs that finished before handoff", () => {
+		const planningOnly: RunReceipt = {
+			...receipt,
+			runId: "run-planning-only",
+			handoffState: "not-started",
+			usage: receipt.usage.slice(0, 1),
+			actualCost: 0.3,
+			estimate: { kind: "unavailable", reason: "usage-incomplete" },
+			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
+		};
+		const rendered = renderAnalyticsOverview({
+			generatedAt: "2026-07-30T13:00:00.000Z",
+			sessionId: "session-report",
+			lifetime: aggregate({ receipts: [receipt, planningOnly] }),
+			month: aggregate(),
+			week: aggregate(),
+			session: aggregate(),
+		});
+
+		expect(rendered).toContain("1 run compared; 1 run never switched");
+		expect(rendered).not.toContain("2 of 2 completed");
 	});
 
 	it("renders every task-tree subtotal and coverage dimension as a visible reconciliation", () => {
@@ -360,29 +386,29 @@ describe("analytics receipt report", () => {
 		expect(renderTaskTreeReport(report)).toBe(
 			[
 				"Prewalk task tree for root session root",
-				"Root session actual cost: $0.500000.",
-				"Unique direct-child actual cost: $0.300000.",
-				"Unique nested-child actual cost: $0.050000.",
-				"Known task-tree actual cost: $0.850000 = $0.500000 + $0.300000 + $0.050000.",
+				"Root session recorded spend: $0.500000.",
+				"Unique direct-child recorded spend: $0.300000.",
+				"Unique nested-child recorded spend: $0.050000.",
+				"Known task-tree recorded spend: $0.850000 = $0.500000 + $0.300000 + $0.050000.",
 				"Reported children: 3 of 3 expected.",
 				"Cost coverage: complete. Token-breakdown coverage: incomplete.",
-				"Task-tree estimate: savings $0.100000; extra cost $0.000000; estimate coverage incomplete.",
+				"Across this task: switching saved up to $0.100000; extra cost $0.000000; coverage incomplete.",
 				"Incomplete or unfinished children: nested/2 (partial-token-breakdown).",
 			].join("\n"),
 		);
 	});
 
 	it.each([
-		["run-not-successful", "the run did not complete successfully"],
+		["run-not-successful", "the run stopped early"],
 		["pricing-missing", "model prices were not available"],
-		["pricing-incomplete", "a price was missing for a token type the run used"],
-		["pricing-zero", "a recorded model price was zero or invalid"],
-		["usage-incomplete", "recorded executor usage was missing"],
-		["analytics-disabled", "analytics collection was disabled"],
-		["unfinished-run", "run is active or unfinished"],
+		["pricing-incomplete", "we had no price for part of what this run used"],
+		["pricing-zero", "a recorded price was zero, which cannot be right"],
+		["usage-incomplete", "no work was recorded after the switch"],
+		["analytics-disabled", "tracking was turned off"],
+		["unfinished-run", "the run is still going"],
 	] as const)("explains unavailable reason %s", (reason, label) => {
 		expect(
 			renderSavingsEstimate({ kind: "unavailable", reason }, { source: "unavailable", reason }),
-		).toBe(`Cannot compare with planner alone: ${label}.`);
+		).toBe(`Not compared: ${label}.`);
 	});
 });

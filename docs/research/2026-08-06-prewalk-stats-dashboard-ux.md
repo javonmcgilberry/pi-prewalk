@@ -75,10 +75,10 @@ alongside theme colors.
 
 The redesigned TUI follows this order:
 
-1. Current session: title, freshness, actual spend, active/completed runs, and
+1. Current session: title, freshness, recorded spend, active/finished runs, and
    an explicit comparison state.
 2. History: this week, this month, then all time.
-3. Recent sessions: title-first rows with status, actual spend, and comparison.
+3. Recent sessions: title-first rows with status, recorded spend, and comparison.
 4. Details/help: the formula, missing-evidence explanation, stable IDs, and
    the counterfactual warning.
 
@@ -87,15 +87,15 @@ primary work without Prewalk. It is calculated as:
 
 ```text
 planner-only estimate
-  = actual planner cost
+  = recorded planner primary-call cost
   + executor token usage repriced at planner rates
 
 estimated difference
   = planner-only estimate
-  - actual planner + executor primary cost
+  - recorded planner + executor primary-call cost
 ```
 
-Actual spend still includes auxiliary model calls. The comparison is not an
+Recorded spend still includes auxiliary model calls. The comparison is not an
 observed control run and does not claim benchmark efficacy.
 
 ## Local implementation evidence

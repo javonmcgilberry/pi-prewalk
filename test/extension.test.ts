@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -1089,7 +1089,9 @@ describe("Prewalk extension harness", () => {
 
 		await harness.commands.get("prewalk")?.("stats task", harness.context);
 
-		expect(harness.notifications.at(-1)).toContain("Unique direct-child actual cost: $0.300000");
+		expect(harness.notifications.at(-1)).toContain(
+			"Unique direct-child recorded spend: $0.300000",
+		);
 		expect(harness.notifications.at(-1)).toContain("Reported children: 2 of 2 expected");
 		expect(harness.notifications.at(-1)).toContain("Cost coverage: complete");
 	});
@@ -1133,7 +1135,9 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("tool_result", result);
 		await harness.commands.get("prewalk")?.("stats task", harness.context);
 
-		expect(harness.notifications.at(-1)).toContain("Unique direct-child actual cost: $0.100000");
+		expect(harness.notifications.at(-1)).toContain(
+			"Unique direct-child recorded spend: $0.100000",
+		);
 		expect(harness.notifications.at(-1)).toContain("Reported children: 1 of 1 expected");
 	});
 
@@ -1162,7 +1166,7 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.("stats task", harness.context);
 
 		expect(harness.notifications.at(-1)).toContain("Reported children: 0 of 0 expected");
-		expect(harness.notifications.at(-1)).toContain("Known task-tree actual cost: $0.000000");
+		expect(harness.notifications.at(-1)).toContain("Known task-tree recorded spend: $0.000000");
 	});
 
 	it("does not block subagent execution when analytics generation lookup fails", async () => {
@@ -1192,7 +1196,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("Prewalk quick guide");
 		expect(harness.notifications.at(-1)).toContain("/prewalk status");
 		expect(harness.notifications.at(-1)).toContain("/prewalk stats");
-		expect(harness.notifications.at(-1)).toContain("Actual spend is provider-reported cost");
+		expect(harness.notifications.at(-1)).toContain("Recorded spend is the cost Pi reports");
 		expect(harness.notifications.at(-1)).toContain("Export refuses existing destinations");
 		expect(harness.notifications.at(-1)).toContain("/prewalk cancel, then /prewalk run");
 		expect(harness.notifications.at(-1)).toContain("/prewalk run");
@@ -1216,7 +1220,7 @@ describe("Prewalk extension harness", () => {
 		expect(custom).toHaveBeenCalledTimes(1);
 	});
 
-	it("reports a completed planning-only run as no cost difference", async () => {
+	it("reports a planning-only run without inventing a comparison", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -1230,8 +1234,8 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 
-		expect(harness.notifications.at(-1)).toContain("outcome succeeded; handoff not-started");
-		expect(harness.notifications.at(-1)).toContain("No executor handoff was needed");
+		expect(harness.notifications.at(-1)).toContain("succeeded; never switched");
+		expect(harness.notifications.at(-1)).toContain("This run never switched models");
 		expect(harness.notifications.at(-1)).not.toContain("Cannot compare");
 	});
 
@@ -1270,11 +1274,80 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("All time");
 
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
-		expect(harness.notifications.at(-1)).toContain(
-			"Actual spend by call type: planner $2.000000",
-		);
-		expect(harness.notifications.at(-1)).toContain("executor $2.000000");
-		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
+		expect(harness.notifications.at(-1)).toContain("Spent before the switch $2.000000");
+		expect(harness.notifications.at(-1)).toContain("after the switch $2.000000");
+		expect(harness.notifications.at(-1)).toContain("Not compared");
+	});
+
+	it("stops crediting planner turns to planning once the executor has taken over", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.planner),
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.executor),
+		});
+		// The user selects the planner again after the handoff. That turn is real
+		// spend inside the run, but it is not Prewalk planning.
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.planner),
+		});
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("Spent before the switch $2.000000");
+		expect(harness.notifications.at(-1)).toContain("after the switch $2.000000");
+		expect(harness.notifications.at(-1)).toContain("background calls $2.000000");
+	});
+
+	it("stops recording into a run once its receipt is written", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.planner),
+		});
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		const store = new AnalyticsStore(agentDir);
+		const [finalized] = await store.listReceipts();
+		expect(finalized?.runId).toBe(runId);
+		const settledUsage = finalized?.usage.length ?? 0;
+
+		// Usage arriving after finalization must not resurrect the journal, which
+		// is how a journal ends up outliving its own receipt and accumulating
+		// spend that nothing ever counts.
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "late-1",
+			toolName: "read",
+			input: {},
+			content: [],
+			isError: false,
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+			},
+		});
+
+		expect(await store.listUnfinishedJournalRecords()).toEqual([]);
+		expect((await store.listReceipts())[0]?.usage).toHaveLength(settledUsage);
 	});
 
 	it("refuses an existing export destination without changing its bytes", async () => {
@@ -1929,8 +2002,8 @@ describe("Prewalk extension harness", () => {
 			effectiveRoute: "planner",
 		});
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
-		expect(harness.notifications.at(-1)).toContain("outcome cancelled");
-		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
+		expect(harness.notifications.at(-1)).toContain(": cancelled;");
+		expect(harness.notifications.at(-1)).toContain("Not compared");
 	});
 
 	it("detects provider replacement before the next Agent-loop request", async () => {
@@ -1973,8 +2046,8 @@ describe("Prewalk extension harness", () => {
 		});
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
-		expect(harness.notifications.at(-1)).toContain("outcome failed");
-		expect(harness.notifications.at(-1)).toContain("Cannot compare with planner alone");
+		expect(harness.notifications.at(-1)).toContain(": failed;");
+		expect(harness.notifications.at(-1)).toContain("Not compared");
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {
@@ -2098,7 +2171,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages.at(-1)?.customType).not.toBe(PREWALK_PLAN_MESSAGE_TYPE);
 
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
-		expect(harness.notifications.at(-1)).toContain("outcome released");
+		expect(harness.notifications.at(-1)).toContain(": released;");
 	});
 
 	it("keeps slash cancellation pre-handoff and directs an active executor route to release", async () => {
@@ -2130,7 +2203,52 @@ describe("Prewalk extension harness", () => {
 		await reopened.providerConfig()?.streamSimple?.(reopened.planner, { messages: [] }).result();
 		expect(reopened.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
 		await reopened.commands.get("prewalk")?.(`stats receipt ${runId}`, reopened.context);
-		expect(reopened.notifications.at(-1)).toContain("outcome interrupted");
+		expect(reopened.notifications.at(-1)).toContain("interrupted");
+	});
+
+	it("leaves a recently written journal to the session that still owns it", async () => {
+		const owner = createHarness({ sessionId: "owner-session" });
+		prewalkExtension(owner.pi);
+		await reachHandoff(owner);
+		const runId = (owner.entries[0]?.data as { runId: string }).runId;
+
+		const other = createHarness({ sessionId: "unrelated-session" });
+		prewalkExtension(other.pi);
+		await other.emit("session_start", { type: "session_start", reason: "resume" });
+
+		await other.commands.get("prewalk")?.(`stats receipt ${runId}`, other.context);
+		expect(other.notifications.at(-1)).toContain("No analytics receipt found");
+	});
+
+	it("recovers an abandoned journal from a dead session and prices its estimate", async () => {
+		const dead = createHarness({ sessionId: "dead-session" });
+		prewalkExtension(dead.pi);
+		await reachHandoff(dead);
+		const runId = (dead.entries[0]?.data as { runId: string }).runId;
+
+		const store = new AnalyticsStore(agentDir);
+		const [record] = await store.listUnfinishedJournalRecords();
+		if (!record) throw new Error("Expected an unfinished journal to recover.");
+		const abandoned = new Date(Date.now() - 30 * 60 * 60 * 1000);
+		await utimes(
+			path.join(
+				store.directory,
+				record.journal.generation,
+				"journals",
+				`${record.journal.runId}--${record.journal.epoch}.json`,
+			),
+			abandoned,
+			abandoned,
+		);
+
+		const survivor = createHarness({ sessionId: "unrelated-session" });
+		prewalkExtension(survivor.pi);
+		await survivor.emit("session_start", { type: "session_start", reason: "resume" });
+
+		const [receipt] = await store.listReceipts();
+		expect(receipt?.runId).toBe(runId);
+		expect(receipt?.outcome).toBe("interrupted");
+		expect(receipt?.pricingEvidence.source).toBe("model-metadata");
 	});
 
 	it("restores a completed Luna run on reload without adding an arm or request", async () => {

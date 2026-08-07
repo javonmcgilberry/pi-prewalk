@@ -135,7 +135,7 @@ currently selected planner. It never stores or changes the planner.
 | `/prewalk configure` | Choose the executor and analytics settings |
 | `/prewalk cancel` | Cancel a pre-handoff run and disable automatic mode |
 | `/prewalk release` | Restore the selected planner after handoff without re-arming |
-| `/prewalk stats` | Show local usage and savings receipts |
+| `/prewalk stats` | Show what you spent and what switching models saved |
 | `/prewalk todos` | Show the current Prewalk implementation checklist |
 | `/prewalk help` | Show every command and reset rule |
 
@@ -198,6 +198,23 @@ Prewalk works without pi-subagents, Context Mode, or Pi Codex Conversion.
 
 Cross-provider routing and guessed mutation results are deliberately unsupported.
 
+### Context limits and compaction
+
+Prewalk removes its planning-only prompt before handoff and from the text Pi
+sends to its summarizer. It does not control Pi's agent loop or auto-compaction.
+In the supported stock Pi releases, Pi checks the compaction threshold after a
+run ends and before it sends a new prompt. A long chain of tool calls or queued
+Prewalk follow-ups can all be part of one run, so the context can pass the
+reserved limit before that check runs. The provider may reject a later request
+first.
+
+That boundary belongs in Pi core, not in this extension. Prewalk must not call
+`ctx.compact()` from a turn hook as a workaround. It aborts the active run and
+does not safely resume its tool calls. Use a Pi build with mid-run compaction
+support when available, or compact before a task you know will run for a long
+time. This limit does not mean that Prewalk's hidden planning prompt leaked
+into the context.
+
 ### Experimental child-local Prewalk
 
 Child-local Prewalk is disabled by default and is not enabled by the portable
@@ -240,10 +257,10 @@ current Pi session first, followed by this week, this month, all time, and
 recent sessions. Use the arrow keys, Enter, `?`, `R`, and Escape to navigate it.
 The dashboard uses session titles first and keeps stable IDs in details. It
 does not fold delegated child sessions into the current-session section; use
-`/prewalk stats task` for the whole task tree. Active runs show actual spend
+`/prewalk stats task` for the whole task tree. Active runs show recorded spend
 only. Finished runs compare planner + executor call cost with the price of the
-same recorded tokens at planner rates. A planning-only run is shown as no
-executor handoff, not as missing usage.
+same recorded tokens at planner rates. A planning-only run is shown as a run
+that finished before handoff, not as missing usage.
 
 Analytics are enabled by default and stay under
 `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`. Prewalk stores
@@ -252,9 +269,31 @@ outcomes, and timestamps. It does not store prompts, responses, code, tool
 inputs or outputs, credentials, provider payloads, raw errors, or filesystem
 paths.
 
-Historical differences are price-based estimates, not billing statements or
-measured planner-only benchmark runs. Missing pricing is named directly;
-Prewalk does not invent a rate.
+Recorded spend is provider-reported cost captured for the run. It can include
+planner, executor, helper, and compaction calls. An estimated difference is a
+price-based comparison: the planner-only estimate for the recorded primary
+tokens minus Prewalk's planner and executor primary-call cost. It is not a
+separate planner-only run, a billing statement, or a measured benchmark.
+Missing pricing or usage is named directly; Prewalk does not invent a rate.
+
+Recorded spend and the estimated difference cover different runs, so dividing
+one by the other understates the result. Recorded spend counts every run;
+the difference covers only comparable ones. Each comparison reports the spend
+it covers, and that is the figure to read the difference against.
+
+The difference is shown as `up to` because it is an upper bound. It assumes the
+planner would have used the same tokens the executor did, while a cheaper
+executor often needs more turns, each repriced at planner rates. Only an
+accepted benchmark report, labelled `verified`, measures the difference.
+
+A run that was released, ended with its session, or was interrupted is still
+compared when it recorded executor usage and pricing. Receipts store the rates
+they were priced with, so a receipt can be repriced later instead of becoming
+permanently uncomparable. An unfinished journal left behind by a session that
+exited uncleanly is finalized by its own session at startup, or by another
+session once it has been untouched for twenty-four hours. If that wait is wrong
+and the idle session returns, the owning session reclaims the run; recovery is
+only ever replaced by a receipt holding strictly more evidence.
 Direct and nested pi-subagents costs are accepted only from terminal public
 result details and counted once. Async or detached work without terminal public
 evidence remains pending or incomplete.
@@ -269,7 +308,8 @@ exports, resets, and benchmark imports.
   overlay before another run can start. After handoff, use `/prewalk release`.
 - A planner/provider mismatch, missing authorization, invalid config, todo
   conflict, or unsupported native compaction fails before the executor is used.
-- Hidden planning prompts stay out of normal model context and compaction input.
+- Hidden planning prompts stay out of normal model context and compaction input;
+  mid-turn threshold enforcement remains a Pi-core responsibility.
 
 Use `/prewalk status` for the stable failure reason. To start over, run
 `/prewalk cancel` and then `/prewalk run`.

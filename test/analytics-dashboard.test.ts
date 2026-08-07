@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { RunReceipt } from "../src/analytics.js";
+import { summarizeComparisons } from "../src/analytics.js";
 import {
 	buildAnalyticsDashboardModel,
 	type DashboardPalette,
@@ -38,6 +39,7 @@ function receipt(overrides: Partial<RunReceipt> = {}): RunReceipt {
 }
 
 function aggregate(overrides: Partial<AnalyticsAggregate> = {}): AnalyticsAggregate {
+	const receipts = overrides.receipts ?? [];
 	return {
 		generation: "generation-1",
 		receiptCount: 0,
@@ -45,6 +47,7 @@ function aggregate(overrides: Partial<AnalyticsAggregate> = {}): AnalyticsAggreg
 		estimatedSavings: 0,
 		estimatedExtraCost: 0,
 		unavailableSavingsCount: 0,
+		comparison: summarizeComparisons(receipts),
 		outcomes: {
 			active: 0,
 			succeeded: 0,
@@ -132,8 +135,10 @@ describe("analytics dashboard", () => {
 
 	it("replaces opaque savings and coverage labels with plain language", () => {
 		const comparison = summarizeComparison([receipt()]);
-		expect(comparison.label).toBe("$0.20 less than planner alone");
-		expect(comparison.detail).toBe("1 completed run compared.");
+		expect(comparison.label).toBe("saved up to $0.20");
+		expect(comparison.detail).toBe("1 run compared.");
+		expect(comparison.coveredCost).toBeCloseTo(0.8, 10);
+		expect(comparison.finishedCost).toBeCloseTo(0.8, 10);
 		const output = renderAnalyticsDashboard(
 			buildAnalyticsDashboardModel(overview()),
 			{ view: "overview", selectedIndex: 0 },
@@ -170,7 +175,7 @@ describe("analytics dashboard", () => {
 			palette,
 		).join("\n");
 		expect(output.indexOf("CURRENT SESSION")).toBeLessThan(output.indexOf("HISTORY"));
-		expect(output).toContain("1 active");
+		expect(output).toContain("1 running");
 		expect(output).toContain("$0.35");
 	});
 
@@ -180,11 +185,11 @@ describe("analytics dashboard", () => {
 			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
 		});
 		const comparison = summarizeComparison([missingPricing]);
-		expect(comparison.label).toBe("Missing pricing");
-		expect(comparison.detail).toBe("1 run missing pricing.");
+		expect(comparison.label).toBe("No price data");
+		expect(comparison.detail).toBe("1 run with no price data.");
 	});
 
-	it("does not call a completed planning-only run unavailable", () => {
+	it("does not count a planning-only run as a handoff comparison", () => {
 		const planningOnly = receipt({
 			handoffState: "not-started",
 			actualCost: 0.4,
@@ -192,9 +197,29 @@ describe("analytics dashboard", () => {
 			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
 		});
 		const comparison = summarizeComparison([planningOnly]);
-		expect(comparison.state).toBe("same");
-		expect(comparison.label).toBe("No cost difference");
-		expect(comparison.detail).toBe("1 completed run compared. No executor handoff was needed.");
+		expect(comparison.state).toBe("unavailable");
+		expect(comparison.label).toBe("Never switched models");
+		expect(comparison.comparableRuns).toBe(0);
+		expect(comparison.detail).toBe("1 run ended before switching models.");
+	});
+
+	it("reports handoffs separately from runs that finished before handoff", () => {
+		const planningOnly = receipt({
+			runId: "run-planning-only",
+			handoffState: "not-started",
+			actualCost: 0.4,
+			estimate: { kind: "unavailable", reason: "usage-incomplete" },
+			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
+		});
+		const comparison = summarizeComparison([receipt(), planningOnly]);
+
+		expect(comparison.comparableRuns).toBe(1);
+		expect(comparison.successfulRuns).toBe(2);
+		expect(comparison.detail).toBe("1 run compared. 1 run never switched.");
+		// Coverage is a column now, so the difference cannot be read as a rate
+		// over spend it never covered.
+		expect(comparison.coveredCost).toBeCloseTo(0.8, 10);
+		expect(comparison.finishedCost).toBeCloseTo(1.2, 10);
 	});
 
 	it("keeps missing evidence visible when other runs are comparable", () => {
@@ -204,9 +229,9 @@ describe("analytics dashboard", () => {
 			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
 		});
 		const mixed = summarizeComparison([receipt(), missingPricing]);
-		expect(mixed.label).toBe("$0.20 less than planner alone");
-		expect(mixed.detail).toContain("1 of 2 completed runs compared");
-		expect(mixed.detail).toContain("1 run missing pricing");
+		expect(mixed.label).toBe("saved up to $0.20");
+		expect(mixed.detail).toContain("1 run compared");
+		expect(mixed.detail).toContain("1 run with no price data");
 
 		const cancelled = summarizeComparison([
 			receipt({
@@ -215,8 +240,8 @@ describe("analytics dashboard", () => {
 				pricingEvidence: { source: "unavailable", reason: "run-not-successful" },
 			}),
 		]);
-		expect(cancelled.label).toBe("Cancelled run not compared");
-		expect(cancelled.detail).toBe("1 cancelled run not compared.");
+		expect(cancelled.label).toBe("Cancelled, so not compared");
+		expect(cancelled.detail).toBe("1 cancelled run, so nothing was compared.");
 	});
 
 	it("states the calculation and its counterfactual limit", () => {
@@ -226,11 +251,13 @@ describe("analytics dashboard", () => {
 			90,
 			palette,
 		).join("\n");
-		expect(help).toContain(
-			"Provider-reported cost for planner, executor, helper, and compaction",
-		);
-		expect(help).toContain("price executor tokens at the planner's rates");
-		expect(help).toContain("not a measured planner-only benchmark run");
+		// The help pane must explain the numbers without internal vocabulary.
+		expect(help).toContain("What you actually paid");
+		expect(help).toContain("if one model had done the whole task");
+		expect(help).toContain("this is a ceiling, not a measurement");
+		expect(help).not.toContain("planner");
+		expect(help).not.toContain("executor");
+		expect(help).not.toContain("counterfactual");
 	});
 
 	it("refreshes the model from the dashboard without closing the view", async () => {
@@ -266,6 +293,30 @@ describe("analytics dashboard", () => {
 		);
 		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		expect(lines.join("\n")).toContain("This week");
-		expect(lines.join("\n").toLowerCase()).toContain("less");
+		expect(lines.join("\n").toLowerCase()).toContain("saved");
+	});
+
+	it("states the situation instead of repeating the reason in the current session", () => {
+		const unpriced = receipt({
+			runId: "run-unpriced",
+			estimate: { kind: "unavailable", reason: "pricing-missing" },
+			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+		});
+		const model = buildAnalyticsDashboardModel(
+			overview({
+				session: aggregate({ receiptCount: 1, actualCost: 0.8, receipts: [unpriced] }),
+			}),
+		);
+		const lines = renderAnalyticsDashboard(
+			model,
+			{ view: "overview", selectedIndex: 0 },
+			104,
+			palette,
+		).join("\n");
+		const current = lines.slice(0, lines.indexOf("HISTORY"));
+
+		// The headline reads as a state, and the reason appears once below it.
+		expect(current).toContain("Not enough data yet");
+		expect(current.match(/no price data/gi) ?? []).toHaveLength(1);
 	});
 });

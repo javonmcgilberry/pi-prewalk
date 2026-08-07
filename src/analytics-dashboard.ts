@@ -6,13 +6,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import {
-	comparisonEstimate,
-	isPlanningOnlyReceipt,
-	type RunOutcome,
-	type RunReceipt,
-	type UnavailabilityReason,
-} from "./analytics.js";
+import { type RunOutcome, type RunReceipt, summarizeComparisons } from "./analytics.js";
 import type { AnalyticsOverview } from "./analytics-report.js";
 import type { AnalyticsAggregate, UnfinishedRunSummary } from "./analytics-store.js";
 
@@ -32,6 +26,9 @@ export interface DashboardComparison {
 	detail: string;
 	comparableRuns: number;
 	successfulRuns: number;
+	/** Recorded spend of the compared runs, and of every finished run. */
+	coveredCost: number;
+	finishedCost: number;
 	plannerOnlyEstimate?: number;
 	actualPrimaryCost?: number;
 	difference?: number;
@@ -40,7 +37,8 @@ export interface DashboardComparison {
 
 export interface DashboardPeriod {
 	label: string;
-	completedRuns: number;
+	finishedRuns: number;
+	activeRuns: number;
 	actualCost: number;
 	comparison: DashboardComparison;
 }
@@ -60,7 +58,7 @@ export interface DashboardSession {
 export interface AnalyticsDashboardModel {
 	generatedAt: string;
 	current: DashboardSession & {
-		completedRuns: number;
+		finishedRuns: number;
 	};
 	periods: DashboardPeriod[];
 	recentSessions: DashboardSession[];
@@ -82,18 +80,29 @@ export function buildAnalyticsDashboardModel(overview: AnalyticsOverview): Analy
 		],
 		overview.generatedAt,
 	);
-	const currentStatus = overview.session.unfinished.length > 0 ? "Active" : "No active run";
+	const latestCurrentReceipt = currentReceipts[0];
+	const currentStatus =
+		overview.session.unfinished.length > 0
+			? "Active"
+			: latestCurrentReceipt === undefined
+				? "No finished run"
+				: outcomeLabel(latestCurrentReceipt.outcome);
 	const current: AnalyticsDashboardModel["current"] = {
 		sessionId: overview.sessionId,
 		title: overview.sessionTitles?.get(overview.sessionId) ?? "Untitled session",
 		status: currentStatus,
-		statusTone: overview.session.unfinished.length > 0 ? "accent" : "muted",
+		statusTone:
+			overview.session.unfinished.length > 0
+				? "accent"
+				: latestCurrentReceipt === undefined
+					? "muted"
+					: outcomeTone(latestCurrentReceipt.outcome),
 		lastUpdatedAt: currentUpdatedAt,
 		actualCost: overview.session.actualCost,
 		receipts: currentReceipts,
 		activeRuns: overview.session.unfinished,
-		comparison: summarizeComparison(currentReceipts),
-		completedRuns: overview.session.receiptCount,
+		comparison: summarizeComparison(currentReceipts, overview.session.comparison),
+		finishedRuns: overview.session.receiptCount,
 	};
 
 	const periods = [
@@ -110,58 +119,39 @@ export function buildAnalyticsDashboardModel(overview: AnalyticsOverview): Analy
 	};
 }
 
-export function summarizeComparison(receipts: readonly RunReceipt[]): DashboardComparison {
-	const successful = receipts.filter((receipt) => receipt.outcome === "succeeded");
-	const estimates = successful.map((receipt) => ({
-		receipt,
-		estimate: comparisonEstimate(receipt),
-	}));
-	const comparable = estimates.filter(({ estimate }) => estimate.kind !== "unavailable");
-	if (comparable.length === 0) {
+export function summarizeComparison(
+	receipts: readonly RunReceipt[],
+	knownSummary = summarizeComparisons(receipts),
+): DashboardComparison {
+	const summary = knownSummary;
+	if (summary.comparedRuns === 0) {
 		return {
 			state: "unavailable",
-			label: unavailableLabel(receipts),
-			detail: unavailableDetail(receipts),
+			label: unavailableLabel(receipts, summary),
+			detail: unavailableDetail(receipts, summary),
 			comparableRuns: 0,
-			successfulRuns: successful.length,
+			successfulRuns: summary.finishedRuns,
+			coveredCost: summary.comparedActualCost,
+			finishedCost: summary.finishedActualCost,
 		};
 	}
 
-	let plannerOnlyEstimate = 0;
-	let difference = 0;
-	for (const { estimate } of comparable) {
-		if (estimate.kind === "unavailable") continue;
-		plannerOnlyEstimate += estimate.plannerOnlyCost;
-		difference += estimate.savings;
-	}
-	const actualPrimaryCost = plannerOnlyEstimate - difference;
+	const difference = summary.difference;
 	const percentage =
-		plannerOnlyEstimate === 0 ? 0 : Math.abs((difference / plannerOnlyEstimate) * 100);
-	const unavailable = estimates.filter(({ estimate }) => estimate.kind === "unavailable");
-	const planningOnlyCount = estimates.filter(
-		({ receipt, estimate }) => isPlanningOnlyReceipt(receipt) && estimate.kind !== "unavailable",
-	).length;
-	const compared =
-		comparable.length === successful.length
-			? `${successful.length} completed ${plural(successful.length, "run")} compared`
-			: `${comparable.length} of ${successful.length} completed ${plural(successful.length, "run")} compared`;
-	const evidence = `${compared}${unavailable.length > 0 ? `; ${unavailableSummary(successful)}` : ""}.${
-		planningOnlyCount > 0
-			? planningOnlyCount === 1
-				? " No executor handoff was needed."
-				: ` No executor handoff was needed for ${planningOnlyCount} runs.`
-			: ""
-	}`;
+		summary.plannerOnlyCost === 0 ? 0 : Math.abs((difference / summary.plannerOnlyCost) * 100);
+	const evidence = comparisonDetail(summary);
 
 	if (difference > 0) {
 		return {
 			state: "lower",
-			label: `${formatUsd(difference)} less than planner alone`,
+			label: `saved up to ${formatUsd(difference)}`,
 			detail: evidence,
-			comparableRuns: comparable.length,
-			successfulRuns: successful.length,
-			plannerOnlyEstimate,
-			actualPrimaryCost,
+			comparableRuns: summary.comparedRuns,
+			successfulRuns: summary.finishedRuns,
+			coveredCost: summary.comparedActualCost,
+			finishedCost: summary.finishedActualCost,
+			plannerOnlyEstimate: summary.plannerOnlyCost,
+			actualPrimaryCost: summary.actualPrimaryCost,
 			difference,
 			percentage,
 		};
@@ -169,53 +159,48 @@ export function summarizeComparison(receipts: readonly RunReceipt[]): DashboardC
 	if (difference < 0) {
 		return {
 			state: "higher",
-			label: `${formatUsd(-difference)} more than planner alone`,
+			label: `cost ${formatUsd(-difference)} extra`,
 			detail: evidence,
-			comparableRuns: comparable.length,
-			successfulRuns: successful.length,
-			plannerOnlyEstimate,
-			actualPrimaryCost,
+			comparableRuns: summary.comparedRuns,
+			successfulRuns: summary.finishedRuns,
+			coveredCost: summary.comparedActualCost,
+			finishedCost: summary.finishedActualCost,
+			plannerOnlyEstimate: summary.plannerOnlyCost,
+			actualPrimaryCost: summary.actualPrimaryCost,
 			difference,
 			percentage,
 		};
 	}
 	return {
 		state: "same",
-		label: planningOnlyCount > 0 ? "No cost difference" : "Same as planner alone",
+		label: "No difference",
 		detail: evidence,
-		comparableRuns: comparable.length,
-		successfulRuns: successful.length,
-		plannerOnlyEstimate,
-		actualPrimaryCost,
+		comparableRuns: summary.comparedRuns,
+		successfulRuns: summary.finishedRuns,
+		coveredCost: summary.comparedActualCost,
+		finishedCost: summary.finishedActualCost,
+		plannerOnlyEstimate: summary.plannerOnlyCost,
+		actualPrimaryCost: summary.actualPrimaryCost,
 		difference,
 		percentage,
 	};
 }
 
-function unavailableLabel(receipts: readonly RunReceipt[]): string {
-	const successful = receipts.filter((receipt) => receipt.outcome === "succeeded");
-	if (successful.length === 0) {
-		if (receipts.length === 0) return "No finished run to compare yet";
+function unavailableLabel(
+	receipts: readonly RunReceipt[],
+	summary: ReturnType<typeof summarizeComparisons>,
+): string {
+	if (summary.finishedRuns === 0) {
+		if (receipts.length === 0) return "Nothing to compare yet";
 		const outcomes = new Set(receipts.map((receipt) => receipt.outcome));
 		if (outcomes.size === 1)
-			return `${outcomeLabel(receipts[0]?.outcome ?? "unfinished")} run not compared`;
-		return "No successful result to compare";
+			return `${outcomeLabel(receipts[0]?.outcome ?? "unfinished")}, so not compared`;
+		return "Nothing finished to compare";
 	}
-	const reasons = new Set(
-		successful
-			.map((receipt) => comparisonEstimate(receipt))
-			.filter((estimate) => estimate.kind === "unavailable")
-			.map((estimate) => estimate.reason),
-	);
-	if (reasons.size === 1 && reasons.has("usage-incomplete")) return "Missing executor usage";
-	if (
-		reasons.size > 0 &&
-		[...reasons].every((reason) =>
-			["pricing-missing", "pricing-incomplete", "pricing-zero"].includes(reason),
-		)
-	)
-		return "Missing pricing";
-	return "Comparison unavailable";
+	if (summary.noHandoffRuns > 0 && summary.unavailableRuns === 0) return "Never switched models";
+	if (summary.unavailableRuns > 0 && onlyPricingProblems(summary)) return "No price data";
+	if (summary.unavailableRuns > 0 && onlyUsageProblems(summary)) return "No usage data";
+	return "Can\u2019t compare";
 }
 
 export function renderAnalyticsDashboard(
@@ -234,7 +219,7 @@ export function renderAnalyticsDashboard(
 				: renderOverview(model, state, innerWidth, palette);
 	const title =
 		state.view === "help"
-			? "How costs work"
+			? "What these numbers mean"
 			: state.view === "details"
 				? "Session details"
 				: "Prewalk usage";
@@ -397,7 +382,7 @@ function renderOverview(
 		palette.color(
 			"dim",
 			width >= 76
-				? "↑↓ Select   Enter Details   ? How costs work   R Refresh   Esc Close"
+				? "↑↓ Select   Enter Details   ? What this means   R Refresh   Esc Close"
 				: "↑↓ Select · Enter Details · ? Help · R Refresh · Esc Close",
 		),
 	);
@@ -411,31 +396,39 @@ function renderCurrent(
 	palette: DashboardPalette,
 ): string[] {
 	const current = model.current;
-	const estimate = colorComparison(current.comparison, palette);
+	// The headline states the situation; the detail line below already names the
+	// specific reason, so repeating it here reads as a failure rather than a
+	// session that simply has nothing comparable in it yet.
+	const estimate =
+		current.comparison.state === "unavailable"
+			? palette.color("muted", "Not enough data yet")
+			: colorComparison(current.comparison, palette);
 	const prefix = selected ? palette.color("accent", "›") : " ";
 	if (width < 76) {
 		return [
 			`${prefix} ${palette.bold(current.title)}`,
-			`  Actual spend ${palette.bold(formatUsd(current.actualCost))} · ${current.activeRuns.length} active · ${current.completedRuns} complete`,
-			`  Compared with planner alone: ${estimate}`,
+			`  Spent ${palette.bold(formatUsd(current.actualCost))} · ${current.activeRuns.length} running · ${current.finishedRuns} done`,
+			`  Saved by switching: ${estimate}`,
 			...(current.activeRuns.length === 0
 				? []
 				: [
 						`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
 					]),
 			`  ${palette.color("dim", current.comparison.detail)}`,
+			"  This session only. Use /prewalk stats task to include work it handed to other agents.",
 		];
 	}
 	const metricWidth = Math.floor((width - 6) / 3);
 	return [
-		`${prefix} ${cell("ACTUAL SPEND", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("RUNS", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("VS PLANNER ALONE", metricWidth, "left", (text) => palette.color("dim", text))}`,
-		`  ${cell(formatUsd(current.actualCost), metricWidth, "left", palette.bold)}  ${cell(`${current.activeRuns.length} active · ${current.completedRuns} complete`, metricWidth, "left")}  ${cell(estimate, metricWidth, "left")}`,
+		`${prefix} ${cell("SPENT", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("RUNS", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("SAVED BY SWITCHING", metricWidth, "left", (text) => palette.color("dim", text))}`,
+		`  ${cell(formatUsd(current.actualCost), metricWidth, "left", palette.bold)}  ${cell(`${current.finishedRuns} done · ${current.activeRuns.length} running`, metricWidth, "left")}  ${cell(estimate, metricWidth, "left")}`,
 		...(current.activeRuns.length === 0
 			? []
 			: [
 					`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
 				]),
 		`  ${palette.color("dim", current.comparison.detail)}`,
+		"  This session only. Use /prewalk stats task to include work it handed to other agents.",
 	];
 }
 
@@ -446,35 +439,40 @@ function renderPeriods(
 ): string[] {
 	if (width < 96) {
 		return periods.flatMap((item) => [
-			`${palette.bold(item.label)} · ${item.completedRuns} ${plural(item.completedRuns, "run")} · ${formatUsd(item.actualCost)}`,
+			`${palette.bold(item.label)} · ${item.finishedRuns} done · ${item.activeRuns} running · ${formatUsd(item.actualCost)} spent`,
 			`  ${colorComparison(item.comparison, palette)} · ${palette.color("dim", item.comparison.detail)}`,
 		]);
 	}
-	const periodWidth = 14;
-	const runsWidth = 14;
-	const actualWidth = 16;
-	const differenceWidth = 23;
-	const evidenceWidth = Math.max(
-		18,
-		width - periodWidth - runsWidth - actualWidth - differenceWidth - 8,
+	const periodWidth = 10;
+	const runsWidth = 9;
+	const activeWidth = 7;
+	const actualWidth = 14;
+	const coveredWidth = 24;
+	const differenceWidth = Math.max(
+		22,
+		width - periodWidth - runsWidth - activeWidth - actualWidth - coveredWidth - 14,
 	);
 	const header = [
 		cell("PERIOD", periodWidth, "left"),
-		cell("COMPLETED RUNS", runsWidth, "right"),
-		cell("ACTUAL SPEND", actualWidth, "right"),
-		cell("VS PLANNER ALONE", differenceWidth, "right"),
-		cell("WHAT WAS COMPARED", evidenceWidth, "left"),
+		cell("DONE", runsWidth, "right"),
+		cell("RUNNING", activeWidth, "right"),
+		cell("SPENT", actualWidth, "right"),
+		cell("COMPARED", coveredWidth, "right"),
+		cell("SAVED BY SWITCHING", differenceWidth, "right"),
 	].join("  ");
 	return [
 		palette.color("dim", header),
 		...periods.map((item) =>
 			[
 				cell(item.label, periodWidth, "left", palette.bold),
-				cell(String(item.completedRuns), runsWidth, "right"),
+				cell(String(item.finishedRuns), runsWidth, "right"),
+				cell(String(item.activeRuns), activeWidth, "right"),
 				cell(formatUsd(item.actualCost), actualWidth, "right"),
-				cell(colorComparison(item.comparison, palette), differenceWidth, "right"),
-				cell(item.comparison.detail, evidenceWidth, "left", (text) =>
+				cell(coveredLabel(item.comparison), coveredWidth, "right", (text) =>
 					palette.color("dim", text),
+				),
+				cell(compactDifference(item.comparison), differenceWidth, "right", (text) =>
+					comparisonTone(item.comparison, palette, text),
 				),
 			].join("  "),
 		),
@@ -502,15 +500,32 @@ function renderRecent(
 	const statusWidth = 12;
 	const actualWidth = 13;
 	const estimateWidth = 22;
-	const header = `  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("ACTUAL", actualWidth, "right")}  ${cell("VS PLANNER ALONE", estimateWidth, "right")}`;
+	const header = `  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("SPENT", actualWidth, "right")}  ${cell("SAVED BY SWITCHING", estimateWidth, "right")}`;
+	// Repeating the same unavailability on every row reads as a broken tool.
+	// Rows stay quiet and one line below the table carries the reason.
+	const uncomparable = model.recentSessions.filter(
+		(session) => session.comparison.state === "unavailable",
+	);
 	return [
 		palette.color("dim", header),
 		...model.recentSessions.map((session, index) => {
 			const selected = selectedIndex === index + 1;
 			const prefix = selected ? palette.color("accent", "›") : " ";
 			const title = selected ? palette.color("accent", session.title) : session.title;
-			return `${prefix} ${cell(title, titleWidth, "left")}  ${cell(colorStatus(session, palette), statusWidth, "left")}  ${cell(formatUsd(session.actualCost), actualWidth, "right")}  ${cell(colorComparison(session.comparison, palette), estimateWidth, "right")}`;
+			const estimate =
+				session.comparison.state === "unavailable"
+					? palette.color("dim", "—")
+					: colorComparison(session.comparison, palette);
+			return `${prefix} ${cell(title, titleWidth, "left")}  ${cell(colorStatus(session, palette), statusWidth, "left")}  ${cell(formatUsd(session.actualCost), actualWidth, "right")}  ${cell(estimate, estimateWidth, "right")}`;
 		}),
+		...(uncomparable.length === 0
+			? []
+			: [
+					palette.color(
+						"dim",
+						`  — ${uncomparable.length} of ${model.recentSessions.length} ${plural(model.recentSessions.length, "session")} could not be compared. Select one to see why.`,
+					),
+				]),
 	];
 }
 
@@ -526,23 +541,22 @@ function renderDetails(
 		palette.bold(session.title),
 		palette.color("dim", session.sessionId),
 		"",
-		`${palette.color("muted", "Status")}               ${colorStatus(session, palette)}`,
-		`${palette.color("muted", "Actual spend")}         ${palette.bold(formatUsd(session.actualCost))}`,
-		`${palette.color("muted", "Active runs")}          ${session.activeRuns.length}`,
-		`${palette.color("muted", "Completed runs")}        ${session.receipts.length}`,
-		`${palette.color("muted", "Vs planner alone")}    ${colorComparison(comparison, palette)}`,
-		`${palette.color("muted", "Runs compared")}       ${comparison.detail}`,
+		`${palette.color("muted", "Status")}              ${colorStatus(session, palette)}`,
+		`${palette.color("muted", "Spent")}               ${palette.bold(formatUsd(session.actualCost))}`,
+		`${palette.color("muted", "Runs")}                ${session.receipts.length} done, ${session.activeRuns.length} running`,
+		`${palette.color("muted", "Saved by switching")}  ${colorComparison(comparison, palette)}`,
+		`${palette.color("muted", "What was compared")}   ${comparison.detail}`,
 	];
 	if (comparison.state !== "unavailable") {
 		lines.push(
 			"",
-			sectionLabel("Calculation", palette),
-			`If planner handled all work  ${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
-			`Planner + executor calls     ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
-			`Difference                   ${formatSignedDifference(comparison)}`,
+			sectionLabel("How that was worked out", palette),
+			`If you had never switched   ${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
+			`What you actually paid      ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
+			`Difference                  ${formatSignedDifference(comparison)}`,
 			palette.color(
 				"dim",
-				"Actual spend also includes helper and compaction calls; this comparison does not.",
+				"Spent above also counts background calls. This comparison only counts the main ones.",
 			),
 		);
 	}
@@ -550,12 +564,16 @@ function renderDetails(
 		"",
 		palette.color(
 			"warning",
-			"This applies planner prices to recorded executor tokens; it is not a separate planner-only run.",
+			"Nothing was run twice. We took the work the second model did and priced it as if the first",
+		),
+		palette.color(
+			"warning",
+			"model had done it, so treat this as a ceiling rather than a measurement.",
 		),
 		"",
 		palette.color(
 			"dim",
-			width >= 65 ? "? How costs work   R Refresh   Esc Back" : "? Help · R Refresh · Esc Back",
+			width >= 65 ? "? What this means   R Refresh   Esc Back" : "? Help · R Refresh · Esc Back",
 		),
 	);
 	return lines;
@@ -567,27 +585,37 @@ function renderHelp(
 	palette: DashboardPalette,
 ): string[] {
 	return [
-		palette.bold("What the numbers mean"),
+		palette.bold("What these numbers mean"),
 		"",
-		palette.color("accent", "Planner and executor"),
-		"Planner: the model selected in Pi before Prewalk hands work off.",
-		"Executor: the model that continues after the handoff.",
+		palette.color("accent", "What this tool does"),
+		"It starts a task on one model, then switches to a cheaper one to finish the work.",
+		"These numbers ask a single question: did switching actually cost you less?",
 		"",
-		palette.color("accent", "Actual spend"),
-		"Provider-reported cost for planner, executor, helper, and compaction calls.",
+		palette.color("accent", "Spent"),
+		"What you actually paid, from the provider's own numbers. Every run counts here,",
+		"including ones that never switched and ones we could not compare.",
 		"",
-		palette.color("accent", "Compared with planner alone"),
-		"We keep the recorded token counts but price executor tokens at the planner's rates.",
-		"The difference is that planner-alone amount minus planner + executor call cost.",
-		"Less means the planner + executor calls cost less; more means they cost more.",
+		palette.color("accent", "Saved by switching"),
+		"How much less you paid than if one model had done the whole task.",
+		"We take the work the cheaper model did and price it at the first model's rates.",
+		"A negative number means switching cost you more.",
 		"",
-		palette.color("accent", "Cannot compare"),
-		"The dashboard names what is missing: a completed run, executor usage, or pricing.",
-		"A completed planning-only run needs no estimate because no executor handoff occurred.",
+		palette.color("accent", "Compared"),
+		"How much of your spending the savings number is actually based on.",
+		"Some runs cannot be compared, so this is usually smaller than Spent.",
+		"Judge the savings against this figure, not against everything you spent.",
+		"",
+		palette.color("accent", "Why a run might not be compared"),
+		"It never switched models, it stopped early, or we have no price data for it.",
+		"Those runs still cost real money, so they stay in Spent.",
 		"",
 		palette.color(
 			"warning",
-			"This is a price-based estimate, not a measured planner-only benchmark run.",
+			"Nothing was ever run twice, so this is a ceiling, not a measurement. A cheaper model",
+		),
+		palette.color(
+			"warning",
+			"often needs more turns, and every extra turn gets priced at the pricier rate.",
 		),
 		palette.color("dim", `Snapshot ${formatUpdated(model.generatedAt)} · R Refresh · Esc Back`),
 	];
@@ -616,9 +644,10 @@ function frame(
 function period(label: string, aggregate: AnalyticsAggregate): DashboardPeriod {
 	return {
 		label,
-		completedRuns: aggregate.receiptCount,
+		finishedRuns: aggregate.receiptCount,
+		activeRuns: aggregate.unfinished.length,
 		actualCost: aggregate.actualCost,
-		comparison: summarizeComparison(aggregate.receipts),
+		comparison: summarizeComparison(aggregate.receipts, aggregate.comparison),
 	};
 }
 
@@ -671,9 +700,11 @@ function groupRecentSessions(overview: AnalyticsOverview): DashboardSession[] {
 		.sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
 }
 
-function unavailableDetail(receipts: readonly RunReceipt[]): string {
-	const successful = receipts.filter((receipt) => receipt.outcome === "succeeded");
-	if (successful.length === 0) {
+function unavailableDetail(
+	receipts: readonly RunReceipt[],
+	summary: ReturnType<typeof summarizeComparisons>,
+): string {
+	if (summary.finishedRuns === 0) {
 		if (receipts.length === 0) return "No finished runs yet.";
 		const outcomes = new Map<string, number>();
 		for (const receipt of receipts) {
@@ -683,33 +714,75 @@ function unavailableDetail(receipts: readonly RunReceipt[]): string {
 		const details = [...outcomes.entries()].map(
 			([label, count]) => `${count} ${label} ${plural(count, "run")}`,
 		);
-		return `${details.join("; ")} not compared.`;
+		return `${details.join("; ")}, so nothing was compared.`;
 	}
-	const summary = unavailableSummary(successful);
-	return summary.length > 0 ? `${summary}.` : "No completed runs could be compared.";
+	if (summary.noHandoffRuns > 0 && summary.unavailableRuns === 0) {
+		return `${summary.noHandoffRuns} ${plural(summary.noHandoffRuns, "run")} ended before switching models.`;
+	}
+	const unavailable = unavailableSummary(summary);
+	return unavailable.length > 0 ? `${unavailable}.` : "Nothing could be compared.";
 }
 
-function unavailableSummary(successful: readonly RunReceipt[]): string {
-	const counts = new Map<UnavailabilityReason, number>();
-	for (const receipt of successful) {
-		const estimate = comparisonEstimate(receipt);
-		if (estimate.kind !== "unavailable") continue;
-		counts.set(estimate.reason, (counts.get(estimate.reason) ?? 0) + 1);
+/**
+ * Shows the recorded spend the estimate is built from. Without it a small
+ * difference beside a large recorded total reads as a poor result rather than
+ * as narrow coverage.
+ */
+/**
+ * Compact difference for the period table, where the full sentence cannot fit
+ * and gets truncated into meaninglessness.
+ */
+function compactDifference(comparison: DashboardComparison): string {
+	if (comparison.state === "unavailable") return "no comparison";
+	if (comparison.state === "same") return "no difference";
+	const amount = formatUsd(Math.abs(comparison.difference ?? 0));
+	const share =
+		comparison.percentage === undefined ? "" : ` (${comparison.percentage.toFixed(0)}%)`;
+	return comparison.state === "higher" ? `${amount} extra${share}` : `up to ${amount}${share}`;
+}
+
+function coveredLabel(comparison: DashboardComparison): string {
+	if (comparison.finishedCost <= 0) return "nothing finished yet";
+	const share = (comparison.coveredCost / comparison.finishedCost) * 100;
+	return `${formatUsd(comparison.coveredCost)} of ${formatUsd(comparison.finishedCost)} (${share.toFixed(0)}%)`;
+}
+
+function comparisonDetail(summary: ReturnType<typeof summarizeComparisons>): string {
+	// Coverage has its own column, so the detail stays short enough to survive
+	// the width the table can actually give it.
+	const parts = [`${summary.comparedRuns} ${plural(summary.comparedRuns, "run")} compared`];
+	if (summary.noHandoffRuns > 0) {
+		parts.push(`${summary.noHandoffRuns} ${plural(summary.noHandoffRuns, "run")} never switched`);
 	}
-	const details = [...counts.entries()].map(
-		([reason, count]) => `${count} ${plural(count, "run")} ${unavailableReasonLabel(reason)}`,
+	if (summary.unavailableRuns > 0) parts.push(unavailableSummary(summary));
+	return `${parts.join(". ")}.`;
+}
+
+function unavailableSummary(summary: ReturnType<typeof summarizeComparisons>): string {
+	const details = Object.entries(summary.unavailableReasons).map(([reason, count]) =>
+		[`${count} ${plural(count ?? 0, "run")}`, unavailableReasonLabel(reason)].join(" "),
 	);
 	return details.join("; ");
 }
 
-function unavailableReasonLabel(reason: UnavailabilityReason): string {
-	if (reason === "pricing-missing") return "missing pricing";
-	if (reason === "pricing-incomplete") return "with incomplete pricing";
-	if (reason === "pricing-zero") return "with an invalid zero price";
-	if (reason === "usage-incomplete") return "missing executor usage";
-	if (reason === "analytics-disabled") return "recorded while analytics was disabled";
-	if (reason === "unfinished-run") return "that did not finish";
-	return "without a successful outcome";
+function onlyPricingProblems(summary: ReturnType<typeof summarizeComparisons>): boolean {
+	return Object.keys(summary.unavailableReasons).every((reason) =>
+		["pricing-missing", "pricing-incomplete", "pricing-zero"].includes(reason),
+	);
+}
+
+function onlyUsageProblems(summary: ReturnType<typeof summarizeComparisons>): boolean {
+	return Object.keys(summary.unavailableReasons).every((reason) => reason === "usage-incomplete");
+}
+
+function unavailableReasonLabel(reason: string): string {
+	if (reason === "pricing-missing") return "with no price data";
+	if (reason === "pricing-incomplete") return "with only partial price data";
+	if (reason === "pricing-zero") return "with a price of zero";
+	if (reason === "usage-incomplete") return "with no work recorded after the switch";
+	if (reason === "analytics-disabled") return "recorded while tracking was off";
+	if (reason === "unfinished-run") return "still running";
+	return "stopped early";
 }
 
 function selectedSession(model: AnalyticsDashboardModel, selectedIndex: number): DashboardSession {
@@ -723,6 +796,18 @@ function colorComparison(comparison: DashboardComparison, palette: DashboardPale
 	if (comparison.state === "higher") return palette.color("error", comparison.label);
 	if (comparison.state === "same") return palette.color("muted", comparison.label);
 	return palette.color("warning", comparison.label);
+}
+
+/** Applies the comparison's tone to arbitrary text, not just its full label. */
+function comparisonTone(
+	comparison: DashboardComparison,
+	palette: DashboardPalette,
+	text: string,
+): string {
+	if (comparison.state === "lower") return palette.color("success", text);
+	if (comparison.state === "higher") return palette.color("error", text);
+	if (comparison.state === "same") return palette.color("muted", text);
+	return palette.color("warning", text);
 }
 
 function colorStatus(session: DashboardSession, palette: DashboardPalette): string {
@@ -752,8 +837,8 @@ function formatSignedDifference(comparison: DashboardComparison): string {
 	if (comparison.difference === undefined) return "Unavailable";
 	const amount = comparison.difference;
 	const percent = comparison.percentage?.toFixed(1) ?? "0.0";
-	if (amount > 0) return `${formatUsd(amount)} less (${percent}%)`;
-	if (amount < 0) return `${formatUsd(-amount)} more (${percent}%)`;
+	if (amount > 0) return `saved up to ${formatUsd(amount)} (${percent}%)`;
+	if (amount < 0) return `cost ${formatUsd(-amount)} extra (${percent}%)`;
 	return "No cost difference (0.0%)";
 }
 

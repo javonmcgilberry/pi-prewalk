@@ -28,21 +28,34 @@ async function sourceFiles(directory: string): Promise<string[]> {
 	return nested.flat();
 }
 
-function findProductionCasts(path: string, source: string): string[] {
+/**
+ * Finds type assertions in production source.
+ *
+ * The rule targets assertions that overrule the type checker — `value as Foo`
+ * and the equivalent `<Foo>value` — because production code is supposed to
+ * narrow unknown input with guards instead of asserting a shape it never
+ * verified.
+ *
+ * Const assertions (`as const`) are explicitly allowed. They assert no shape
+ * and silence no error; they only ask for the narrowest literal type and add
+ * `readonly`, which makes inference stricter rather than weaker.
+ */
+function findTypeAssertions(path: string, source: string): string[] {
 	const scriptKind = path.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 	const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKind);
-	const casts: string[] = [];
+	const assertions: string[] = [];
 
 	function visit(node: ts.Node): void {
-		if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+		const asserted = ts.isAsExpression(node) || ts.isTypeAssertionExpression(node);
+		if (asserted && !ts.isConstTypeReference(node.type)) {
 			const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-			casts.push(`${path}:${position.line + 1}`);
+			assertions.push(`${path}:${position.line + 1}`);
 		}
 		ts.forEachChild(node, visit);
 	}
 
 	visit(sourceFile);
-	return casts;
+	return assertions;
 }
 
 describe("shipped package contract", () => {
@@ -173,19 +186,22 @@ describe("shipped package contract", () => {
 		);
 	});
 
-	it("contains no production TypeScript casts", async () => {
+	it("narrows production input with guards instead of type assertions", async () => {
 		const paths = await Promise.all(
 			["extensions", "src", "scripts"].map((directory) => sourceFiles(directory)),
 		);
-		const casts = (
+		const assertions = (
 			await Promise.all(
 				paths
 					.flat()
 					.filter((path) => path.endsWith(".ts"))
-					.map(async (path) => findProductionCasts(path, await text(path))),
+					.map(async (path) => findTypeAssertions(path, await text(path))),
 			)
 		).flat();
 
-		expect(casts).toEqual([]);
+		expect(
+			assertions,
+			`Production code must narrow unknown input with a type guard rather than assert its type. Replace the assertion at each location below, or move the code into a test. Const assertions (\`as const\`) are allowed and are not reported here.\n${assertions.join("\n")}`,
+		).toEqual([]);
 	});
 });

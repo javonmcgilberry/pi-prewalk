@@ -134,6 +134,7 @@ describe("shell apply_patch proof", () => {
 		"printf '%s' \"$PATCH_TEXT\" | apply_patch",
 		"echo ready; apply_patch",
 		"apply_patch && echo applied",
+		"apply_patch <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH\n",
 	])("accepts a successful command with apply_patch in a provable position", (command) => {
 		const buffer = new MutationTurnBuffer();
 		buffer.recordResult(result("bash", "bash", { input: { command } }));

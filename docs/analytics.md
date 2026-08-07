@@ -14,6 +14,12 @@ current question first: which session is this, is a run active, what has it
 spent, and is an estimate available? Session titles are the primary labels;
 stable IDs appear in the details view.
 
+The dashboard speaks in terms of switching: a task starts on one model and a
+cheaper one takes over. `Spent` is what you paid, `Compared` is how much of that
+spending the comparison is built from, and `Saved by switching` is the estimate.
+Internal terms such as planner, executor, and handoff stay out of the interface
+and are used only in this document and in the code.
+
 The dashboard order is:
 
 1. Current session
@@ -33,40 +39,73 @@ shows active and finished Prewalk runs recorded in that session. Delegated child
 sessions are excluded from this section; `/prewalk stats task` reports the whole
 task tree.
 
-An active run can report actual spend, but its planner-alone price comparison is
-not final. Historical comparisons use finished runs only.
+An active run can show recorded spend, but its estimated difference can change
+until the run finishes. Historical comparisons use finished runs only.
 
-Actual spend is provider-reported cost for planner, executor, helper, and
-compaction calls. The planner is the model selected in Pi before handoff. The
-executor is the model that continues after handoff.
+Recorded spend is provider-reported cost captured for planner, executor,
+helper, and compaction calls. The planner is the model selected in Pi before
+handoff. The executor is the model that continues after handoff.
 
-A planner-alone price comparison keeps the recorded token counts but prices the
+The estimated difference keeps the recorded primary token counts and prices the
 executor's tokens at the planner's rates:
 
 ```text
 planner-alone estimate
-  = actual planner cost
+  = recorded planner primary-call cost
   + executor token usage repriced at planner rates
 
-difference
+estimated difference
   = planner-alone estimate
-  - actual planner + executor call cost
+  - recorded planner + executor primary-call cost
 ```
 
 Positive values mean planner + executor calls cost less than the planner-alone
 estimate. Negative values mean they cost more. Helper and compaction calls are
-included in actual spend but not in this comparison. This is not a separate
+included in recorded spend but not in this comparison. This is not a separate
 planner-only run or a measured benchmark.
+
+Read the difference as an upper bound, which is why it is shown as `up to`. It
+prices the tokens the executor actually used, assuming the planner would have
+used the same ones. A cheaper executor often needs more turns to reach the same
+result, and every extra turn is then repriced at planner rates, so the estimate
+leans high. The gap widens as the price ratio widens. Only an accepted
+benchmark report, labelled `verified`, measures the difference instead of
+estimating it.
+
+Recorded spend and the estimated difference cover different runs, so they are
+not two halves of one ratio. Recorded spend counts every run in the period,
+including runs that never handed off and runs with no usable pricing. The
+difference only covers runs that could be compared. Each comparison therefore
+states the spend it covers, and that covered figure is the one to read the
+difference against. A small difference beside a large recorded total usually
+means narrow coverage rather than a poor result.
+
+A call counts as planner work only while the run is still planning. Once the
+executor takes over, later planner-model turns are recorded as helper spend
+rather than planning, so selecting the planner again after a handoff does not
+inflate the planner-alone baseline.
 
 The labels matter:
 
-- `actual spend` comes from Pi-reported usage.
-- `price comparison` uses pricing attached to the active model.
-- `catalog price comparison` uses the optional dated catalog fallback.
+- `recorded spend` comes from Pi-reported usage and may include helper or
+  compaction calls.
+- `estimated difference` uses pricing attached to the recorded models.
+- `catalog estimate` uses the optional dated catalog fallback.
 - `cannot compare` names the missing input, such as executor usage or model pricing.
-- `no executor handoff` means planning finished without executor work, so there is no cost difference to estimate.
+- `finished before handoff` means planning ended without executor work, so
+  there is no cost difference to estimate.
 - `active` means the run has no finished receipt yet.
 - `verified` is reserved for an accepted benchmark report.
+
+Comparability follows the recorded evidence rather than how the run ended. A
+run that was released, ended with its session, or was interrupted is still
+compared when it recorded executor usage and pricing. Cancelled and failed runs
+are not compared.
+
+Receipts record the rates their estimate used. When a later Prewalk widens what
+counts as comparable, those receipts are repriced from their own stored rates
+instead of staying uncomparable. Receipts written before Prewalk stored rates
+cannot be repriced and stay unavailable with `pricing-missing`.
 
 A negative difference means planner + executor calls cost more than pricing the
 recorded work at planner rates. The dashboard shows that directly.
@@ -105,6 +144,22 @@ new ledger again.
 
 Disabling analytics stops new collection but keeps existing receipts. It does
 not change model routing.
+
+## Recovering abandoned runs
+
+A session that exits without shutting down cleanly leaves its run journal
+unfinished. Prewalk finalizes its own session's leftover journals at startup.
+A journal belonging to another session is only claimed after it has gone
+untouched for twenty-four hours; concurrent sessions never finalize each
+other's working runs. That wait is a heuristic, not a liveness check. If a
+session is idle past it and then returns, the owning session reclaims the run
+when it finalizes, because a recovered receipt is only replaced by one holding
+strictly more evidence. Recovery can add a receipt that would otherwise be
+lost; it cannot discard a fuller one.
+
+A recovered run keeps the outcome its journal recorded and is otherwise
+recorded as `interrupted`. Its estimate is priced from the model registry as it
+stands at recovery, so `capturedAt` reflects the recovery rather than the run.
 
 ## Benchmark imports
 

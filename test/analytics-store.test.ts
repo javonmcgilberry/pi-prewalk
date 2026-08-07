@@ -9,6 +9,7 @@ import {
 	type RunJournal,
 	type RunOutcome,
 	type RunReceipt,
+	summarizeActualCost,
 	type UsageSlice,
 	type VerifiedBenchmarkSummary,
 } from "../src/analytics.js";
@@ -185,6 +186,33 @@ describe("AnalyticsStore", () => {
 		expect(await store.listReceipts()).toEqual([terminal]);
 	});
 
+	it("removes a stale matching journal when receipt promotion is retried", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+		const terminal = receipt(generation);
+
+		await store.promoteReceipt(terminal);
+		await store.writeJournal(journal(generation));
+		await store.promoteReceipt(terminal);
+
+		expect(await store.restoreJournal("run-1", "epoch-1")).toBeNull();
+	});
+
+	it("never counts a journal after the matching receipt is visible", async () => {
+		const store = new AnalyticsStore(agentDirectory);
+		const generation = await store.currentGeneration();
+
+		await store.promoteReceipt(receipt(generation));
+		await store.writeJournal(journal(generation));
+
+		const snapshot = await store.snapshot();
+		const aggregate = await store.aggregate({}, snapshot);
+		expect(snapshot.journals).toEqual([]);
+		expect(aggregate.actualCost).toBe(0.35);
+		expect(aggregate.outcomes.unfinished).toBe(0);
+		expect(aggregate.unfinished).toEqual([]);
+	});
+
 	it("reconciles descendant receipts, fallback slices, and unresolved overlap once", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
@@ -192,7 +220,7 @@ describe("AnalyticsStore", () => {
 			store.promoteReceipt(
 				receipt(generation, "root-run", {
 					sessionId: "root",
-					usage: [usage(1, 0.5)],
+					usage: [usage(1, 0.5), usage(2, 0)],
 					actualCost: 0.5,
 					estimate: {
 						kind: "session-counterfactual",
@@ -204,7 +232,7 @@ describe("AnalyticsStore", () => {
 			store.promoteReceipt(
 				receipt(generation, "child-a-run", {
 					sessionId: "child-a",
-					usage: [usage(1, 0.2)],
+					usage: [usage(1, 0.2), usage(2, 0)],
 					actualCost: 0.2,
 					estimate: {
 						kind: "session-counterfactual",
@@ -217,7 +245,7 @@ describe("AnalyticsStore", () => {
 			store.promoteReceipt(
 				receipt(generation, "child-c-run", {
 					sessionId: "child-c",
-					usage: [usage(1, 0.4)],
+					usage: [usage(1, 0.4), usage(2, 0)],
 					actualCost: 0.4,
 					estimate: {
 						kind: "session-counterfactual",
@@ -258,7 +286,7 @@ describe("AnalyticsStore", () => {
 		await store.promoteReceipt(
 			receipt(generation, "root-run", {
 				sessionId: "root",
-				usage: [usage(1, 0.5)],
+				usage: [usage(1, 0.5), usage(2, 0)],
 				actualCost: 0.5,
 				estimate: {
 					kind: "session-counterfactual",
@@ -511,7 +539,7 @@ describe("AnalyticsStore", () => {
 		expect((await store.aggregate()).generation).toBe(newGeneration);
 	});
 
-	it("reports unfinished observed actual spend without estimating savings", async () => {
+	it("reports unfinished observed spend without estimating savings", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
 		await store.writeJournal(journal(generation));
@@ -533,7 +561,7 @@ describe("AnalyticsStore", () => {
 		]);
 	});
 
-	it("does not count legacy planning-only receipts as unavailable comparisons", async () => {
+	it("keeps legacy planning-only receipts out of handoff comparisons", async () => {
 		const store = new AnalyticsStore(agentDirectory);
 		const generation = await store.currentGeneration();
 		await store.promoteReceipt(
@@ -550,6 +578,8 @@ describe("AnalyticsStore", () => {
 		expect(aggregate.unavailableSavingsCount).toBe(0);
 		expect(aggregate.estimatedSavings).toBe(0);
 		expect(aggregate.estimatedExtraCost).toBe(0);
+		expect(aggregate.comparison.comparedRuns).toBe(0);
+		expect(aggregate.comparison.noHandoffRuns).toBe(1);
 	});
 
 	it("keeps active journals local to one exact Pi session", async () => {
@@ -576,6 +606,8 @@ describe("AnalyticsStore", () => {
 			"2026-03-09T04:30:00.000Z",
 		];
 		for (let index = 0; index < completed.length; index += 1) {
+			const unavailableReason =
+				outcomes[index] === "succeeded" ? "pricing-missing" : "run-not-successful";
 			await store.promoteReceipt(
 				receipt(generation, `run-${index}`, {
 					epoch: `epoch-${index}`,
@@ -583,8 +615,8 @@ describe("AnalyticsStore", () => {
 					completedAt: completed[index],
 					outcome: outcomes[index],
 					actualCost: 0.35,
-					estimate: { kind: "unavailable", reason: "run-not-successful" },
-					pricingEvidence: { source: "unavailable", reason: "run-not-successful" },
+					estimate: { kind: "unavailable", reason: unavailableReason },
+					pricingEvidence: { source: "unavailable", reason: unavailableReason },
 				}),
 			);
 		}
@@ -617,7 +649,7 @@ describe("AnalyticsStore", () => {
 			receipt(generation, "root-run", {
 				sessionId: "root",
 				actualCost: 0.5,
-				usage: [usage(1, 0.5)],
+				usage: [usage(1, 0.5), usage(2, 0)],
 				estimate: {
 					kind: "session-counterfactual",
 					plannerOnlyCost: 0.65,
@@ -629,7 +661,7 @@ describe("AnalyticsStore", () => {
 			receipt(generation, "child-run", {
 				sessionId: "child",
 				actualCost: 0.2,
-				usage: [usage(1, 0.2)],
+				usage: [usage(1, 0.2), usage(2, 0)],
 				evidenceKeys: ["subagent:delegation:0"],
 				estimate: {
 					kind: "session-counterfactual",
@@ -664,7 +696,7 @@ describe("AnalyticsStore", () => {
 			receipt(generation, "root-run", {
 				sessionId: "root",
 				actualCost: 0.5,
-				usage: [usage(1, 0.5)],
+				usage: [usage(1, 0.5), usage(2, 0)],
 				estimate: {
 					kind: "session-counterfactual",
 					plannerOnlyCost: 0.65,
@@ -694,7 +726,7 @@ describe("AnalyticsStore", () => {
 			receipt(generation, "child-run", {
 				sessionId: "child",
 				actualCost: 0.2,
-				usage: [usage(1, 0.2)],
+				usage: [usage(1, 0.2), usage(2, 0)],
 				estimate: {
 					kind: "session-counterfactual",
 					plannerOnlyCost: 0.35,
@@ -796,5 +828,91 @@ describe("AnalyticsStore", () => {
 		await expect(store.listReceipts()).rejects.toThrow(
 			"Analytics receipt run-1--epoch-1 is invalid",
 		);
+	});
+});
+
+describe("recovered receipt supersession", () => {
+	it("lets the owning session reclaim a run that recovery finalized while it was idle", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "prewalk-supersede-"));
+		const store = new AnalyticsStore(directory);
+		const generation = await store.currentGeneration();
+		const base = {
+			schemaVersion: ANALYTICS_SCHEMA_VERSION,
+			runId: "run-supersede",
+			epoch: "epoch-1",
+			sessionId: "session-1",
+			generation,
+			startedAt: "2026-08-01T00:00:00.000Z",
+			completedAt: "2026-08-01T00:05:00.000Z",
+			handoffState: "not-started" as const,
+			planner: { provider: "openai-codex", model: "gpt-5.6-sol" },
+			executor: { provider: "openai-codex", model: "gpt-5.6-luna" },
+			estimate: { kind: "unavailable" as const, reason: "pricing-missing" as const },
+			pricingEvidence: { source: "unavailable" as const, reason: "pricing-missing" as const },
+		};
+		const recovered = {
+			...base,
+			outcome: "interrupted" as const,
+			usage: [usage(1, 0.5)],
+			actualCost: summarizeActualCost([usage(1, 0.5)]).total,
+			evidenceKeys: ["evidence-1"],
+		};
+		await store.promoteReceipt(recovered);
+
+		const owned = {
+			...base,
+			outcome: "succeeded" as const,
+			usage: [usage(1, 0.5), usage(2, 0.25)],
+			actualCost: summarizeActualCost([usage(1, 0.5), usage(2, 0.25)]).total,
+			evidenceKeys: ["evidence-1", "evidence-2"],
+		};
+		await expect(store.promoteReceipt(owned)).rejects.toThrow(
+			/already exists with different data/,
+		);
+		expect(await store.supersedeRecoveredReceipt(owned)).not.toBeNull();
+		expect((await store.listReceipts())[0]?.evidenceKeys).toEqual(["evidence-1", "evidence-2"]);
+
+		// A receipt that is not a strict superset never overwrites the stored one.
+		expect(await store.supersedeRecoveredReceipt(recovered)).toBeNull();
+		expect((await store.listReceipts())[0]?.evidenceKeys).toEqual(["evidence-1", "evidence-2"]);
+		await rm(directory, { recursive: true, force: true });
+	});
+});
+
+describe("finalized run journals", () => {
+	it("does not keep a journal written after its receipt exists", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "prewalk-finalized-"));
+		const store = new AnalyticsStore(directory);
+		const generation = await store.currentGeneration();
+		const open = journal(generation, "run-final");
+		await store.writeJournal(open);
+		expect(await store.listUnfinishedJournals()).toHaveLength(1);
+
+		await store.promoteReceipt({
+			schemaVersion: ANALYTICS_SCHEMA_VERSION,
+			runId: open.runId,
+			epoch: open.epoch,
+			sessionId: open.sessionId,
+			generation,
+			startedAt: open.startedAt,
+			completedAt: "2026-08-01T00:05:00.000Z",
+			outcome: "succeeded",
+			handoffState: open.handoffState,
+			planner: open.configuration.planner,
+			executor: open.configuration.executor,
+			usage: open.usage,
+			actualCost: summarizeActualCost(open.usage).total,
+			estimate: { kind: "unavailable", reason: "pricing-missing" },
+			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
+			evidenceKeys: [...(open.evidenceKeys ?? [])],
+		});
+		expect(await store.listUnfinishedJournals()).toEqual([]);
+
+		// A late write for a finalized run must not resurrect the journal, which
+		// is how a journal outlives its receipt and accrues uncounted spend.
+		await store.writeJournal(open);
+		expect(await store.listUnfinishedJournals()).toEqual([]);
+		expect(await store.restoreJournal(open.runId, open.epoch)).toBeNull();
+		await rm(directory, { recursive: true, force: true });
 	});
 });
