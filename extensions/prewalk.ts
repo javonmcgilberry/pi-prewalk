@@ -1101,6 +1101,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		) {
 			throw new Error("model-unavailable");
 		}
+		// An executor identical to the planner satisfies every check above by
+		// definition, so reject it explicitly. Handing off to the running model is
+		// a no-op that still costs a planning nudge and a checklist. A same-model
+		// executor at a different reasoning level remains a real downgrade.
+		if (
+			planner.provider === executor.provider &&
+			planner.id === executor.id &&
+			plannerProfile.reasoning === config.executor.reasoning
+		) {
+			throw new Error("configuration-invalid");
+		}
 		const [plannerAuth, executorAuth] = await Promise.all([
 			ctx.modelRegistry.getApiKeyAndHeaders(planner),
 			ctx.modelRegistry.getApiKeyAndHeaders(executor),

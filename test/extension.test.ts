@@ -1851,6 +1851,43 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("agent-not-opted-in");
 	});
 
+	// OMP parity: "armPrewalk rejects a same-model same-effort no-op before
+	// injecting the plan nudge". `configure` cannot produce this, but a
+	// hand-edited prewalk.json can, and an identical executor passes every
+	// provider/api check by definition.
+	it("refuses a session executor identical to the planner without sending the plan nudge", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({
+				executor: { provider: "openai-codex", model: PLANNER_MODEL_ID, reasoning: "low" },
+			})}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.messages).toEqual([]);
+		expect(harness.notifications.at(-1)).toContain("configuration-invalid");
+	});
+
+	it("still arms a same-model executor when the reasoning level differs", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({
+				executor: { provider: "openai-codex", model: PLANNER_MODEL_ID, reasoning: "minimal" },
+			})}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.messages.at(0)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+	});
+
 	it("fails closed for equal and unavailable child targets", async () => {
 		identifyChild();
 		await writeChildConfig({

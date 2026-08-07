@@ -1,5 +1,5 @@
 {
-  "revision": "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d",
+  "revision": "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7",
   "promptAssets": {
     "prewalk-plan.md": {
       "source": "packages/coding-agent/src/prompts/system/prewalk-plan.md",
@@ -98,6 +98,21 @@
       "upstream": "arms prewalk when the target resolves and has configured auth",
       "classification": "pi-adapted",
       "local": "test/agent-loop.test.ts"
+    },
+    {
+      "upstream": "requires a fresh todo before a later explicit prewalk can hand off",
+      "classification": "direct",
+      "local": "test/core.test.ts"
+    },
+    {
+      "upstream": "armPrewalk rejects a same-model same-effort no-op before injecting the plan nudge",
+      "classification": "pi-adapted",
+      "local": "test/extension.test.ts"
+    },
+    {
+      "upstream": "/prewalk reports success only when the requested arm remains active",
+      "classification": "excluded",
+      "rationale": "/prewalk run reports no success of its own; startRun notifies only on failure, so there is no success claim that could outlive a cancelled arm."
     }
   ]
 }

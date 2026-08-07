@@ -15,7 +15,7 @@ interface Matrix {
 	scenarios: Scenario[];
 }
 
-const revision = "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d";
+const revision = "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7";
 const promptHashes = new Map([
 	["prewalk-plan.md", "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"],
 	["prewalk-checklist.md", "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"],
@@ -39,11 +39,11 @@ describe("canonical OMP parity matrix", () => {
 			});
 		}
 		expect(matrix.sourceSuites).toHaveLength(2);
-		expect(matrix.scenarios).toHaveLength(16);
-		expect(new Set(matrix.scenarios.map((scenario) => scenario.upstream)).size).toBe(16);
+		expect(matrix.scenarios).toHaveLength(19);
+		expect(new Set(matrix.scenarios.map((scenario) => scenario.upstream)).size).toBe(19);
 		expect(
 			matrix.scenarios.filter((scenario) => scenario.classification === "excluded"),
-		).toHaveLength(4);
+		).toHaveLength(5);
 
 		for (const scenario of matrix.scenarios) {
 			if (scenario.classification === "excluded") {
