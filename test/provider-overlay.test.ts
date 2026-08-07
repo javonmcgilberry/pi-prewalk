@@ -213,10 +213,11 @@ function setupCrossProvider() {
 		api: "openai-codex-responses",
 		streamSimple: plannerDelegate,
 	};
-	const executorConfig: ProviderConfig = {
+	let executorConfig: ProviderConfig | undefined = {
 		api: "anthropic-messages",
 		streamSimple: executorDelegate,
 	};
+	let executorRegistered = true;
 
 	const pi = {
 		registerProvider: vi.fn((provider: string, next: ProviderConfig) => {
@@ -240,7 +241,7 @@ function setupCrossProvider() {
 	const registry = {
 		find: (provider: string, id: string): Model<Api> | undefined => {
 			if (provider === PLANNER_PROVIDER && id === PLANNER_MODEL_ID) return planner;
-			if (provider === "anthropic" && id === executor.id) return executor;
+			if (provider === "anthropic" && id === executor.id && executorRegistered) return executor;
 			return undefined;
 		},
 		getRegisteredProviderConfig: (provider: string) => {
@@ -285,6 +286,18 @@ function setupCrossProvider() {
 		},
 		setPrimary: (value: boolean) => {
 			primary = value;
+		},
+		/** Another extension swaps the executor provider's transport mid-run. */
+		replaceExecutorProvider: (streamSimple: NonNullable<ProviderConfig["streamSimple"]>) => {
+			executorConfig = { api: "anthropic-messages", streamSimple };
+		},
+		/** The executor provider is unregistered entirely mid-run. */
+		unregisterExecutorProvider: () => {
+			executorConfig = undefined;
+		},
+		/** The executor model disappears from the registry mid-run. */
+		removeExecutorModel: () => {
+			executorRegistered = false;
 		},
 	};
 }
@@ -465,6 +478,65 @@ describe("provider overlay", () => {
 		expect(fixture.delegatedModels).toEqual([fixture.executor]);
 		expect(result?.stopReason).toBe("stop");
 		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
+	});
+
+	it("picks up an executor transport replaced after install", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const replacementModels: Model<Api>[] = [];
+		fixture.replaceExecutorProvider((selected) => {
+			replacementModels.push(selected);
+			return successfulStream(selected);
+		});
+
+		const result = await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		// Pi applies provider registration immediately, so a transport captured at
+		// install time would be one Pi has already discarded.
+		expect(replacementModels).toEqual([fixture.executor]);
+		expect(fixture.executorDelegateModels).toEqual([]);
+		expect(result?.stopReason).toBe("stop");
+	});
+
+	it("falls back to the builtin transport when the executor provider is unregistered", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.unregisterExecutorProvider();
+
+		// No registered config remains, so the overlay must reach the builtin
+		// dispatcher rather than the stale captured one. The builtin will fail on a
+		// fake model, which is fine: the assertion is that the stale delegate was
+		// not reused.
+		const result = await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(fixture.executorDelegateModels).toEqual([]);
+		expect(result?.stopReason).toBe("error");
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
+	});
+
+	it("reports drift when the executor model leaves the registry mid-run", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.removeExecutorModel();
+
+		expect(() =>
+			fixture.plannerConfig()?.streamSimple?.(fixture.planner, fixture.context),
+		).toThrow("Prewalk executor model is no longer registered.");
+		expect(fixture.state.onProviderDrift).toHaveBeenCalledOnce();
+		expect(fixture.executorDelegateModels).toEqual([]);
 	});
 
 	it("terminalizes a delegated Luna iterator failure", async () => {

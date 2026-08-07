@@ -151,16 +151,32 @@ export function createProviderOverlay(
 		const delegate = previous?.streamSimple ?? builtinStreamSimple;
 		// The executor rides its own provider transport. Reusing the planner's
 		// stream would hand an executor model to the wrong provider's wire format
-		// and credentials, which is why a cross-provider pair cannot share one
-		// delegate. Only the planner's provider carries this overlay, so resolving
-		// a different provider's registration here cannot recurse into it; a
-		// same-provider pair deliberately reuses the pre-overlay delegate instead
-		// of the live registration, which is this overlay itself.
-		const executorDelegate =
-			executor.provider === plannerProfile.provider
-				? delegate
-				: (modelRegistry.getRegisteredProviderConfig(executor.provider)?.streamSimple ??
-					builtinStreamSimple);
+		// and credentials, so a cross-provider pair cannot share one delegate.
+		//
+		// Both the executor model and its transport are resolved per request rather
+		// than captured here. Pi applies provider registration immediately, so a
+		// provider replaced, unregistered, or refreshed mid-run would otherwise
+		// leave this overlay calling a transport Pi has already discarded.
+		//
+		// A same-provider executor deliberately reuses the pre-overlay delegate
+		// instead of the live registration, because that live registration is this
+		// overlay and reading it would re-enter the overlay on every request.
+		const resolveExecutor = ():
+			| { ok: true; model: Model<Api>; delegate: StreamSimple }
+			| { ok: false } => {
+			const current = modelRegistry.find(config.executor.provider, config.executor.model);
+			if (!current) return { ok: false };
+			if (current.provider === plannerProfile.provider) {
+				return { ok: true, model: current, delegate };
+			}
+			return {
+				ok: true,
+				model: current,
+				delegate:
+					modelRegistry.getRegisteredProviderConfig(current.provider)?.streamSimple ??
+					builtinStreamSimple,
+			};
+		};
 
 		const stream: StreamSimple = (
 			model: Model<Api>,
@@ -184,19 +200,28 @@ export function createProviderOverlay(
 
 			const runId = state.currentRunId();
 			if (!runId) return delegate(model, context, options);
+			const resolved = resolveExecutor();
+			if (!resolved.ok) {
+				// The executor disappeared from the registry mid-run. Treat it the same
+				// way as losing the provider registration rather than silently serving
+				// the request from the planner the user is no longer paying for.
+				state.onProviderDrift();
+				throw new Error("Prewalk executor model is no longer registered.");
+			}
+			const { model: executorModel, delegate: executorDelegate } = resolved;
 			return forwardStream(
 				(async () => {
-					const auth = await modelRegistry.getApiKeyAndHeaders(executor);
+					const auth = await modelRegistry.getApiKeyAndHeaders(executorModel);
 					if (!auth.ok) throw new Error("Executor authorization is unavailable.");
 					const delegated = executorDelegate(
-						executor,
+						executorModel,
 						context,
 						executorOptions(options, auth, config),
 					);
 					await state.onExecutorStreamStarted(runId);
 					return delegated;
 				})(),
-				executor,
+				executorModel,
 				() => state.onExecutorStreamSucceeded(runId),
 				() => state.onExecutorStreamFailed(runId),
 			);

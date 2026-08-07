@@ -81,7 +81,7 @@ Several rows below are consequences of that, not preferences.
 | 20 | Status line annotation | Yes | Yes | Same | `src/status.ts` |
 | 21 | Manual release back to planner | Not present | `/prewalk release` | **Addition** | `extensions/prewalk.ts` `release` |
 | 22 | Local cost analytics and receipts | Not present | Yes | **Addition** | `src/analytics*.ts` |
-| 23 | Provider-ownership drift detection | Not needed | Yes, `provider-drift` | **Forced** | `verifyOverlayOwnership` |
+| 23 | Provider-ownership drift detection | Not needed | Yes, `provider-drift`, for both the planner registration and the executor model | **Forced** | `verifyOverlayOwnership`; `resolveExecutor` |
 | 24 | Native Responses compaction | Supported | Refused, `native-compaction-unsupported` | **Forced** | `nativeResponsesCompactionState` |
 | 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/status.ts:17`; `extensions/prewalk.ts:2141` |
 
@@ -177,6 +177,5 @@ failure; automatic selection would remove the surprise.
   transport. Only the three built-in adapters above were executed.
 - Whether a tokenizer difference between two equal-window models can overflow
   the executor in practice. The mechanism is real; the frequency is unmeasured.
-- The overlay resolves the executor model and its transport once at `install()`.
-  Behavior when the executor's provider is replaced or unregistered mid-run is
-  untested, and no drift check covers it the way one covers the planner.
+- Cross-provider routing has unit coverage but has never run against two live
+  provider credentials end to end.
