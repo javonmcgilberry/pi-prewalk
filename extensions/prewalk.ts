@@ -588,13 +588,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let compactionChecklistRunId: string | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
 	const deactivatePrewalkTools = (): void => {
-		const active =
+		const baseline =
 			prewalkToolSlate ??
 			pi
 				.getActiveTools()
 				.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
 		prewalkToolSlate = undefined;
-		pi.setActiveTools(active);
+		pi.setActiveTools([...baseline, PREWALK_TODO_TOOL_NAME]);
 	};
 	const activatePlanningTools = (toolSlate = pi.getActiveTools()): void => {
 		const baseline = toolSlate.filter(
@@ -604,13 +604,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		pi.setActiveTools([...baseline.filter((name) => name !== "todo"), PREWALK_TODO_TOOL_NAME]);
 	};
 	const beginEvaluation = (): EvaluationState => {
-		const toolSlate = pi
-			.getActiveTools()
-			.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
+		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		const state: EvaluationState = { id: randomUUID(), toolSlate, invalid: false };
 		evaluation = state;
 		evaluationMutations.resetForRun();
-		pi.setActiveTools([...toolSlate.filter((name) => name !== "todo"), PREWALK_ASSESS_TOOL_NAME]);
+		pi.setActiveTools([
+			...toolSlate.filter((name) => name !== "todo" && name !== PREWALK_TODO_TOOL_NAME),
+			PREWALK_TODO_TOOL_NAME,
+			PREWALK_ASSESS_TOOL_NAME,
+		]);
 		return state;
 	};
 	const restoreEvaluationTools = (): void => {
@@ -1519,13 +1521,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		name: PREWALK_TODO_TOOL_NAME,
 		label: "Prewalk Todo",
 		description: "Create and maintain the phased implementation checklist required by Prewalk.",
-		promptSnippet: prompts.todo,
-		promptGuidelines: [
-			"Initialize prewalk_todo before the first implementation mutation.",
-			"Keep prewalk_todo state current as work advances.",
-		],
 		parameters: TodoParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			if (
+				!coordinator.run ||
+				coordinator.run.phase === "cancelled" ||
+				coordinator.run.phase === "failed"
+			) {
+				throw new Error("Prewalk todo is inactive.");
+			}
 			const input: TodoInput = {
 				op: params.op,
 				...(params.list ? { list: params.list } : {}),

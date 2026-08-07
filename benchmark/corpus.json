@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
   "protocol": {
-    "piVersion": "0.82.1",
-    "conversionVersion": "3.0.3",
+    "piVersion": "0.84.1",
+    "conversionVersion": "3.0.10",
     "promptDigests": {
       "plan": "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78",
       "continue": "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0",

@@ -28,7 +28,7 @@ afterEach(async () => {
 });
 
 describe("installed Codex conversion composition", () => {
-	it("loads conversion 3.0.3 first and sends a deterministic request through its public stream", async () => {
+	it("loads the installed conversion first and sends a deterministic request through its public stream", async () => {
 		const accessToken = `e30.${Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
 		).toString("base64url")}.signature`;
@@ -109,8 +109,10 @@ describe("installed Codex conversion composition", () => {
 		});
 
 		await session.bindExtensions({});
+		expect(session.getActiveToolNames()).toContain("prewalk_todo");
 		await session.prompt("/prewalk run");
 		await session.waitForIdle();
+		expect(session.getActiveToolNames()).toContain("prewalk_todo");
 
 		const wrapped = runtime.getRegisteredProviderConfig("openai-codex");
 		expect(conversionApi).toBe("openai-codex-responses");

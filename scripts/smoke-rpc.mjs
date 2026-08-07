@@ -107,7 +107,7 @@ try {
 	console.log(
 		JSON.stringify({
 			ok: true,
-			pi: "0.82.1",
+			pi: "0.84.1",
 			conversionExtension: "not-loaded",
 			plannerModel,
 			executorModel,

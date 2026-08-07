@@ -45,7 +45,7 @@ describe("trusted Pi benchmark runtime", () => {
 		const authFile = path.join(root, "auth.json");
 		const piExecutable = path.join(root, "pi.mjs");
 		await writeFile(authFile, "{}\n", { mode: 0o600 });
-		await writeFile(piExecutable, 'console.log("0.82.1");\n', { mode: 0o700 });
+		await writeFile(piExecutable, 'console.log("0.84.1");\n', { mode: 0o700 });
 		const sandbox = {
 			assertImage: vi.fn(async () => {}),
 			createWorker: vi.fn(),

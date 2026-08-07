@@ -5,6 +5,8 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	type Model,
+	type ProviderEnv,
+	type ProviderHeaders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { streamSimple as builtinStreamSimple } from "@earendil-works/pi-ai/compat";
@@ -15,8 +17,8 @@ type StreamSimple = NonNullable<ProviderConfig["streamSimple"]>;
 type ResolvedExecutorAuth = {
 	ok: true;
 	apiKey?: string;
-	headers?: Record<string, string>;
-	env?: Record<string, string>;
+	headers?: ProviderHeaders;
+	env?: ProviderEnv;
 };
 
 export interface ProviderOverlayState {

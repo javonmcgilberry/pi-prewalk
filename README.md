@@ -36,15 +36,14 @@ change the selected planner model.
 
 ## Status
 
-Prewalk is experimental. Its efficacy benchmark remains frozen to stock Pi
-0.82.1 and Pi Codex Conversion 3.0.3. Rolling compatibility checks evaluate
-new stable Pi releases separately. The repository does not
-contain a completed paid benchmark, so it makes no claim about measured savings
-or quality for this implementation.
+Prewalk is experimental. It uses Pi's current public extension APIs and does
+not block specific Pi versions. The benchmark pins its development runtime so
+runs can be compared, but that pin does not limit normal use. The repository
+does not contain a completed paid benchmark, so it makes no claim about measured
+savings or quality.
 
 ## Requirements
 
-- Pi 0.82.1 or 0.83.0
 - Two authorized models, whose context window for the executor is at least the
   planner's
 - No other extension registered as `prewalk_todo`
@@ -56,6 +55,10 @@ planner is whichever model Pi has selected, and the executor may sit on a
 different provider and Pi API. Pi normalizes replayed history for whichever
 model receives a request, so a cross-provider pair such as Anthropic Opus to
 Google Gemini Flash routes through each model's own provider stream.
+
+Prewalk keeps `prewalk_todo` available for the full session. Calls outside an
+active Prewalk run fail without changing the checklist. During a run, the
+hidden planning and executor prompts explain how to use it.
 
 A handoff to a different model always replays history without that model's own
 reasoning signatures, because Pi keeps signed reasoning only for an exact model

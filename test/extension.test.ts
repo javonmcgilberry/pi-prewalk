@@ -460,16 +460,17 @@ afterEach(async () => {
 });
 
 describe("Prewalk extension harness", () => {
-	it("registers the OMP-compatible todo tool and public lifecycle handlers", () => {
+	it("registers an always-available todo tool and public lifecycle handlers", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 
 		expect(harness.tools.has(PREWALK_TODO_TOOL_NAME)).toBe(true);
 		expect(harness.commands.has("prewalk")).toBe(true);
 		expect(harness.commands.has("todos")).toBe(false);
-		expect(harness.tools.get(PREWALK_TODO_TOOL_NAME)?.promptSnippet).toContain(
-			"`init` replaces the list",
-		);
+		expect(harness.tools.get(PREWALK_TODO_TOOL_NAME)?.promptSnippet).toBeUndefined();
+		await expect(
+			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("todo-1", { op: "view" }),
+		).rejects.toThrow("inactive");
 		expect(harness.handlers.has("session_start")).toBe(true);
 		expect(harness.handlers.has("context")).toBe(true);
 		expect(harness.handlers.has("session_before_compact")).toBe(true);
@@ -548,7 +549,12 @@ describe("Prewalk extension harness", () => {
 			messages: [{ ...assessment, role: "custom", timestamp: 1 }],
 		});
 		expect((visible as { messages: unknown[] }).messages).toHaveLength(1);
-		expect(harness.activeTools()).toEqual(["read", "edit", "prewalk_assess"]);
+		expect(harness.activeTools()).toEqual([
+			"read",
+			"edit",
+			PREWALK_TODO_TOOL_NAME,
+			"prewalk_assess",
+		]);
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -617,7 +623,7 @@ describe("Prewalk extension harness", () => {
 		await harness.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "bypass" });
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
-		expect(harness.activeTools()).toEqual(["read", "grep"]);
+		expect(harness.activeTools()).toEqual(["read", "grep", PREWALK_TODO_TOOL_NAME]);
 		expect(harness.messages).toEqual([]);
 		expect(harness.entries.filter((entry) => entry.customType === "prewalk-audit")).toEqual([]);
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
@@ -764,7 +770,7 @@ describe("Prewalk extension harness", () => {
 			"Build an end-to-end feature across multiple concerns",
 		);
 		await cancelled.commands.get("prewalk")?.("cancel", cancelled.context);
-		expect(cancelled.activeTools()).toEqual(["read", "edit"]);
+		expect(cancelled.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 		await expect(
 			cancelled.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
 		).rejects.toThrow("inactive");
@@ -778,7 +784,7 @@ describe("Prewalk extension harness", () => {
 		restored.setBranch(auditBranch(first));
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
-		expect(restored.activeTools()).toEqual(["read", "edit"]);
+		expect(restored.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 		expect(restored.messages).toEqual([]);
 	});
 
@@ -810,7 +816,7 @@ describe("Prewalk extension harness", () => {
 				systemPromptOptions: {},
 			});
 		}
-		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
 		expect(harness.messages).toEqual([]);
 	});
 
@@ -829,7 +835,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.tools.has("prewalk_todo")).toBe(true);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
 
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
@@ -874,7 +880,7 @@ describe("Prewalk extension harness", () => {
 		).toBe(false);
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
-		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
 	});
 
 	it("restores a foreign todo slate after a same-session reload", async () => {
@@ -900,7 +906,7 @@ describe("Prewalk extension harness", () => {
 		expect(restored.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 
 		await restored.commands.get("prewalk")?.("cancel", restored.context);
-		expect(restored.activeTools()).toEqual(["read", "todo", "edit"]);
+		expect(restored.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
 	});
 
 	it("refuses to arm when Conversion native Responses compaction is enabled", async () => {
@@ -2524,7 +2530,7 @@ describe("Prewalk extension harness", () => {
 			source: "user",
 			model: evaluation.executor,
 		});
-		expect(evaluation.activeTools()).toEqual(["read", "edit"]);
+		expect(evaluation.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 		expect(evaluation.statuses.at(-1)).toBe("prewalk: auto-ready");
 		await evaluation.emit("input", {
 			type: "input",
@@ -2554,7 +2560,7 @@ describe("Prewalk extension harness", () => {
 			model: active.executor,
 		});
 		expect(active.providerConfig()?.streamSimple).toBe(active.baseStream);
-		expect(active.activeTools()).toEqual(["edit", "write", "bash"]);
+		expect(active.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
 		expect(active.statuses.at(-1)).toBe("prewalk: auto-ready");
 		await active.emit("input", {
 			type: "input",

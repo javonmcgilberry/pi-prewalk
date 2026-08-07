@@ -16,7 +16,7 @@ const result = {
 	artifactId: "candidate-0.83.1-12345",
 	summary: "All public compatibility checks passed.",
 	dependencies: {
-		"@howaboua/pi-codex-conversion": "3.0.3",
+		"@howaboua/pi-codex-conversion": "3.0.10",
 		"@earendil-works/pi-coding-agent": "0.83.1",
 	},
 } satisfies CandidateResult;
