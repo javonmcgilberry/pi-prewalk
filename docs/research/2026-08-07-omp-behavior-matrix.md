@@ -9,7 +9,8 @@ References are `file:line` at the time of writing.
 - **OMP** — `~/webdev/oh-my-pi`, `packages/coding-agent/src/session/prewalk.ts`
   and neighbors.
 - **Stock Pi** — `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai`
-  at 0.82.1, read from `node_modules`.
+  at 0.84.1, read from `node_modules`. Line numbers move between Pi releases;
+  the same statements sit 3 lines earlier at 0.82.1.
 - **This extension** — `extensions/prewalk.ts`, `src/`.
 
 ## Relationship to the pinned parity fixture
@@ -43,8 +44,9 @@ the executor, and every model-aware subsystem follows automatically.
 
 An extension cannot do that. Stock Pi's public `setModel` writes the user's
 saved default (`agent-session.js:1197` calls `setDefaultModelAndProvider` at
-`:1205`), so using it would change the model for every future session. That was
-confirmed still true in 0.84.1, not only 0.82.1. The limitation is recorded in
+`:1205`), so using it would change the model for every future session. Checked
+again at 0.84.1: `ExtensionAPI` still declares no session-only model setter. The
+limitation is recorded in
 `docs/research/prewalk-extension-only-feasibility.md`.
 
 So Prewalk keeps the planner selected and overlays the provider's
@@ -69,7 +71,8 @@ Several rows below are consequences of that, not preferences.
 | 11 | Default executor | `smol` role, resolved from a priority list | One configured `executor` in `prewalk.json` | **Chosen** | `priority.json`; `src/core.ts` `parseConfig` |
 | 12 | Executor auto-selected for the current planner | Yes, by role resolution | No, explicit config only | **Gap** | `commit/model-selection.ts:82`; no equivalent here |
 | 13 | Executor context window must be >= planner's | No such rule | Yes, enforced at startup | **Forced** | no OMP check; `extensions/prewalk.ts` `validateModels` |
-| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | No, Pi sizes against the planner | **Forced** | `agent-session.js:1515` uses `this.model` |
+| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | No, Pi sizes against the planner | **Forced** | `agent-session.js:1517` uses `this.model` |
+| 14b | Context-overflow *recovery* covers the executor | Yes | No, the check is skipped entirely | **Forced** | `agent-session.js:1522` `sameModel` gate |
 | 15 | Same model + same effort handoff | Graceful no-op with a notice | Hard `configuration-invalid` error | **Divergence** | `thinking.ts:169` `prewalkWouldBeNoop`; `validateModels` |
 | 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `validateModels` allows differing reasoning |
 | 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | Fails the run with a reason code | **Divergence** | `task/executor.ts:2706`; `fail("authorization-unavailable")` |
@@ -100,15 +103,25 @@ assistant message:
 - errored and aborted assistant turns are skipped
 - orphaned tool calls receive synthetic results
 
-Verified by direct execution against the installed 0.82.1 build, for
-anthropic to openai, openai to anthropic, and anthropic to google. Every pair
-converted without throwing, and tool call/result pairing survived.
+Verified by direct execution, first against 0.82.1 and re-run unchanged against
+0.84.1, for anthropic to openai, openai to anthropic, and anthropic to google.
+Every pair converted without throwing, and tool call/result pairing survived.
 
 **The load-bearing detail:** `openai/sol -> openai/luna`, a same-provider pair on
-two different model ids, takes the *identical* path and loses the same
-signatures. The shipped Sol-to-Luna default already replays degraded history
-today. Cross-provider therefore introduces no new degradation, which is what
-makes row 9 safe rather than merely possible.
+two different model ids, takes the *identical* `isSameModel === false` branch and
+loses the same signatures. The shipped Sol-to-Luna default already replays
+degraded history today, so cross-provider introduces no new degradation for the
+API families named above. That is what makes row 9 safe rather than merely
+possible.
+
+The claim is deliberately scoped. `transformMessages` is the shared generic
+pass; the final wire conversion still belongs to each target API adapter
+(`anthropic-messages.js`, `openai-responses-shared.js`, `google-shared.js`), so
+a cross-API pair does not take a byte-identical path end to end — only an
+identical generic-normalization path. Transports that forward context to a
+backend without their own normalization, such as `pi-messages.js`, and any
+provider a third party registers, are outside what was tested. Treat those as
+unverified rather than supported.
 
 An earlier draft of this document claimed `openai-responses-shared.js` would
 throw on a foreign `thinkingSignature` via an unguarded `JSON.parse`. That was
@@ -118,12 +131,23 @@ read.
 
 ## Where the differences are worth keeping
 
-Rows 13 and 14 travel together. Pi decides compaction against its selected
-model, and Prewalk's selected model stays the planner for the whole run, so a
-smaller executor would receive requests that no automatic compaction is
-watching. OMP does not need the rule because its switch is real. Removing row 13
-without building a compaction watchdog against the executor's true window would
-trade a clear startup error for provider errors mid-run.
+Rows 13, 14, and 14b travel together, and the picture is worse than compaction
+sizing alone. Pi sizes compaction against its selected model, which stays the
+planner. Pi's *overflow recovery* is then gated on `sameModel`
+(`agent-session.js:1522`), comparing the assistant message's provider and model
+against the selected model. Replies produced by the executor carry the
+executor's identity while the selected model is the planner, so that comparison
+is false and the overflow branch never runs. During the executor phase Prewalk
+therefore has neither executor-sized compaction nor executor overflow recovery.
+
+The context-window floor is the only thing standing in for both, and it is a
+conservative guard rather than a proof. Equal nominal windows do not guarantee
+equal usable history, because tokenizers differ across families, so a pair that
+passes the floor can still overflow the executor. Built-in providers clamp
+output with `clampMaxTokensToContext` (`pi-ai/dist/api/simple-options.js`),
+which covers the reserve for those families but not for a custom transport.
+Removing the floor without executor-aware compaction would trade a clear startup
+error for provider errors mid-run.
 
 Rows 15 and 17 are stricter than OMP on purpose: this extension holds a provider
 registration, so it prefers refusing a run to leaving an overlay installed in a
@@ -149,3 +173,10 @@ failure; automatic selection would remove the surprise.
   lists are the only in-repo signal.
 - Rows 5, 6, 7, 8, 18, 19, 20 were checked against OMP source but not executed
   in a live OMP session.
+- Cross-family replay through `pi-messages.js` or any third-party registered
+  transport. Only the three built-in adapters above were executed.
+- Whether a tokenizer difference between two equal-window models can overflow
+  the executor in practice. The mechanism is real; the frequency is unmeasured.
+- The overlay resolves the executor model and its transport once at `install()`.
+  Behavior when the executor's provider is replaced or unregistered mid-run is
+  untested, and no drift check covers it the way one covers the planner.
