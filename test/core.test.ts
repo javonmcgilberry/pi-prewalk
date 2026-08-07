@@ -128,6 +128,42 @@ describe("OMP coordinator behavior", () => {
 		});
 	});
 
+	// OMP parity: "requires a fresh todo before a later explicit prewalk can hand
+	// off". Todo ownership must not carry over from a finished run, or a second
+	// arm would hand the executor work that never got planned.
+	it("requires a fresh todo before a later arm can hand off", () => {
+		const coordinator = new PrewalkCoordinator();
+		coordinator.arm("first", "epoch", "automatic", true, planner, config);
+		coordinator.onTurnEnd({ todoSucceeded: true });
+		coordinator.onTurnEnd({
+			todoSucceeded: false,
+			mutation: { toolCallId: "first-edit", toolName: "edit" },
+		});
+		coordinator.activateExecutor();
+		coordinator.completeHandoff();
+		coordinator.reset();
+
+		coordinator.arm("second", "epoch", "automatic", true, planner, config);
+		expect(
+			coordinator.onTurnEnd({
+				todoSucceeded: false,
+				mutation: { toolCallId: "stale", toolName: "edit" },
+			}),
+		).toEqual({ type: "send-planning" });
+		expect(coordinator.run?.phase).toBe("planning");
+
+		coordinator.onTurnEnd({ todoSucceeded: true });
+		expect(
+			coordinator.onTurnEnd({
+				todoSucceeded: false,
+				mutation: { toolCallId: "fresh", toolName: "edit" },
+			}),
+		).toEqual({
+			type: "handoff",
+			trigger: { toolCallId: "fresh", toolName: "edit" },
+		});
+	});
+
 	it("bypasses todo when the tool is inactive", () => {
 		const coordinator = new PrewalkCoordinator();
 		coordinator.arm("run", "epoch", "automatic", false, planner, config);
