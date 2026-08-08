@@ -72,9 +72,9 @@ describe("executor chain resolution", () => {
 		]);
 	});
 
-	it("skips an executor smaller than the planner it takes over from", async () => {
-		// Pi compacts against the planner for the whole run, so a smaller executor
-		// would receive requests nothing is watching.
+	it("accepts an executor smaller than the planner it takes over from", async () => {
+		// The provider overlay now preflights the exact request against this smaller
+		// window and triggers stock Pi compaction before transport.
 		const glm = model("cerebras", "zai-glm-4.7", 131_072);
 		const flash = model("google", "gemini-3.5-flash", 1_048_576);
 		const result = await resolveExecutorChain(
@@ -86,8 +86,8 @@ describe("executor chain resolution", () => {
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		expect(result.executor).toEqual(candidate("google", "gemini-3.5-flash"));
-		expect(result.skipped[0]?.reason).toBe("context-window-too-small");
+		expect(result.executor).toEqual(candidate("cerebras", "zai-glm-4.7"));
+		expect(result.skipped).toEqual([]);
 	});
 
 	it("skips the planner's own model at the planner's own effort", async () => {

@@ -96,6 +96,7 @@ const REASON_CODES = new Set([
 	"provider-drift",
 	"todo-conflict",
 	"executor-stream-failed",
+	"executor-compaction-failed",
 	"native-compaction-unsupported",
 	"manual-release",
 ]);

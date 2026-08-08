@@ -4,6 +4,7 @@ import {
 	type AssistantMessageEventStream,
 	type Context,
 	createAssistantMessageEventStream,
+	isContextOverflow,
 	type Model,
 	type ProviderEnv,
 	type ProviderHeaders,
@@ -12,6 +13,7 @@ import {
 import { streamSimple as builtinStreamSimple } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import type { PlannerProfile, PrewalkConfig } from "./core.js";
+import { estimateExecutorRequestTokens, needsExecutorCompaction } from "./executor-context.js";
 
 type StreamSimple = NonNullable<ProviderConfig["streamSimple"]>;
 type ResolvedExecutorAuth = {
@@ -28,6 +30,7 @@ export interface ProviderOverlayState {
 	onExecutorStreamStarted(runId: string): void | Promise<void>;
 	onExecutorStreamSucceeded(runId: string): void | Promise<void>;
 	onExecutorStreamFailed(runId: string): void | Promise<void>;
+	onExecutorContextPressure(runId: string, retry: boolean): void | Promise<void>;
 	onProviderDrift(): void;
 }
 
@@ -47,6 +50,7 @@ function forwardStream(
 	executor: Model<Api>,
 	onSucceeded: () => void | Promise<void>,
 	onFailed: () => void | Promise<void>,
+	onContextPressure: (retry: boolean) => void | Promise<void>,
 ): AssistantMessageEventStream {
 	const forwarded = createAssistantMessageEventStream();
 	void (async () => {
@@ -58,15 +62,37 @@ function forwardStream(
 					started = true;
 					forwarded.push(event);
 				} else if (event.type === "done") {
-					await settleCallback(onSucceeded);
-					terminal = true;
-					forwarded.push(event);
+					if (isContextOverflow(event.message, executor.contextWindow)) {
+						const retry = event.message.stopReason !== "stop";
+						await settleCallback(() => onContextPressure(retry));
+						terminal = true;
+						if (retry) {
+							const error = executorContextPressureMessage(executor);
+							if (!started) forwarded.push({ type: "start", partial: error });
+							forwarded.push({ type: "error", reason: "error", error });
+						} else {
+							await settleCallback(onSucceeded);
+							forwarded.push(event);
+						}
+					} else {
+						await settleCallback(onSucceeded);
+						terminal = true;
+						forwarded.push(event);
+					}
 				} else if (event.type === "error") {
-					await settleCallback(onFailed);
-					terminal = true;
-					const error = failedAssistantMessage(executor);
-					if (!started) forwarded.push({ type: "start", partial: error });
-					forwarded.push({ type: "error", reason: "error", error });
+					if (isContextOverflow(event.error, executor.contextWindow)) {
+						await settleCallback(() => onContextPressure(true));
+						terminal = true;
+						const error = executorContextPressureMessage(executor);
+						if (!started) forwarded.push({ type: "start", partial: error });
+						forwarded.push({ type: "error", reason: "error", error });
+					} else {
+						await settleCallback(onFailed);
+						terminal = true;
+						const error = event.error;
+						if (!started) forwarded.push({ type: "start", partial: error });
+						forwarded.push({ type: "error", reason: "error", error });
+					}
 				} else {
 					forwarded.push(event);
 				}
@@ -110,6 +136,28 @@ function failedAssistantMessage(executor: Model<Api>): AssistantMessage {
 		errorMessage: "Prewalk executor provider stream failed.",
 		timestamp: Date.now(),
 	};
+}
+
+function executorContextPressureMessage(executor: Model<Api>): AssistantMessage {
+	return {
+		...failedAssistantMessage(executor),
+		errorMessage: "Prewalk executor context requires compaction.",
+	};
+}
+
+function contextPressureStream(
+	executor: Model<Api>,
+	onPressure: () => void | Promise<void>,
+): AssistantMessageEventStream {
+	const stream = createAssistantMessageEventStream();
+	void (async () => {
+		await settleCallback(onPressure);
+		const error = executorContextPressureMessage(executor);
+		stream.push({ type: "start", partial: error });
+		stream.push({ type: "error", reason: "error", error });
+		stream.end();
+	})();
+	return stream;
 }
 
 function executorOptions(
@@ -209,6 +257,12 @@ export function createProviderOverlay(
 				throw new Error("Prewalk executor model is no longer registered.");
 			}
 			const { model: executorModel, delegate: executorDelegate } = resolved;
+			const executorContextTokens = estimateExecutorRequestTokens(context);
+			if (needsExecutorCompaction(executorContextTokens, executorModel)) {
+				return contextPressureStream(executorModel, () =>
+					state.onExecutorContextPressure(runId, true),
+				);
+			}
 			return forwardStream(
 				(async () => {
 					const auth = await modelRegistry.getApiKeyAndHeaders(executorModel);
@@ -224,6 +278,7 @@ export function createProviderOverlay(
 				executorModel,
 				() => state.onExecutorStreamSucceeded(runId),
 				() => state.onExecutorStreamFailed(runId),
+				(retry) => state.onExecutorContextPressure(runId, retry),
 			);
 		};
 

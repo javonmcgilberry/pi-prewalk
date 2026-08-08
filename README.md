@@ -44,9 +44,9 @@ savings or quality.
 
 ## Requirements
 
-- An authorized executor whose context window is at least the planner's. It may
-  be the planner's own model at a lower reasoning level, or a model on another
-  provider
+- An authorized executor with a usable context window and output capacity. It
+  may be smaller than the planner; Prewalk estimates each executor request and
+  compacts before sending one that crosses the executor's reserve
 - No other extension registered as `prewalk_todo`
 - Pi Codex Conversion native Responses compaction disabled when that extension
   is installed
@@ -62,7 +62,10 @@ active Prewalk run fail without changing the checklist. During a run, the
 hidden planning and executor prompts explain how to use it.
 
 An optional `executorFallbacks` array lists alternates to try in order when the
-primary executor is unavailable:
+primary executor is unavailable. If the field is omitted, Prewalk infers an
+ordered chain from Oh My Pi's built-in `smol` preference patterns and the models
+registered in the current Pi session. An explicit empty array disables that
+inference; a non-empty array is used exactly as written.
 
 ```json
 {
@@ -73,21 +76,26 @@ primary executor is unavailable:
 }
 ```
 
-Prewalk takes the first candidate that is registered, authorized, large enough,
-and not the model already running at the same reasoning level. When none
-qualifies it stays unarmed and names each candidate it passed over, leaving the
-session on its planner instead of failing the run.
+Prewalk takes the first candidate that is registered, authorized, has output
+capacity, and is not the model already running at the same reasoning level.
+When none qualifies it stays unarmed and names each candidate it passed over,
+leaving the session on its planner instead of failing the run.
 
 A handoff to a different model always replays history without that model's own
 reasoning signatures, because Pi keeps signed reasoning only for an exact model
 match. That applies equally to the same-provider default pair, so a
 cross-provider pair does not lose anything extra.
 
-The executor must not have a smaller context window than the planner. Pi sizes
-automatic compaction against its selected model, and Prewalk keeps the planner
-selected for the whole run, so a smaller executor would receive requests that no
-compaction is watching. `docs/research/2026-08-07-omp-behavior-matrix.md` records
-this and the other differences from Oh My Pi's built-in prewalk.
+The executor may have a smaller context window than the planner. Pi still keeps
+the planner selected, so Prewalk adds a request-time watchdog using stock Pi's
+default 16,384-token compaction reserve. It prevents an oversized executor
+request from reaching the provider, triggers Pi's public compaction API, and
+retries the hidden executor checklist once when the blocked or failed request
+needs a replay. A completed over-window response is compacted without
+duplicating its answer; if the executor is still oversized after that retry,
+Prewalk fails safely instead of looping. The behavior matrix records the
+remaining limits of this public-API implementation:
+`docs/research/2026-08-07-omp-behavior-matrix.md`.
 
 ## Why Prewalk is not plan mode
 
@@ -157,8 +165,9 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 ```
 
 The config is strict. Unknown fields fail closed. `/prewalk configure` writes a
-valid config atomically and only shows executor models compatible with Pi's
-currently selected planner. It never stores or changes the planner.
+valid config atomically and shows executor models with usable output capacity;
+the executor can have a smaller context window because the watchdog protects
+its requests. It never stores or changes the planner.
 
 ## Use it
 
@@ -185,6 +194,11 @@ After handoff, later turns stay on the executor, including after `/reload` in
 the same live Pi session. `/prewalk release` restores the planner in the same
 transcript. Closing and reopening Pi starts on the planner; an old unfinished
 receipt is recorded as interrupted rather than silently restoring the route.
+
+If an executor provider fails for a reason other than context pressure, Prewalk
+restores the planner, preserves the transcript and analytics receipt, and keeps
+the failure visible in `/prewalk status`. It does not replay a possibly partial
+tool turn automatically; use `/prewalk run` to start a new safe attempt.
 
 ## What triggers the handoff
 
@@ -237,19 +251,16 @@ a positively proven code mutation.
 ### Context limits and compaction
 
 Prewalk removes its planning-only prompt before handoff and from the text Pi
-sends to its summarizer. It does not control Pi's agent loop or auto-compaction.
-In the supported stock Pi releases, Pi checks the compaction threshold after a
-run ends and before it sends a new prompt. A long chain of tool calls or queued
-Prewalk follow-ups can all be part of one run, so the context can pass the
-reserved limit before that check runs. The provider may reject a later request
-first.
-
-That boundary belongs in Pi core, not in this extension. Prewalk must not call
-`ctx.compact()` from a turn hook as a workaround. It aborts the active run and
-does not safely resume its tool calls. Use a Pi build with mid-run compaction
-support when available, or compact before a task you know will run for a long
-time. This limit does not mean that Prewalk's hidden planning prompt leaked
-into the context.
+sends to its summarizer. Pi still sizes its own automatic compaction against the
+selected planner, so Prewalk supplements it for the executor: the overlay
+estimates the exact outgoing context, blocks a request above the executor's
+reserve, and the turn boundary calls public `ctx.compact()` before retrying the
+checklist once when a replay is needed. A completed response may compact without
+a retry, so the answer is not duplicated. A second unchanged pressure failure,
+or failed/cancelled compaction, leaves the session on the planner instead of
+looping. This protection does not mean that prompt-cache reads survive a
+model/provider switch; the executor receives the history, but its provider may
+charge those input tokens as a cache miss.
 
 ### Experimental child-local Prewalk
 

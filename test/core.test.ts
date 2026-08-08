@@ -39,6 +39,13 @@ describe("provider-neutral configuration", () => {
 		});
 	});
 
+	it("preserves an explicit empty fallback chain as an opt-out of inference", () => {
+		expect(parseConfig({ ...config, executorFallbacks: [] })).toMatchObject({
+			executor: DEFAULT_EXECUTOR,
+			executorFallbacks: [],
+		});
+	});
+
 	it("rejects a malformed executor fallback chain", () => {
 		expect(() => parseConfig({ ...config, executorFallbacks: {} })).toThrow(
 			"Prewalk config executorFallbacks must be an array.",
@@ -204,6 +211,22 @@ describe("OMP coordinator behavior", () => {
 		coordinator.onTurnEnd({ todoSucceeded: true });
 		expect(coordinator.requestContinuation(false)).toEqual({ type: "none" });
 		expect(coordinator.requestContinuation(true)).toEqual({ type: "send-continuation" });
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
+	});
+
+	it("does not continue a handoff, failed run, or cancelled run", () => {
+		const coordinator = new PrewalkCoordinator();
+		coordinator.arm("run", "epoch", "automatic", true, planner, config);
+		coordinator.onTurnEnd({ todoSucceeded: true });
+		coordinator.onTurnEnd({
+			todoSucceeded: false,
+			mutation: { toolCallId: "edit", toolName: "edit" },
+		});
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
+
+		coordinator.fail("provider-stream-failed", false);
+		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
+		coordinator.cancel(true);
 		expect(coordinator.requestContinuation(true)).toEqual({ type: "none" });
 	});
 

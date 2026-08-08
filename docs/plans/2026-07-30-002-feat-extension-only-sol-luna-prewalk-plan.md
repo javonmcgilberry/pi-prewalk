@@ -12,6 +12,12 @@ deepened: 2026-07-30
 
 # Standalone Extension-Only Prewalk with Optional Provider Composition
 
+> **Historical plan notice (2026-08-08):** This planning artifact predates the
+> cross-provider executor work and the executor-context watchdog. Its current
+> implementation claims are preserved as planning history, not as the release
+> contract. Use [`docs/research/2026-08-07-omp-behavior-matrix.md`](../research/2026-08-07-omp-behavior-matrix.md)
+> and `README.md` for the current behavior and remaining boundaries.
+
 ## Goal Capsule
 
 Deliver a faithful extension-only reproduction of Oh My Pi's current Prewalk behavior that works on stock Pi without `pi-codex-conversion` or any other third-party provider extension. Sol-to-Luna remains the default and benchmark pair: Sol establishes the implementation trajectory, then Luna inherits the same live transcript after the OMP handoff gate while Pi continues to select and save Sol.
@@ -133,7 +139,7 @@ The current dirty provider-overlay implementation incorrectly throws when an `op
 
 - R19. The provider overlay must capture the effective public provider implementation before installation. It delegates through stock Pi or a captured config-based `streamSimple`, installs a wrapper with the configured API, validates terminal provider/model identity, and restores the captured stream only while its wrapper still owns the current stream slot. If a later config-only registration changes other fields but leaves Prewalk's wrapper installed, cleanup preserves those newer fields while restoring the captured stream. If another stream or native provider takes ownership, Prewalk leaves it untouched. It must not depend on the local fork-only `streamImplementationId` API.
 
-- R20. Planner and executor models must resolve through Pi's public model registry with independent authorization. The configured pair must share provider and API, the executor context window must be at least the planner context window, and the executor must support the configured reasoning level. Model metadata and auth validate when arming. Immediately before committing the route, Prewalk validates the fully prepared executor request, including its checklist and output reserve, against executor capacity. An unexpected later executor overflow is reported visibly with compact-and-retry guidance and never triggers a hidden model fallback or retry.
+- R20. Planner and executor models must resolve through Pi's public model registry with independent authorization. The pair may use different providers and APIs, and a smaller executor is allowed because Prewalk validates the exact outgoing request against the executor's context reserve immediately before transport. Model metadata and auth validate when arming. Executor pressure triggers public Pi compaction and a bounded checklist retry; a later provider-native overflow remains visible rather than silently selecting a different model.
 
 - R21. Executor-authored assistant messages and usage records retain the executor's actual provider and model identity even though Pi continues to select and save the planner.
 

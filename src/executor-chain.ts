@@ -13,7 +13,6 @@ export interface ExecutorProbe {
 export type ExecutorRejection =
 	| "not-registered"
 	| "authorization-unavailable"
-	| "context-window-too-small"
 	| "output-capacity-unavailable"
 	| "same-as-planner";
 
@@ -76,12 +75,6 @@ async function evaluate(
 ): Promise<CandidateOutcome> {
 	const executor = probe.find(candidate.provider, candidate.model);
 	if (!executor) return { viable: false, reason: "not-registered" };
-	// Pi sizes compaction against its selected model, which stays the planner for
-	// the whole run, so a smaller executor would take requests that no automatic
-	// compaction is watching.
-	if (executor.contextWindow < planner.contextWindow) {
-		return { viable: false, reason: "context-window-too-small" };
-	}
 	if (executor.maxTokens <= 0) return { viable: false, reason: "output-capacity-unavailable" };
 	// Handing off to the running model at the same effort is a no-op that still
 	// costs a planning nudge and a checklist. A different effort is a real

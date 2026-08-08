@@ -1,5 +1,5 @@
 {
-  "test": "npx vitest run test/provider-overlay.test.ts test/agent-loop.test.ts test/executor-chain.test.ts",
+  "test": "npx vitest run test/provider-overlay.test.ts test/extension.test.ts test/agent-loop.test.ts test/core.test.ts test/executor-chain.test.ts test/executor-context.test.ts",
   "mutations": [
     {
       "name": "executor rides the planner's transport instead of its own",
@@ -26,16 +26,76 @@
       "replace": "\tif (!(await probe.hasAuth(executor))) {\n\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t}"
     },
     {
-      "name": "an executor smaller than the planner is accepted",
-      "file": "src/executor-chain.ts",
-      "find": "\tif (executor.contextWindow < planner.contextWindow) {\n\t\treturn { viable: false, reason: \"context-window-too-small\" };\n\t}",
-      "replace": ""
-    },
-    {
       "name": "the planner's own model at its own effort is accepted as a no-op handoff",
       "file": "src/executor-chain.ts",
       "find": "\t\treturn { viable: false, reason: \"same-as-planner\" };",
       "replace": "\t\treturn { viable: true, model: executor };"
+    },
+    {
+      "name": "an oversized executor request reaches transport instead of compaction",
+      "file": "src/provider-overlay.ts",
+      "find": "\t\t\tif (needsExecutorCompaction(executorContextTokens, executorModel)) {",
+      "replace": "\t\t\tif (false) {"
+    },
+    {
+      "name": "executor threshold compaction is skipped after a turn",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\t\t\t\t\trequestExecutorCompaction(ctx, event.message.stopReason !== \"stop\");",
+      "replace": ""
+    },
+    {
+      "name": "executor pressure compaction queues a duplicate checklist",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\t\t!pendingExecutorCompaction &&\n\t\t\trun?.effectiveRoute",
+      "replace": "\t\t\trun?.effectiveRoute"
+    },
+    {
+      "name": "a settled executor failure is reported as a successful run",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\tconst failedRun = run.phase === \"failed\";\n\t\tawait finalizeAnalytics(failedRun ? \"failed\" : \"succeeded\");",
+      "replace": "\t\tconst failedRun = false;\n\t\tawait finalizeAnalytics(failedRun ? \"failed\" : \"succeeded\");"
+    },
+    {
+      "name": "agent settlement resets a handoff while executor compaction is pending",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\tif (pendingExecutorCompaction) {",
+      "replace": "\t\tif (false) {"
+    },
+    {
+      "name": "a retryable executor failure immediately tears down the route",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\t\tpendingExecutorFailureRunId = runId;",
+      "replace": "\t\t\tfail(\"executor-stream-failed\", coordinator.run?.effectiveRoute === \"executor\", ctx);"
+    },
+    {
+      "name": "a completed executor response always retries the checklist",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\t\t\t\tif (request.retry) {",
+      "replace": "\t\t\t\t\tif (true) {"
+    },
+    {
+      "name": "an executor compaction retry can loop forever",
+      "file": "extensions/prewalk.ts",
+      "find": "\t\tif (\n\t\t\tretry &&\n\t\t\texecutorCompactionRetry?.runId === run.id &&\n\t\t\texecutorCompactionRetry.count >= 1\n\t\t) {",
+      "replace": "\t\tif (false) {"
+    },
+    {
+      "name": "stale executor usage hides current prompt and tool growth",
+      "file": "src/executor-context.ts",
+      "find": "\treturn Math.max(tokens, estimateWholeRequest(context));",
+      "replace": "\treturn tokens;"
+    },
+    {
+      "name": "a transient executor error is discarded before Pi can retry",
+      "file": "src/provider-overlay.ts",
+      "find": "\t\t\t\t\t\tconst error = event.error;",
+      "replace": "\t\t\t\t\t\tconst error = failedAssistantMessage(executor);"
+    },
+    {
+      "name": "a failed or handoff-pending run receives a continuation",
+      "file": "src/core.ts",
+      "find": "\t\t\t(run.phase !== \"planning\" && run.phase !== \"ready\") ||",
+      "replace": "\t\t\tfalse ||"
     }
   ]
 }

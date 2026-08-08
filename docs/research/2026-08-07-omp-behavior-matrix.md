@@ -68,12 +68,12 @@ Several rows below are consequences of that, not preferences.
 | 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | `pi.on("context")` filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts` context hook |
 | 9 | Cross-provider planner/executor | Yes, and it is the default | **Yes, as of this change** | Same | `priority.json` `smol`; `src/provider-overlay.ts` executor delegate |
 | 10 | Cross-API planner/executor | Yes | Yes | Same | see "Cross-provider evidence" below |
-| 11 | Default executor | `smol` role, resolved from a priority list | Configured `executor` plus an ordered `executorFallbacks` chain | **Chosen** | `priority.json`; `src/core.ts` `parseConfig` |
-| 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks the configured chain** | Same | `model-resolver.ts:966`; `src/executor-chain.ts` |
-| 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | No, the chain is written by hand | **Gap** | `priority.json`; no built-in default chain here |
-| 13 | Executor context window must be >= planner's | No such rule | Yes, enforced per candidate | **Forced** | no OMP check; `src/executor-chain.ts` `context-window-too-small` |
-| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | No, Pi sizes against the planner | **Forced** | `agent-session.js:1517` uses `this.model` |
-| 14b | Context-overflow *recovery* covers the executor | Yes | No, the check is skipped entirely | **Forced** | `agent-session.js:1522` `sameModel` gate |
+| 11 | Default executor | `smol` role, resolved from a priority list | Configured `executor` plus inferred or explicit ordered fallbacks | **Chosen** | OMP `priority.json`; `src/default-executors.ts`; `src/core.ts` |
+| 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks inferred or configured chain** | Same | OMP `model-resolver.ts:966`; `src/executor-chain.ts` |
+| 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | **Yes, from OMP's `smol` patterns; explicit `[]` opts out** | Same outcome | OMP `priority.json`; `src/default-executors.ts`; `test/extension.test.ts` |
+| 13 | Executor context window must be >= planner's | No such rule | **No startup floor; request-time executor guard** | Same outcome with safety guard | `src/executor-chain.ts`; `src/executor-context.ts`; `test/extension.test.ts` |
+| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor reserve watchdog supplements planner-sized Pi compaction** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/provider-overlay.ts`; `extensions/prewalk.ts` |
+| 14b | Context-overflow *recovery* covers the executor | Yes | **Preflight and failed detectable overflow compact and retry; completed over-window responses compact without replay; unknown native overflow remains outside Pi's `sameModel` path** | Partial parity | OMP `agent-session.js:1522`; `src/provider-overlay.ts`; `test/provider-overlay.test.ts` |
 | 15 | Same model + same effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `same-as-planner` |
 | 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares reasoning before rejecting |
 | 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | **Stays unarmed with a notice, session continues** | Same | `main.ts:1007-1019` (issue #6064); `unavailableExecutorNotice` |
@@ -152,23 +152,25 @@ read.
 
 ## Where the differences are worth keeping
 
-Rows 13, 14, and 14b travel together, and the picture is worse than compaction
-sizing alone. Pi sizes compaction against its selected model, which stays the
-planner. Pi's *overflow recovery* is then gated on `sameModel`
-(`agent-session.js:1522`), comparing the assistant message's provider and model
-against the selected model. Replies produced by the executor carry the
-executor's identity while the selected model is the planner, so that comparison
-is false and the overflow branch never runs. During the executor phase Prewalk
-therefore has neither executor-sized compaction nor executor overflow recovery.
+Rows 13, 14, and 14b travel together. Pi still sizes automatic compaction against
+its selected model, which stays the planner. Pi's *provider-native overflow
+recovery* is gated on `sameModel` (`agent-session.js:1522`), comparing the
+assistant message's provider and model against the selected model. Replies
+produced by the executor carry the executor's identity while the selected model
+is the planner, so that branch still does not run.
 
-The context-window floor is the only thing standing in for both, and it is a
-conservative guard rather than a proof. Equal nominal windows do not guarantee
-equal usable history, because tokenizers differ across families, so a pair that
-passes the floor can still overflow the executor. Built-in providers clamp
-output with `clampMaxTokensToContext` (`pi-ai/dist/api/simple-options.js`),
-which covers the reserve for those families but not for a custom transport.
-Removing the floor without executor-aware compaction would trade a clear startup
-error for provider errors mid-run.
+Prewalk now closes the practical request-safety gap through public seams: it
+estimates the exact context sent to the executor, blocks a request above the
+executor's default reserve, triggers Pi's public compaction API at the turn
+boundary, and retries the hidden checklist once when a blocked or failed
+request needs replay. A completed response may compact without replay; a second
+unchanged pressure failure stops the run rather than looping. It also
+supplements Pi's planner threshold after executor turns. This removes the
+blanket context-window floor without pretending to own every provider-native
+overflow branch. A provider
+with a tokenizer or error format that defeats the conservative estimate and
+Pi AI's overflow detector can still report an overflow that stock Pi will not
+recover automatically; that is the remaining 14b boundary.
 
 Rows 15 and 17 used to be stricter than OMP: an unusable executor failed the
 whole run. That is no longer the case. Oh My Pi shipped the strict version too
@@ -181,12 +183,12 @@ The planner keeps the strict treatment. A missing or unauthorized *planner* is
 not a degraded hand-off, it is a session with nothing to hand off from, so
 `resolveExecutor` still throws for that case.
 
-Row 12b is the remaining half of that gap. Oh My Pi ships `priority.json`, so a
-user who has configured nothing still gets a sensible hand-off target and a
-chain to fall back through. Prewalk now degrades through a chain, but only one
-written by hand, so an unconfigured install still has a single point of failure.
-Shipping a default chain, ordered by the planner's provider first, would close
-it.
+Row 12b is now closed. Prewalk ships the OMP `smol` patterns, resolves them only
+against the live registry, ranks the planner's provider first, and leaves
+explicit primary/fallback configuration authoritative. An omitted
+`executorFallbacks` field gets the inferred chain; an explicit empty array
+disables inference. The patterns remain a preference order rather than an
+allowlist.
 
 One caution learned from reading Oh My Pi: `priority.json` is a *preference
 order*, not an allowlist. Nothing in `session/prewalk.ts` validates a target
@@ -207,8 +209,10 @@ starting point a user can override rather than a set of permitted models.
   in a live OMP session.
 - Cross-family replay through `pi-messages.js` or any third-party registered
   transport. Only the three built-in adapters above were executed.
-- Whether a tokenizer difference between two equal-window models can overflow
-  the executor in practice. The mechanism is real; the frequency is unmeasured.
+- Whether a provider tokenizer or custom transport can defeat the conservative
+  executor estimate and produce a native overflow in practice. The mechanism is
+  real; the frequency is unmeasured, and stock Pi still skips recovery for the
+  executor's foreign assistant identity.
 - Cross-provider routing arms correctly in a real Pi process
   (`npm run smoke:rpc-cross-provider`), but no executor request has yet been
   billed to a second provider. Arming proves resolution, registration, and

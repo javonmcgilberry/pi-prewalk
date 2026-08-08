@@ -33,7 +33,7 @@ Before a test is treated as evidence, break the behavior it covers and watch it
 fail. Do not do this by hand.
 
 ```sh
-npm run verify:teeth test/teeth/cross-provider.teeth.json
+npm run verify:teeth
 ```
 
 `scripts/verify-teeth.mjs` takes a spec listing mutations, and for each one:
@@ -73,6 +73,8 @@ extension works, because the fake is shaped by the same assumptions as the code.
 Three layers are load-bearing here:
 
 - `test/executor-chain.test.ts` — pure resolution rules
+- `test/executor-context.test.ts` and executor-focused extension tests — the
+  request-time context watchdog and compaction retry boundary
 - `scripts/smoke-rpc-cross-provider.mjs` — a real Pi process arms a real run
 - `test/agent-loop.test.ts` — a real agent loop reaches the hand-off and the
   executor's own provider receives the request

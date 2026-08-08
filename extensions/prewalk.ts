@@ -62,12 +62,14 @@ import {
 	parseConfig,
 	REASONING_LEVELS,
 } from "../src/core.js";
+import { inferDefaultExecutorChain } from "../src/default-executors.js";
 import {
 	type ExecutorChainResolution,
 	type ExecutorRejection,
 	type RejectedExecutor,
 	resolveExecutorChain,
 } from "../src/executor-chain.js";
+import { needsExecutorCompaction } from "../src/executor-context.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
@@ -580,7 +582,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 	let activeSessionId: string | undefined;
 	let autoEnabled = false;
-	let lastOutcome: "bypassed" | "completed" | "released" | undefined;
+	let lastOutcome: "bypassed" | "completed" | "failed" | "released" | undefined;
 	let pendingAdmission = false;
 	let evaluation: EvaluationState | undefined;
 	let overlay: ProviderOverlay | undefined;
@@ -592,6 +594,10 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
 	let compactionChecklistRunId: string | undefined;
+	let executorContextPressure: { runId: string; retry: boolean } | undefined;
+	let pendingExecutorCompaction: { runId: string; retry: boolean } | undefined;
+	let executorCompactionRetry: { runId: string; count: number } | undefined;
+	let pendingExecutorFailureRunId: string | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
 	const deactivatePrewalkTools = (): void => {
 		const baseline =
@@ -691,6 +697,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const enqueueAnalytics = (operation: () => Promise<void>): Promise<void> => {
 		analyticsWrites = analyticsWrites.then(operation, operation);
 		return analyticsWrites;
+	};
+
+	const resetExecutorCompactionState = (): void => {
+		executorContextPressure = undefined;
+		pendingExecutorCompaction = undefined;
+		executorCompactionRetry = undefined;
+		pendingExecutorFailureRunId = undefined;
+		compactionChecklistRunId = undefined;
 	};
 
 	const recordDelegationProjection = async (
@@ -960,6 +974,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 
 	const fail = (reasonCode: string, holdExecutorRoute: boolean, ctx: ExtensionContext): void => {
+		resetExecutorCompactionState();
 		if (!coordinator.run) {
 			if (!ctx.model) {
 				ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
@@ -996,6 +1011,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 
 	const cancel = async (selectedModelIsPlanner: boolean, ctx: ExtensionContext): Promise<void> => {
+		resetExecutorCompactionState();
 		coordinator.cancel(selectedModelIsPlanner);
 		mutations.resetForRun();
 		audit("cancelled", ctx);
@@ -1014,6 +1030,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Prewalk release is valid only after the executor handoff.", "error");
 			return;
 		}
+		resetExecutorCompactionState();
 		coordinator.release();
 		audit("manual-release", ctx);
 		await finalizeAnalytics("released");
@@ -1038,6 +1055,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			isPrimaryAgentStream: () => primaryAgentStream,
 			currentRunId: () => coordinator.run?.id,
 			onExecutorStreamStarted: async (runId) => {
+				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
 				if (coordinator.run?.id !== runId || coordinator.run.phase !== "handoff-pending") {
 					return;
 				}
@@ -1050,6 +1068,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				}
 			},
 			onExecutorStreamSucceeded: async (runId) => {
+				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
+				if (executorCompactionRetry?.runId === runId) executorCompactionRetry = undefined;
 				if (coordinator.run?.id !== runId || coordinator.run.phase !== "active") return;
 				try {
 					coordinator.completeHandoff();
@@ -1061,12 +1081,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			},
 			onExecutorStreamFailed: async (runId) => {
 				if (coordinator.run?.id !== runId) return;
-				if (coordinator.run.phase === "handoff-pending") {
-					fail("executor-stream-failed", false, ctx);
-				} else if (coordinator.run.phase === "active") {
-					fail("executor-stream-failed", true, ctx);
-				}
-				await analyticsWrites;
+				pendingExecutorFailureRunId = runId;
+			},
+			onExecutorContextPressure: (runId, retry) => {
+				if (coordinator.run?.id !== runId) return;
+				pendingExecutorFailureRunId = undefined;
+				executorContextPressure = { runId, retry };
 			},
 			onProviderDrift: () =>
 				fail("provider-drift", coordinator.run?.effectiveRoute === "executor", ctx),
@@ -1119,10 +1139,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		// plain text, drops redacted thinking and signatures, and renormalizes tool
 		// call ids. A same-provider pair on two different model ids already takes
 		// that same path, so a cross-provider pair adds no further degradation.
+		const fallbackChain =
+			config.executorFallbacks ??
+			inferDefaultExecutorChain(
+				planner.provider,
+				ctx.modelRegistry.getAvailable(),
+				config.executor.reasoning,
+			);
 		return resolveExecutorChain(
 			planner,
 			plannerProfile.reasoning,
-			[config.executor, ...(config.executorFallbacks ?? [])],
+			[config.executor, ...fallbackChain],
 			{
 				find: (provider, model) => ctx.modelRegistry.find(provider, model),
 				hasAuth: async (target) => (await ctx.modelRegistry.getApiKeyAndHeaders(target)).ok,
@@ -1162,6 +1189,85 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			triggerTurn ? { triggerTurn: true } : { deliverAs: "steer" },
 		);
 		audit(prompt.event, ctx);
+	};
+
+	/**
+	 * Supplements Pi's planner-sized compaction with an executor-sized watchdog.
+	 * The public API can trigger Pi's own compactor, but it cannot change the
+	 * model Pi uses to size it; the overlay therefore stops an executor request
+	 * before transport and this callback compacts the shared session safely from
+	 * the following turn boundary. Failed requests retry the checklist at most once
+	 * per pressure sequence; completed responses do not replay their answer.
+	 */
+	const requestExecutorCompaction = (ctx: ExtensionContext, retry: boolean): void => {
+		const run = coordinator.run;
+		if (
+			!run ||
+			(run.phase !== "handoff-pending" && run.phase !== "active" && run.phase !== "completed") ||
+			pendingExecutorCompaction
+		) {
+			return;
+		}
+		if (
+			retry &&
+			executorCompactionRetry?.runId === run.id &&
+			executorCompactionRetry.count >= 1
+		) {
+			fail("executor-compaction-failed", false, ctx);
+			return;
+		}
+		const request = { runId: run.id, retry } as const;
+		if (retry) {
+			executorCompactionRetry = {
+				runId: run.id,
+				count:
+					(executorCompactionRetry?.runId === run.id ? executorCompactionRetry.count : 0) + 1,
+			};
+		}
+		pendingExecutorCompaction = request;
+		try {
+			ctx.compact({
+				onComplete: () => {
+					if (pendingExecutorCompaction !== request) return;
+					pendingExecutorCompaction = undefined;
+					executorContextPressure = undefined;
+					const current = coordinator.run;
+					if (
+						!current ||
+						current.id !== request.runId ||
+						(current.phase !== "handoff-pending" &&
+							current.phase !== "active" &&
+							current.phase !== "completed")
+					) {
+						return;
+					}
+					if (request.retry) {
+						void sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true).catch(() => {
+							if (coordinator.run?.id === request.runId) {
+								fail("executor-compaction-failed", false, ctx);
+							}
+						});
+					}
+				},
+				onError: (error) => {
+					if (pendingExecutorCompaction !== request) return;
+					pendingExecutorCompaction = undefined;
+					executorContextPressure = undefined;
+					if (coordinator.run?.id !== request.runId) return;
+					ctx.ui.notify(`Prewalk executor compaction failed: ${error.message}.`, "error");
+					fail("executor-compaction-failed", false, ctx);
+				},
+			});
+		} catch (error) {
+			if (pendingExecutorCompaction !== request) return;
+			pendingExecutorCompaction = undefined;
+			executorContextPressure = undefined;
+			ctx.ui.notify(
+				`Prewalk executor compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
+				"error",
+			);
+			fail("executor-compaction-failed", false, ctx);
+		}
 	};
 
 	/**
@@ -1329,8 +1435,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const executorCandidates = available
 			// The planner's own model stays on the list: routing it at a lower effort
 			// is a real downgrade, and only the exact same effort is a no-op. The
-			// reasoning step below is what rejects that pairing.
-			.filter((model) => model.contextWindow >= planner.contextWindow && model.maxTokens > 0)
+			// reasoning step below is what rejects that pairing. A smaller executor is
+			// protected by the request-time context watchdog in the provider overlay.
+			.filter((model) => model.maxTokens > 0)
 			.sort((left, right) => {
 				const leftHome = left.provider === planner.provider ? 0 : 1;
 				const rightHome = right.provider === planner.provider ? 0 : 1;
@@ -1338,10 +1445,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				return `${left.provider}/${left.id}`.localeCompare(`${right.provider}/${right.id}`);
 			});
 		if (executorCandidates.length === 0) {
-			ctx.ui.notify(
-				"No authorized model can execute for that planner. An executor needs at least the planner's context window.",
-				"error",
-			);
+			ctx.ui.notify("No authorized model can execute for that planner.", "error");
 			return;
 		}
 		const executorChoices = executorCandidates.map((model) => `${model.provider}/${model.id}`);
@@ -1718,6 +1822,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		resetExecutorCompactionState();
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
 		delegation = undefined;
@@ -1885,6 +1990,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		resetExecutorCompactionState();
 		activeSessionId = undefined;
 		primaryAgentStream = false;
 		delegation = undefined;
@@ -1965,6 +2071,18 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		const run = coordinator.run;
 		if (!run) return;
+		if (pendingExecutorCompaction) {
+			// ctx.compact() aborts the active Agent loop before its own completion
+			// callback runs. Keep a handoff-pending run alive across that settlement;
+			// the callback owns the only checklist retry.
+			updateStatus(ctx);
+			return;
+		}
+		if (pendingExecutorFailureRunId === run.id) {
+			pendingExecutorFailureRunId = undefined;
+			fail("executor-stream-failed", run.effectiveRoute === "executor", ctx);
+			await finalizeAnalytics("failed");
+		}
 		if (
 			run.effectiveRoute === "executor" &&
 			(run.phase === "active" || run.phase === "completed")
@@ -1977,11 +2095,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
 			return;
 		}
-		await finalizeAnalytics(run.phase === "failed" ? "failed" : "succeeded");
+		const failedRun = run.phase === "failed";
+		await finalizeAnalytics(failedRun ? "failed" : "succeeded");
 		overlay?.restore();
 		overlay = undefined;
 		coordinator.reset();
-		lastOutcome = "completed";
+		lastOutcome = failedRun ? "failed" : "completed";
 		mutations.resetForRun();
 		deactivatePrewalkTools();
 		updateStatus(ctx);
@@ -2095,24 +2214,49 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		if (!verifyOverlayOwnership(ctx)) return;
 		const run = coordinator.run;
-		if (!run || !acceptsMutationEvidence(run)) return;
-		const evidence = mutations.finishTurn(event.message, {
-			todoActive: run.todoActive,
-			todoSeen: run.todoSeen,
-		});
-		const wasTodoReady = run.todoSeen;
-		const wasContinuePending = run.continuePending;
-		const action = coordinator.onTurnEnd(evidence);
-		if (!wasTodoReady && coordinator.run?.todoSeen) audit("todo-ready", ctx);
-		if (!wasContinuePending && coordinator.run?.continuePending) audit("progress", ctx);
-		if (action.type === "send-planning") {
-			await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
-		} else if (action.type === "send-continuation") {
-			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
-		} else if (action.type === "handoff") {
-			audit("handoff-triggered", ctx);
-			await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx);
-			mutations.resetForRun();
+		if (!run) return;
+		if (acceptsMutationEvidence(run)) {
+			const evidence = mutations.finishTurn(event.message, {
+				todoActive: run.todoActive,
+				todoSeen: run.todoSeen,
+			});
+			const wasTodoReady = run.todoSeen;
+			const wasContinuePending = run.continuePending;
+			const action = coordinator.onTurnEnd(evidence);
+			if (!wasTodoReady && coordinator.run?.todoSeen) audit("todo-ready", ctx);
+			if (!wasContinuePending && coordinator.run?.continuePending) audit("progress", ctx);
+			if (action.type === "send-planning") {
+				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+			} else if (action.type === "send-continuation") {
+				await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
+			} else if (action.type === "handoff") {
+				audit("handoff-triggered", ctx);
+				await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx);
+				mutations.resetForRun();
+			}
+		}
+		const currentRun = coordinator.run;
+		if (currentRun?.id === run.id) {
+			if (executorContextPressure?.runId === run.id) {
+				requestExecutorCompaction(ctx, executorContextPressure.retry);
+			} else if (
+				currentRun.effectiveRoute === "executor" &&
+				(currentRun.phase === "active" || currentRun.phase === "completed") &&
+				event.message.role === "assistant" &&
+				event.message.provider === currentRun.config.executor.provider &&
+				event.message.model === currentRun.config.executor.model
+			) {
+				const executor = ctx.modelRegistry.find(
+					currentRun.config.executor.provider,
+					currentRun.config.executor.model,
+				);
+				const usage = ctx.getContextUsage();
+				if (executor && usage?.tokens !== null && usage?.tokens !== undefined) {
+					if (needsExecutorCompaction(usage.tokens, executor)) {
+						requestExecutorCompaction(ctx, event.message.stopReason !== "stop");
+					}
+				}
+			}
 		}
 		updateStatus(ctx);
 	});
@@ -2130,6 +2274,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			...event.preparation.turnPrefixMessages,
 		];
 		compactionChecklistRunId =
+			!pendingExecutorCompaction &&
 			run?.effectiveRoute === "executor" &&
 			compactedMessages.some(
 				(message) =>
@@ -2226,7 +2371,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 function executorRejectionLabel(reason: ExecutorRejection): string {
 	if (reason === "not-registered") return "not available";
 	if (reason === "authorization-unavailable") return "no credentials";
-	if (reason === "context-window-too-small") return "context window smaller than the planner";
 	if (reason === "output-capacity-unavailable") return "no usable output capacity";
 	return "same as the planner";
 }

@@ -27,7 +27,7 @@ import { PREWALK_TODO_TOOL_NAME } from "../src/todo.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 
-function model(id: string): Model<"openai-codex-responses"> {
+function model(id: string, contextWindow = 200_000): Model<"openai-codex-responses"> {
 	return {
 		id,
 		name: id,
@@ -37,7 +37,7 @@ function model(id: string): Model<"openai-codex-responses"> {
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 200_000,
+		contextWindow,
 		maxTokens: 128_000,
 	};
 }
@@ -109,6 +109,7 @@ function createHarness(
 		sessionId?: string;
 		todoVisible?: boolean;
 		activeTools?: string[];
+		executorContextWindow?: number;
 		/** Model ids the registry pretends not to know, e.g. an executor gone missing. */
 		unresolvableModelIds?: string[];
 	} = {},
@@ -134,13 +135,20 @@ function createHarness(
 	const delegated: Model<"openai-codex-responses">[] = [];
 	const delegatedOptions: Array<{ reasoning?: string } | undefined> = [];
 	const delegatedContexts: Array<{ messages: unknown[] }> = [];
+	const compactionCalls: Array<{
+		onComplete?: (result: unknown) => void;
+		onError?: (error: Error) => void;
+	}> = [];
+	let contextUsage:
+		| { tokens: number | null; contextWindow: number; percent: number | null }
+		| undefined;
 	const activeToolUpdates: string[][] = [];
 	let activeTools = options.activeTools ?? [PREWALK_TODO_TOOL_NAME, "edit", "write", "bash"];
 	let terminalInputHandler:
 		| ((data: string) => { consume?: boolean; data?: string } | undefined)
 		| undefined;
 	const planner = options.selectedModel ?? model(PLANNER_MODEL_ID);
-	const executor = model(EXECUTOR_MODEL_ID);
+	const executor = model(EXECUTOR_MODEL_ID, options.executorContextWindow);
 	let streamImpl: NonNullable<ProviderConfig["streamSimple"]> = (selected) =>
 		doneStream(selected as Model<"openai-codex-responses">);
 	const baseStream: NonNullable<ProviderConfig["streamSimple"]> = (
@@ -260,6 +268,13 @@ function createHarness(
 			select: vi.fn(),
 			confirm: vi.fn(),
 		},
+		getContextUsage: () => contextUsage,
+		compact: (options: {
+			onComplete?: (result: unknown) => void;
+			onError?: (error: Error) => void;
+		}) => {
+			compactionCalls.push(options);
+		},
 		hasUI: true,
 		sessionManager: {
 			getSessionId: () => options.sessionId ?? "session-extension-test",
@@ -293,6 +308,16 @@ function createHarness(
 		delegated,
 		delegatedOptions,
 		delegatedContexts,
+		compactionCalls,
+		setContextUsage: (value: typeof contextUsage) => {
+			contextUsage = value;
+		},
+		completeCompaction: (result: unknown = {}) => {
+			compactionCalls.at(-1)?.onComplete?.(result);
+		},
+		failCompaction: (error = new Error("compaction failed")) => {
+			compactionCalls.at(-1)?.onError?.(error);
+		},
 		activeTools: () => [...activeTools],
 		activeToolUpdates,
 		terminalInput: (data: string) => terminalInputHandler?.(data),
@@ -1839,6 +1864,44 @@ describe("Prewalk extension harness", () => {
 		});
 	});
 
+	it("infers a fallback chain when the config omits executorFallbacks", async () => {
+		const harness = createHarness({
+			unresolvableModelIds: [EXECUTOR_MODEL_ID],
+			availableModels: [model(PLANNER_MODEL_ID), model("gpt-5-mini")],
+		});
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ executor: DEFAULT_EXECUTOR })}\n`,
+		);
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "plan-injected",
+			executor: { model: "gpt-5-mini" },
+		});
+	});
+
+	it("does not infer fallbacks when executorFallbacks is explicitly empty", async () => {
+		const harness = createHarness({
+			unresolvableModelIds: [EXECUTOR_MODEL_ID],
+			availableModels: [model(PLANNER_MODEL_ID), model("gpt-5-mini")],
+		});
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ executor: DEFAULT_EXECUTOR, executorFallbacks: [] })}\n`,
+		);
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.messages).toEqual([]);
+		expect(harness.notifications.at(-1)).toContain("no executor is available");
+	});
+
 	it("drops back to the planner when a restored run's executor has gone away", async () => {
 		const first = createHarness();
 		prewalkExtension(first.pi);
@@ -2201,12 +2264,11 @@ describe("Prewalk extension harness", () => {
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: [] })
 			.result();
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(failed?.stopReason).toBe("error");
-		expect(failed?.errorMessage).toBe("Prewalk executor provider stream failed.");
-		expect(harness.statuses.at(-1)).toBe(
-			"prewalk: 5.6 Sol · low / [Luna · low] (failed: executor stream failed)",
-		);
+		expect(failed?.errorMessage).toBe("provider failure");
+		expect(harness.statuses.at(-1)).toBe("prewalk: manual; last failed");
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
 			effectiveRoute: "executor",
@@ -2216,6 +2278,57 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain(": failed;");
 		expect(harness.notifications.at(-1)).toContain("Not compared");
+	});
+
+	it("keeps a settled executor failure visible and allows a new run", async () => {
+		const harness = createHarness();
+		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.statuses.at(-1)).toContain("last failed");
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		expect(
+			harness.entries.some(
+				(entry) =>
+					(entry.data as { event?: string; phase?: string }).event === "armed" &&
+					(entry.data as { event?: string; phase?: string }).phase === "planning",
+			),
+		).toBe(true);
+	});
+
+	it("keeps a transient executor failure retryable until the next stream succeeds", async () => {
+		const harness = createHarness();
+		let attempts = 0;
+		harness.setStream((selected) => {
+			attempts += 1;
+			return attempts === 1
+				? failedStream(selected as Model<"openai-codex-responses">)
+				: doneStream(selected as Model<"openai-codex-responses">);
+		});
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+
+		const first = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, { messages: [] })
+			.result();
+		expect(first?.errorMessage).toBe("provider failure");
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+
+		const second = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, { messages: [] })
+			.result();
+		expect(second?.stopReason).toBe("stop");
+		expect(harness.statuses.at(-1)).not.toContain("failed: executor stream failed");
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {
@@ -2497,6 +2610,7 @@ describe("Prewalk extension harness", () => {
 		await reachHandoff(failed);
 		await failed.emit("agent_start", { type: "agent_start" });
 		await failed.providerConfig()?.streamSimple?.(failed.planner, { messages: [] }).result();
+		await failed.emit("agent_settled", { type: "agent_settled" });
 
 		const restoredFailure = createHarness();
 		restoredFailure.setBranch(auditBranch(failed));
@@ -2777,4 +2891,247 @@ describe("Prewalk extension harness", () => {
 			expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 		},
 	);
+
+	it("uses the executor window for threshold compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
+		const before = harness.messages.length;
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				provider: harness.executor.provider,
+				model: harness.executor.id,
+				stopReason: "toolUse",
+			},
+			toolResults: [],
+		});
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		harness.completeCompaction();
+		expect(harness.messages).toHaveLength(before + 1);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+	});
+
+	it("does not retry a completed executor stop after threshold compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
+		const beforeMessages = harness.messages.length;
+		const beforeOptions = harness.messageOptions.length;
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				provider: harness.executor.provider,
+				model: harness.executor.id,
+				stopReason: "stop",
+			},
+			toolResults: [],
+		});
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		harness.completeCompaction();
+		expect(harness.messages).toHaveLength(beforeMessages);
+		expect(harness.messageOptions).toHaveLength(beforeOptions);
+	});
+
+	it("compacts and retries when the executor preflight finds an oversized context", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		const oversized = {
+			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+		};
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized as never)
+			.result();
+
+		expect(errorMessage?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		const beforeRetry = harness.messages.length;
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: {
+				messagesToSummarize: [
+					{
+						role: "custom",
+						customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+						details: { runId },
+					},
+				],
+				turnPrefixMessages: [],
+			},
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "executor-pressure" },
+		});
+		expect(harness.messages).toHaveLength(beforeRetry);
+		harness.completeCompaction();
+		expect(harness.messages).toHaveLength(beforeRetry + 1);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+	});
+
+	it("stops after one compaction retry when the executor remains oversized", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		const oversized = {
+			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+		};
+
+		const first = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: first,
+			toolResults: [],
+		});
+		expect(harness.compactionCalls).toHaveLength(1);
+		harness.completeCompaction();
+
+		const second = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 3,
+			message: second,
+			toolResults: [],
+		});
+		expect(harness.compactionCalls).toHaveLength(1);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.statuses.at(-1)).toContain("last failed");
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: executor-compaction-failed.");
+	});
+
+	it("accepts a smaller executor and lets its watchdog protect the request", async () => {
+		const harness = createHarness({
+			selectedModel: model(PLANNER_MODEL_ID, 1_000_000),
+			executorContextWindow: 272_000,
+		});
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(1_100_000), timestamp: 1 }],
+			} as never)
+			.result();
+
+		expect(errorMessage?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+		expect(harness.compactionCalls).toHaveLength(1);
+	});
+
+	it("keeps an initial handoff alive while compaction settles the agent", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+		harness.completeCompaction();
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+	});
+
+	it("does not let a cancelled executor compaction restart the run", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+		const beforeCancel = harness.messages.length;
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		harness.completeCompaction();
+
+		expect(harness.messages).toHaveLength(beforeCancel);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+	});
+
+	it("fails the run once when executor compaction reports an error", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+
+		harness.failCompaction();
+		expect(harness.notifications.at(-1)).toContain("Prewalk failed: executor-compaction-failed");
+		expect(harness.compactionCalls).toHaveLength(1);
+		harness.failCompaction();
+		expect(harness.compactionCalls).toHaveLength(1);
+	});
 });

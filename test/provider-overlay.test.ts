@@ -29,7 +29,7 @@ function model(id: string): Model<"openai-codex-responses"> {
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 1000,
+		contextWindow: 100_000,
 		maxTokens: 100,
 	};
 }
@@ -44,7 +44,7 @@ function anthropicModel(id: string): Model<"anthropic-messages"> {
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 2000,
+		contextWindow: 200_000,
 		maxTokens: 200,
 	};
 }
@@ -80,17 +80,52 @@ function successfulStream(selected: Model<Api>) {
 	return stream;
 }
 
+function overflowStream(selected: Model<Api>) {
+	const stream = createAssistantMessageEventStream();
+	const message = {
+		...assistant(selected),
+		stopReason: "error" as const,
+		errorMessage: "input token count exceeds the maximum number of tokens allowed",
+	};
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "error", reason: "error", error: message });
+		stream.end();
+	});
+	return stream;
+}
+
+function silentOverflowStream(selected: Model<Api>) {
+	const stream = createAssistantMessageEventStream();
+	const message = {
+		...assistant(selected),
+		usage: {
+			...assistant(selected).usage,
+			input: 100_001,
+			totalTokens: 100_001,
+		},
+	};
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end();
+	});
+	return stream;
+}
+
 function setup() {
 	const planner = model(PLANNER_MODEL_ID);
 	const executor = model(EXECUTOR_MODEL_ID);
 	let config: ProviderConfig | undefined;
 	const delegatedModels: Model<Api>[] = [];
 	const delegatedOptions: Array<SimpleStreamOptions | undefined> = [];
+	const delegatedContexts: Context[] = [];
 	let delegateImpl: NonNullable<ProviderConfig["streamSimple"]> = (selected) =>
 		successfulStream(selected);
 	const delegate: NonNullable<ProviderConfig["streamSimple"]> = (selected, context, options) => {
 		delegatedModels.push(selected);
 		delegatedOptions.push(options);
+		delegatedContexts.push(context);
 		return delegateImpl(selected, context, options);
 	};
 	config = {
@@ -120,6 +155,7 @@ function setup() {
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
+		onExecutorContextPressure: vi.fn(),
 		onProviderDrift: vi.fn(),
 	};
 	const registry = {
@@ -161,6 +197,7 @@ function setup() {
 		delegate,
 		delegatedModels,
 		delegatedOptions,
+		delegatedContexts,
 		pi,
 		state,
 		overlay,
@@ -236,6 +273,7 @@ function setupCrossProvider() {
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
+		onExecutorContextPressure: vi.fn(),
 		onProviderDrift: vi.fn(),
 	};
 	const registry = {
@@ -335,8 +373,62 @@ describe("provider overlay", () => {
 		]);
 		expect(result?.provider).toBe(EXECUTOR_PROVIDER);
 		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
+		expect(fixture.delegatedContexts).toEqual([fixture.context]);
 		expect(fixture.state.onExecutorStreamStarted).toHaveBeenCalledOnce();
 		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
+	});
+
+	it("prevents an oversized executor request and asks the extension to compact", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		const oversized: Context = {
+			messages: [{ role: "user", content: "x".repeat(340_000), timestamp: 1 }],
+		};
+
+		const result = await fixture.config()?.streamSimple?.(fixture.planner, oversized).result();
+
+		expect(fixture.delegatedModels).toEqual([]);
+		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
+		expect(fixture.state.onExecutorStreamFailed).not.toHaveBeenCalled();
+		expect(result?.stopReason).toBe("error");
+		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
+	});
+
+	it("turns a provider-reported executor overflow into a compaction request", async () => {
+		const fixture = setup();
+		fixture.setDelegate((selected) => overflowStream(selected));
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
+		expect(fixture.state.onExecutorStreamFailed).not.toHaveBeenCalled();
+		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
+	});
+
+	it("turns a silent provider-reported overflow into a compaction request", async () => {
+		const fixture = setup();
+		fixture.setDelegate((selected) => silentOverflowStream(selected));
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", false);
+		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
+		expect(result?.stopReason).toBe("stop");
+		expect(result?.errorMessage).toBeUndefined();
 	});
 
 	it("leaves compaction and other auxiliary streams on Sol", async () => {

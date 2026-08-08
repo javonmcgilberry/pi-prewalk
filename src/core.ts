@@ -309,7 +309,15 @@ export class PrewalkCoordinator {
 
 	requestContinuation(actionableTodo: boolean): CoordinatorAction {
 		const run = this.#run;
-		if (!run || !run.todoSeen || !actionableTodo || run.continuePending) return { type: "none" };
+		if (
+			!run ||
+			(run.phase !== "planning" && run.phase !== "ready") ||
+			!run.todoSeen ||
+			!actionableTodo ||
+			run.continuePending
+		) {
+			return { type: "none" };
+		}
 		run.continuePending = true;
 		return { type: "send-continuation" };
 	}
