@@ -1,0 +1,41 @@
+{
+  "test": "npx vitest run test/provider-overlay.test.ts test/agent-loop.test.ts test/executor-chain.test.ts",
+  "mutations": [
+    {
+      "name": "executor rides the planner's transport instead of its own",
+      "file": "src/provider-overlay.ts",
+      "find": "\t\t\treturn {\n\t\t\t\tok: true,\n\t\t\t\tmodel: current,\n\t\t\t\tdelegate:\n\t\t\t\t\tmodelRegistry.getRegisteredProviderConfig(current.provider)?.streamSimple ??\n\t\t\t\t\tbuiltinStreamSimple,\n\t\t\t};",
+      "replace": "\t\t\treturn { ok: true, model: current, delegate };"
+    },
+    {
+      "name": "overlay registers without an api, so only pre-configured providers arm",
+      "file": "src/provider-overlay.ts",
+      "find": "\t\t\tapi: previous?.api ?? planner.api,\n",
+      "replace": ""
+    },
+    {
+      "name": "executor resolved once at install, going stale for the rest of the run",
+      "file": "src/provider-overlay.ts",
+      "find": "\t\t\tconst resolved = resolveExecutor();",
+      "replace": "\t\t\tconst resolved = installTimeExecutor;"
+    },
+    {
+      "name": "a rejecting credential probe aborts the chain instead of skipping the candidate",
+      "file": "src/executor-chain.ts",
+      "find": "\ttry {\n\t\tif (!(await probe.hasAuth(executor))) {\n\t\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t\t}\n\t} catch {\n\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t}",
+      "replace": "\tif (!(await probe.hasAuth(executor))) {\n\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t}"
+    },
+    {
+      "name": "an executor smaller than the planner is accepted",
+      "file": "src/executor-chain.ts",
+      "find": "\tif (executor.contextWindow < planner.contextWindow) {\n\t\treturn { viable: false, reason: \"context-window-too-small\" };\n\t}",
+      "replace": ""
+    },
+    {
+      "name": "the planner's own model at its own effort is accepted as a no-op handoff",
+      "file": "src/executor-chain.ts",
+      "find": "\t\treturn { viable: false, reason: \"same-as-planner\" };",
+      "replace": "\t\treturn { viable: true, model: executor };"
+    }
+  ]
+}
