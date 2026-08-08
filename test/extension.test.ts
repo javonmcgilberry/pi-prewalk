@@ -3134,4 +3134,38 @@ describe("Prewalk extension harness", () => {
 		harness.failCompaction();
 		expect(harness.compactionCalls).toHaveLength(1);
 	});
+
+	it("continues after the host reports an observer error for a committed executor compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const errorMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: errorMessage,
+			toolResults: [],
+		});
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "committed-before-observer-error" },
+		});
+		const beforeRetry = harness.messages.length;
+		harness.failCompaction(new Error("synthetic observer failure after persistence"));
+
+		expect(harness.messages).toHaveLength(beforeRetry + 1);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+		expect(harness.statuses.at(-1)).not.toContain("last failed");
+		expect(harness.notifications.at(-1)).toContain(
+			"committed before the host reported an observer error",
+		);
+	});
 });

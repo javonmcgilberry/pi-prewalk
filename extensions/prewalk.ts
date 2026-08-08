@@ -600,6 +600,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let compactionChecklistRunId: string | undefined;
 	let executorContextPressure: { runId: string; retry: boolean } | undefined;
 	let pendingExecutorCompaction: { runId: string; retry: boolean } | undefined;
+	let committedExecutorCompaction: { runId: string; retry: boolean } | undefined;
 	let executorCompactionRetry: { runId: string; count: number } | undefined;
 	let pendingExecutorFailureRunId: string | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
@@ -706,6 +707,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const resetExecutorCompactionState = (): void => {
 		executorContextPressure = undefined;
 		pendingExecutorCompaction = undefined;
+		committedExecutorCompaction = undefined;
 		executorCompactionRetry = undefined;
 		pendingExecutorFailureRunId = undefined;
 		compactionChecklistRunId = undefined;
@@ -1230,6 +1232,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			};
 		}
 		pendingExecutorCompaction = request;
+		committedExecutorCompaction = undefined;
+		const retryChecklist = (): void => {
+			void sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true).catch(() => {
+				if (coordinator.run?.id === request.runId) {
+					fail("executor-compaction-failed", false, ctx);
+				}
+			});
+		};
 		try {
 			ctx.compact({
 				onComplete: () => {
@@ -1247,15 +1257,33 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 						return;
 					}
 					if (request.retry) {
-						void sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true).catch(() => {
-							if (coordinator.run?.id === request.runId) {
-								fail("executor-compaction-failed", false, ctx);
-							}
-						});
+						retryChecklist();
 					}
 				},
 				onError: (error) => {
 					if (pendingExecutorCompaction !== request) return;
+					if (committedExecutorCompaction === request) {
+						pendingExecutorCompaction = undefined;
+						committedExecutorCompaction = undefined;
+						executorContextPressure = undefined;
+						const current = coordinator.run;
+						if (
+							!current ||
+							current.id !== request.runId ||
+							(current.phase !== "handoff-pending" &&
+								current.phase !== "active" &&
+								current.phase !== "completed")
+						) {
+							return;
+						}
+						ctx.ui.notify(
+							`Prewalk executor compaction committed before the host reported an observer error (${error.message}); continuing from the compacted context.`,
+							"warning",
+						);
+						if (!request.retry) return;
+						retryChecklist();
+						return;
+					}
 					pendingExecutorCompaction = undefined;
 					executorContextPressure = undefined;
 					if (coordinator.run?.id !== request.runId) return;
@@ -1266,6 +1294,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		} catch (error) {
 			if (pendingExecutorCompaction !== request) return;
 			pendingExecutorCompaction = undefined;
+			committedExecutorCompaction = undefined;
 			executorContextPressure = undefined;
 			ctx.ui.notify(
 				`Prewalk executor compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
@@ -2299,6 +2328,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_compact", async (event, ctx) => {
 		const run = coordinator.run;
+		if (pendingExecutorCompaction?.runId === run?.id) {
+			committedExecutorCompaction = pendingExecutorCompaction;
+		}
 		if (
 			run &&
 			compactionChecklistRunId === run.id &&
