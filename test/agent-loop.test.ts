@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+	type Api,
 	type AssistantMessage,
 	type Context,
 	createAssistantMessageEventStream,
@@ -82,6 +83,51 @@ function response(selected: Model<"openai-codex-responses">, content: AssistantM
 
 function toolCall(id: string, name: string, argumentsValue: Record<string, unknown>): ToolCall {
 	return { type: "toolCall", id, name, arguments: argumentsValue };
+}
+
+function foreignModel<TApi extends "anthropic-messages" | "google-generative-ai">(
+	api: TApi,
+	provider: string,
+	id: string,
+	contextWindow: number,
+): Model<TApi> {
+	return {
+		id,
+		name: id,
+		api,
+		provider,
+		baseUrl: "https://example.test",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		contextWindow,
+		maxTokens: 64_000,
+	};
+}
+
+/** Same shape as {@link response}, for a model on any API. */
+function foreignResponse(selected: Model<Api>, content: AssistantMessage["content"]) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content,
+		api: selected.api,
+		provider: selected.provider,
+		model: selected.id,
+		usage: usage(2),
+		stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
+		timestamp: Date.now(),
+	};
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({
+			type: "done",
+			reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+			message,
+		});
+		stream.end();
+	});
+	return stream;
 }
 
 let root: string;
@@ -373,6 +419,119 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(lunaContextText).toContain(JSON.stringify(checklistPrompt).slice(1, -1));
 		expect(lunaContextText).not.toContain(JSON.stringify(planPrompt).slice(1, -1));
 		expect(lunaContextText).not.toContain(JSON.stringify(continuePrompt).slice(1, -1));
+	});
+
+	it("streams a cross-provider handoff through the executor's own provider", async () => {
+		// anthropic-messages plans, google-generative-ai executes. Each provider
+		// gets its own transport, so the executor turn appearing in googleCalls is
+		// proof the request left through Google rather than through the planner's
+		// Anthropic stream.
+		const planner = foreignModel("anthropic-messages", "anthropic", "claude-opus-4-6", 1_000_000);
+		const executor = foreignModel(
+			"google-generative-ai",
+			"google",
+			"gemini-3.5-flash",
+			1_048_576,
+		);
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({
+				executor: { provider: "google", model: "gemini-3.5-flash", reasoning: "low" },
+			})}\n`,
+		);
+		const anthropicCalls: string[] = [];
+		const googleCalls: string[] = [];
+		let executorContext: Context | undefined;
+
+		const providers: ExtensionFactory = (pi) => {
+			pi.registerProvider("anthropic", {
+				api: "anthropic-messages",
+				baseUrl: "https://example.test",
+				apiKey: "planner-token",
+				models: [planner],
+				streamSimple: (selected) => {
+					anthropicCalls.push(selected.id);
+					const turn = anthropicCalls.length;
+					if (turn === 1) {
+						return foreignResponse(planner, [
+							toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
+								op: "init",
+								list: [{ phase: "Implement", items: ["Make the first mutation"] }],
+							}),
+						]);
+					}
+					return foreignResponse(planner, [
+						toolCall("edit-1", "edit", {
+							path: path.join(workDir, "target.txt"),
+							oldText: "before",
+							newText: "after",
+						}),
+						toolCall("todo-done-1", PREWALK_TODO_TOOL_NAME, {
+							op: "done",
+							task: "Make the first mutation",
+						}),
+					]);
+				},
+			});
+			pi.registerProvider("google", {
+				api: "google-generative-ai",
+				baseUrl: "https://example.test",
+				apiKey: "executor-token",
+				models: [executor],
+				streamSimple: (selected, context) => {
+					googleCalls.push(selected.id);
+					executorContext = context;
+					return foreignResponse(executor, [{ type: "text", text: "Executor completed." }]);
+				},
+			});
+		};
+
+		const settings = SettingsManager.create(workDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: workDir,
+			agentDir,
+			settingsManager: settings,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			extensionFactories: [
+				{ name: "providers", factory: providers },
+				{ name: "prewalk", factory: prewalkExtension },
+			],
+		});
+		await loader.reload();
+		const runtime = await ModelRuntime.create({
+			authPath: path.join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const sessionManager = SessionManager.inMemory(workDir);
+		const { session } = await createAgentSession({
+			cwd: workDir,
+			agentDir,
+			modelRuntime: runtime,
+			model: planner,
+			thinkingLevel: "high",
+			resourceLoader: loader,
+			settingsManager: settings,
+			sessionManager,
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await session.bindExtensions({});
+
+		await session.prompt("/prewalk run");
+		await session.waitForIdle();
+		await session.prompt("Implement the requested change.");
+		await session.waitForIdle();
+
+		const trace = JSON.stringify(sessionManager.getEntries(), null, 2);
+		expect(anthropicCalls, trace).toEqual(["claude-opus-4-6", "claude-opus-4-6"]);
+		expect(googleCalls, trace).toEqual(["gemini-3.5-flash"]);
+		// The overlay substitutes the executor without changing what Pi has selected.
+		expect(session.model?.id).toBe("claude-opus-4-6");
+		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
+		// The executor received the planner's conversation, not a fresh one.
+		expect((executorContext?.messages.length ?? 0) > 1).toBe(true);
 	});
 
 	it("launches automatic assessment and its one continuation through Pi's public runtime", async () => {
