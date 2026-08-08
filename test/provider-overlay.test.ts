@@ -17,7 +17,11 @@ import {
 	PLANNER_MODEL_ID,
 	PLANNER_PROVIDER,
 } from "../src/core.js";
-import { createProviderOverlay, type ProviderOverlayState } from "../src/provider-overlay.js";
+import {
+	createProviderOverlay,
+	type ProviderOverlayState,
+	removeExactUserPrompt,
+} from "../src/provider-overlay.js";
 
 function model(id: string): Model<"openai-codex-responses"> {
 	return {
@@ -152,6 +156,7 @@ function setup() {
 		shouldRouteToExecutor: () => route,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
+		prepareExecutorContext: (context) => removeExactUserPrompt(context, "deep planner guidance"),
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
@@ -270,6 +275,7 @@ function setupCrossProvider() {
 		shouldRouteToExecutor: () => route,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
+		prepareExecutorContext: (context) => context,
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
@@ -376,6 +382,43 @@ describe("provider overlay", () => {
 		expect(fixture.delegatedContexts).toEqual([fixture.context]);
 		expect(fixture.state.onExecutorStreamStarted).toHaveBeenCalledOnce();
 		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
+	});
+
+	it("removes planner-only guidance from the exact outgoing executor context", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "planner prefix" },
+						{ type: "text", text: "deep planner guidance" },
+						{ type: "text", text: "planner suffix" },
+					],
+					timestamp: 1,
+				},
+				{ role: "user", content: "continue", timestamp: 2 },
+				{ role: "user", content: "executor checklist", timestamp: 3 },
+			],
+		};
+
+		await fixture.config()?.streamSimple?.(fixture.planner, context).result();
+
+		expect(fixture.delegatedContexts[0]?.messages).toEqual([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "planner prefix" },
+					{ type: "text", text: "planner suffix" },
+				],
+				timestamp: 1,
+			},
+			{ role: "user", content: "continue", timestamp: 2 },
+			{ role: "user", content: "executor checklist", timestamp: 3 },
+		]);
 	});
 
 	it("prevents an oversized executor request and asks the extension to compact", async () => {

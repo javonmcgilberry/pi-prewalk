@@ -4,12 +4,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	buildCanaryPrewalkConfig,
 	buildEvidenceSummary,
 	CANARY_CONFIRMATION,
+	CANARY_TOOL_ALLOWLIST,
+	canaryAuditState,
+	canaryPayloadTargetsModel,
 	containsCanaryHiddenGuidance,
+	evaluateCanaryPayloadMarker,
+	findCanaryHiddenGuidancePaths,
+	isCanaryMutationInput,
 	parseCanaryArgs,
 	pruneEvidence,
 	stageOpenAICodexCredential,
+	stageProviderCredentials,
 	validateCanaryOptions,
 	writeEvidence,
 } from "../scripts/canary-support.mjs";
@@ -54,9 +62,12 @@ function evidence() {
 		},
 		status: "completed",
 		trigger: "edit",
+		auditEvents: ["armed", "plan-injected", "handoff-completed"],
+		toolEvents: ["prewalk_todo:allowed", "write:allowed"],
+		payloadGuidancePaths: [],
 		settingsBefore: digest,
 		settingsAfter: digest,
-		assertions: ["selected-sol", "luna-observed"],
+		assertions: ["selected-planner", "executor-observed"],
 	});
 }
 
@@ -115,7 +126,33 @@ describe("RPC smoke support", () => {
 });
 
 describe("provider canary contract", () => {
-	it("detects exact hidden planning and continuation guidance in provider payloads", () => {
+	it("limits live runs to the audited todo and bounded file tools", () => {
+		expect(CANARY_TOOL_ALLOWLIST).toBe("prewalk_todo,read,edit,write");
+	});
+
+	it("accepts only exact sentinel edit and write variants", () => {
+		expect(
+			isCanaryMutationInput(
+				"edit",
+				{ oldText: "before\n", newText: "after\n" },
+				"/tmp/fixture.txt",
+				"/tmp/fixture.txt",
+			),
+		).toBe(true);
+		expect(
+			isCanaryMutationInput(
+				"write",
+				{ content: "after" },
+				"/tmp/fixture.txt",
+				"/tmp/fixture.txt",
+			),
+		).toBe(true);
+		expect(
+			isCanaryMutationInput("write", { content: "after" }, "/tmp/other.txt", "/tmp/fixture.txt"),
+		).toBe(false);
+	});
+
+	it("detects exact hidden guidance selected by the canary in provider payloads", () => {
 		const prompts = ["hidden plan prompt", "hidden continuation prompt"];
 		expect(
 			containsCanaryHiddenGuidance({ messages: [{ content: "hidden plan prompt" }] }, prompts),
@@ -126,6 +163,54 @@ describe("provider canary contract", () => {
 				prompts,
 			),
 		).toBe(false);
+		expect(
+			findCanaryHiddenGuidancePaths(
+				{ messages: [{ content: [{ type: "text", text: "hidden plan prompt" }] }] },
+				prompts,
+			),
+		).toEqual(["$payload.messages[0].content[0].text"]);
+	});
+
+	it("identifies target model payloads without relying on Pi's selected planner", () => {
+		expect(canaryPayloadTargetsModel({ model: "gpt-5.6-luna" }, "gpt-5.6-luna")).toBe(true);
+		expect(
+			canaryPayloadTargetsModel({ request: { model: "claude-haiku-4-5" } }, "claude-haiku-4-5"),
+		).toBe(true);
+		expect(canaryPayloadTargetsModel({ model: "gpt-5.6-sol" }, "gpt-5.6-luna")).toBe(false);
+	});
+
+	it("waits through planner settlement until the Prewalk audit becomes terminal", () => {
+		expect(
+			canaryAuditState([
+				{ type: "custom", customType: "prewalk-audit", data: { event: "armed" } },
+				{ type: "custom", customType: "prewalk-audit", data: { event: "todo-ready" } },
+			]),
+		).toEqual({ state: "ready", events: ["armed", "todo-ready"] });
+		expect(
+			canaryAuditState([
+				{ type: "custom", customType: "prewalk-audit", data: { event: "armed" } },
+				{ type: "custom", customType: "prewalk-audit", data: { event: "continuation" } },
+			]),
+		).toEqual({ state: "running", events: ["armed", "continuation"] });
+		expect(
+			canaryAuditState([
+				{ type: "custom", customType: "prewalk-audit", data: { event: "armed" } },
+				{ type: "custom", customType: "prewalk-audit", data: { event: "handoff-completed" } },
+			]),
+		).toEqual({ state: "completed", events: ["armed", "handoff-completed"] });
+		expect(
+			canaryAuditState([
+				{
+					type: "custom",
+					customType: "prewalk-audit",
+					data: { event: "failed", reasonCode: "executor-stream-failed" },
+				},
+			]),
+		).toEqual({
+			state: "failed",
+			events: ["failed"],
+			reasonCode: "executor-stream-failed",
+		});
 	});
 
 	it("requires explicit cost consent and an absolute auth source", () => {
@@ -135,6 +220,113 @@ describe("provider canary contract", () => {
 		expect(() => validateCanaryOptions(options)).toThrow(/absolute --auth-file/);
 		options.authFile = "/tmp/auth.json";
 		expect(validateCanaryOptions(options)).toBe(options);
+	});
+
+	it("accepts an explicit planner, executor, reasoning levels, and provider extensions", () => {
+		const options = parseCanaryArgs([
+			"--confirm-provider-cost",
+			CANARY_CONFIRMATION,
+			"--auth-file",
+			"/tmp/auth.json",
+			"--planner",
+			"anthropic/claude-sonnet-5",
+			"--executor",
+			"cursor/gemini-3.6-flash",
+			"--planner-thinking",
+			"high",
+			"--executor-thinking",
+			"low",
+			"--extension",
+			"/tmp/cursor.ts",
+			"--payload-inspection",
+			"optional",
+		]);
+
+		expect(validateCanaryOptions(options)).toMatchObject({
+			planner: { provider: "anthropic", model: "claude-sonnet-5" },
+			executor: { provider: "cursor", model: "gemini-3.6-flash" },
+			plannerThinking: "high",
+			executorThinking: "low",
+			extensions: ["/tmp/cursor.ts"],
+			payloadInspection: "optional",
+		});
+	});
+
+	it("distinguishes verified payloads from custom transports without Pi's payload hook", () => {
+		expect(evaluateCanaryPayloadMarker(undefined, "required")).toEqual({
+			ok: false,
+			reasonCode: "target-payload-not-observed",
+		});
+		expect(evaluateCanaryPayloadMarker({ toolEvents: ["write:allowed"] }, "required")).toEqual({
+			ok: false,
+			reasonCode: "target-payload-not-observed",
+		});
+		expect(evaluateCanaryPayloadMarker(undefined, "optional")).toEqual({
+			ok: true,
+			assertion: "target-payload-hook-unavailable",
+		});
+		expect(evaluateCanaryPayloadMarker({ toolEvents: ["write:allowed"] }, "optional")).toEqual({
+			ok: true,
+			assertion: "target-payload-hook-unavailable",
+		});
+		expect(
+			evaluateCanaryPayloadMarker(
+				{ targetPayloadGuidanceFree: false, payloadGuidancePaths: ["$payload.messages[0]"] },
+				"optional",
+			),
+		).toEqual({ ok: false, reasonCode: "hidden-guidance-observed" });
+		expect(
+			evaluateCanaryPayloadMarker(
+				{ targetPayloadCount: 1, targetPayloadGuidanceFree: true },
+				"required",
+			),
+		).toEqual({ ok: true, assertion: "target-payload-guidance-free" });
+	});
+
+	it("builds a strict executor config for the isolated canary", () => {
+		expect(
+			buildCanaryPrewalkConfig({ provider: "anthropic", model: "claude-haiku-4-5" }, "low"),
+		).toEqual({
+			executor: {
+				provider: "anthropic",
+				model: "claude-haiku-4-5",
+				reasoning: "low",
+			},
+			executorFallbacks: [],
+			analytics: {
+				enabled: false,
+				catalogFallbackEnabled: false,
+				recentReceiptCount: 10,
+				schemaVersion: 1,
+			},
+		});
+	});
+
+	it("stages only the credentials needed by the planner and executor", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "prewalk-provider-credentials-"));
+		try {
+			const source = path.join(root, "source.json");
+			const target = path.join(root, "target.json");
+			await writeFile(
+				source,
+				JSON.stringify({
+					anthropic: { type: "oauth", access: "planner", refresh: "refresh", expires: 1 },
+					"openai-codex": {
+						type: "oauth",
+						access: "executor",
+						refresh: "refresh",
+						expires: 1,
+					},
+					cursor: { type: "api_key", key: "unrelated" },
+				}),
+			);
+			await stageProviderCredentials(source, target, ["anthropic", "openai-codex"]);
+			const staged = JSON.parse(await readFile(target, "utf8"));
+			expect(Object.keys(staged)).toEqual(["anthropic", "openai-codex"]);
+			expect((await stat(target)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	it("stages only the openai-codex credential in an owner-only file", async () => {
@@ -171,14 +363,17 @@ describe("provider canary contract", () => {
 		);
 		expect(Object.keys(summary).sort()).toEqual([
 			"assertions",
+			"auditEvents",
 			"createdAt",
 			"expiresAt",
 			"outcome",
+			"payloadGuidancePaths",
 			"requestModels",
 			"schemaVersion",
 			"settingsAfter",
 			"settingsBefore",
 			"status",
+			"toolEvents",
 			"trigger",
 			"usage",
 		]);

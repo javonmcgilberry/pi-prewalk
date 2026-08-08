@@ -3,10 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+	buildCanaryPrewalkConfig,
 	buildEvidenceSummary,
+	CANARY_TOOL_ALLOWLIST,
+	canaryAuditState,
+	evaluateCanaryPayloadMarker,
 	parseCanaryArgs,
 	pruneEvidence,
-	stageOpenAICodexCredential,
+	stageProviderCredentials,
 	validateCanaryOptions,
 	writeEvidence,
 } from "./canary-support.mjs";
@@ -26,16 +30,10 @@ const evidenceDir = options.evidenceDir ?? path.join(packageRoot, "benchmark", "
 const piExecutable =
 	options.piExecutable ??
 	path.join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
-const conversionPath = path.join(
-	packageRoot,
-	"node_modules",
-	"@howaboua",
-	"pi-codex-conversion",
-	"dist",
-	"index.js",
-);
 const prewalkPath = path.join(packageRoot, "extensions", "prewalk.ts");
 const guardPath = path.join(packageRoot, "scripts", "canary-guard.mjs");
+const plannerRef = `${options.planner.provider}/${options.planner.model}`;
+const executorRef = `${options.executor.provider}/${options.executor.model}`;
 
 function digest(value) {
 	return createHash("sha256").update(value).digest("hex");
@@ -47,13 +45,15 @@ function assert(condition, message) {
 
 const FAILURE_CODES = new Set([
 	"selected-model-changed",
-	"sol-not-observed",
-	"luna-not-observed",
+	"planner-not-observed",
+	"executor-not-observed",
+	"prewalk-not-armed",
 	"mutation-failed",
 	"handoff-incomplete",
 	"pi-actionable-stderr",
 	"settings-changed",
 	"hidden-guidance-observed",
+	"target-payload-not-observed",
 ]);
 
 function failureCode(error) {
@@ -81,6 +81,46 @@ function sumUsage(messages) {
 	return total;
 }
 
+async function waitForHandoff(rpc, executor, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	let mutationSteered = false;
+	while (Date.now() < deadline) {
+		const [messagesResponse, entriesResponse] = await Promise.all([
+			rpc.send({ type: "get_messages" }),
+			rpc.send({ type: "get_entries" }),
+		]);
+		const messages = messagesResponse.data.messages;
+		const entries = entriesResponse.data.entries;
+		requestModels = messages
+			.filter((message) => message?.role === "assistant")
+			.map((message) => `${message.provider}/${message.model}`);
+		usage = sumUsage(messages);
+		const audit = canaryAuditState(entries);
+		auditEvents = audit.events;
+		if (audit.state === "failed") throw new Error("handoff-incomplete");
+		if (audit.state === "ready" && !mutationSteered) {
+			mutationSteered = true;
+			await rpc.send({
+				type: "prompt",
+				message:
+					"The todo gate is complete. Do not call prewalk_todo again. Use edit or write now to change fixture.txt from exactly `before` to exactly `after`, and change nothing else.",
+				streamingBehavior: "steer",
+			});
+		}
+		if (
+			audit.state === "completed" &&
+			messages.some(
+				(message) =>
+					message?.role === "assistant" && `${message.provider}/${message.model}` === executor,
+			)
+		) {
+			return { messages, entries };
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error("handoff-incomplete");
+}
+
 let outcome = "failed";
 let requestModels = [];
 let usage = {};
@@ -89,6 +129,9 @@ let trigger;
 let settingsBefore = digest("");
 let settingsAfter = digest("");
 const assertions = [];
+let auditEvents = [];
+let toolEvents = [];
+let payloadGuidancePaths = [];
 let rpc;
 let cleanupPromise;
 let failureReason;
@@ -121,6 +164,9 @@ function persistEvidence() {
 				settingsBefore,
 				settingsAfter,
 				assertions,
+				auditEvents,
+				toolEvents,
+				payloadGuidancePaths,
 			}),
 		);
 	})();
@@ -150,25 +196,32 @@ try {
 		mkdir(workDir, { recursive: true, mode: 0o700 }),
 	]);
 	throwIfSignalled();
-	await stageOpenAICodexCredential(options.authFile, path.join(agentDir, "auth.json"));
+	await stageProviderCredentials(options.authFile, path.join(agentDir, "auth.json"), [
+		options.planner.provider,
+		options.executor.provider,
+	]);
 	throwIfSignalled();
-	await writeFile(path.join(agentDir, "prewalk.json"), '{"enabled":true}\n', {
-		mode: 0o600,
-	});
+	await writeFile(
+		path.join(agentDir, "prewalk.json"),
+		`${JSON.stringify(buildCanaryPrewalkConfig(options.executor, options.executorThinking))}\n`,
+		{ mode: 0o600 },
+	);
 	await writeFile(fixturePath, "before\n", { mode: 0o600 });
 	await writeFile(
 		settingsPath,
 		`${JSON.stringify({
-			defaultProvider: "openai-codex",
-			defaultModel: "gpt-5.6-sol",
-			defaultThinkingLevel: "high",
+			defaultProvider: options.planner.provider,
+			defaultModel: options.planner.model,
+			defaultThinkingLevel: options.plannerThinking,
 			packages: [],
 		})}\n`,
 		{ mode: 0o600 },
 	);
-	await writeFile(scenarioPath, `${JSON.stringify({ cwd: workDir, fixturePath, markerPath })}\n`, {
-		mode: 0o600,
-	});
+	await writeFile(
+		scenarioPath,
+		`${JSON.stringify({ cwd: workDir, fixturePath, markerPath, targetModel: options.executor.model })}\n`,
+		{ mode: 0o600 },
+	);
 	await writeFile(
 		sessionPath,
 		`${JSON.stringify({
@@ -185,13 +238,17 @@ try {
 	settingsBefore = digest(beforeBytes);
 	rpc = new RpcProcess({
 		executable: piExecutable,
-		args: buildRpcLaunchArgs({
-			extensionPath: conversionPath,
-			extraExtensions: [guardPath, prewalkPath],
-			sessionPath,
-			model: "openai-codex/gpt-5.6-sol",
-			thinking: "high",
-		}),
+		args: [
+			...buildRpcLaunchArgs({
+				extensionPath: guardPath,
+				extraExtensions: [...options.extensions, prewalkPath],
+				sessionPath,
+				model: plannerRef,
+				thinking: options.plannerThinking,
+			}),
+			"--tools",
+			CANARY_TOOL_ALLOWLIST,
+		],
 		cwd: workDir,
 		env: {
 			...process.env,
@@ -202,21 +259,24 @@ try {
 	});
 	throwIfSignalled();
 	try {
-		const startIndex = rpc.events.length;
+		await rpc.send({ type: "prompt", message: "/prewalk run" });
+		const armedEntries = (await rpc.send({ type: "get_entries" })).data.entries;
+		assert(
+			armedEntries.some(
+				(entry) =>
+					entry?.type === "custom" &&
+					entry.customType === "prewalk-audit" &&
+					entry.data?.event === "armed",
+			),
+			"prewalk-not-armed",
+		);
 		await rpc.send({
 			type: "prompt",
 			message:
-				"Change fixture.txt from exactly `before` to exactly `after`. Use prewalk_todo for the plan, then one edit or write mutation, and finish the verification.",
+				"In this run, first call prewalk_todo once to initialize exactly one implementation item. Then change fixture.txt from exactly `before` to exactly `after` with one edit or write. Finish without changing any other file.",
 		});
-		await rpc.waitFor((event) => event.type === "agent_settled", options.timeoutMs, startIndex);
-		const [messagesResponse, entriesResponse, stateResponse] = await Promise.all([
-			rpc.send({ type: "get_messages" }),
-			rpc.send({ type: "get_entries" }),
-			rpc.send({ type: "get_state" }),
-		]);
-		const messages = messagesResponse.data.messages;
-		const entries = entriesResponse.data.entries;
-		const state = stateResponse.data;
+		const { messages, entries } = await waitForHandoff(rpc, executorRef, options.timeoutMs);
+		const state = (await rpc.send({ type: "get_state" })).data;
 		requestModels = messages
 			.filter((message) => message?.role === "assistant")
 			.map((message) => `${message.provider}/${message.model}`);
@@ -224,27 +284,37 @@ try {
 		const audits = entries.filter(
 			(entry) => entry?.type === "custom" && entry.customType === "prewalk-audit",
 		);
+		auditEvents = audits
+			.map((entry) => entry.data?.event)
+			.filter((event) => typeof event === "string");
 		const latest = audits.at(-1)?.data;
 		status = latest?.phase ?? "failed";
 		trigger = latest?.trigger?.toolName;
 		assert(
-			`${state.model?.provider}/${state.model?.id}` === "openai-codex/gpt-5.6-sol",
+			`${state.model?.provider}/${state.model?.id}` === plannerRef,
 			"selected-model-changed",
 		);
-		assert(requestModels.includes("openai-codex/gpt-5.6-sol"), "sol-not-observed");
-		assert(requestModels.includes("openai-codex/gpt-5.6-luna"), "luna-not-observed");
-		const payloadMarker = JSON.parse(await readFile(markerPath, "utf8"));
-		assert(
-			payloadMarker.targetPayloadCount >= 1 && payloadMarker.lunaPayloadGuidanceFree === true,
-			"hidden-guidance-observed",
-		);
-		assert((await readFile(fixturePath, "utf8")) === "after\n", "mutation-failed");
+		assert(requestModels.includes(plannerRef), "planner-not-observed");
+		assert(requestModels.includes(executorRef), "executor-not-observed");
+		let payloadMarker;
+		try {
+			payloadMarker = JSON.parse(await readFile(markerPath, "utf8"));
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+		}
+		const payloadEvidence = evaluateCanaryPayloadMarker(payloadMarker, options.payloadInspection);
+		toolEvents = Array.isArray(payloadMarker?.toolEvents) ? payloadMarker.toolEvents : [];
+		payloadGuidancePaths = Array.isArray(payloadMarker?.payloadGuidancePaths)
+			? payloadMarker.payloadGuidancePaths
+			: [];
+		assert(payloadEvidence.ok, payloadEvidence.reasonCode);
+		assert(["after", "after\n"].includes(await readFile(fixturePath, "utf8")), "mutation-failed");
 		assert(status === "completed", "handoff-incomplete");
 		assertions.push(
-			"selected-sol",
-			"sol-observed",
-			"luna-observed",
-			"luna-payload-guidance-free",
+			"selected-planner",
+			"planner-observed",
+			"executor-observed",
+			payloadEvidence.assertion,
 			"bounded-mutation",
 			"handoff-completed",
 		);
@@ -268,6 +338,16 @@ try {
 		settingsAfter = digest(await readFile(settingsPath));
 	} catch {
 		settingsAfter = digest("");
+	}
+	try {
+		const marker = JSON.parse(await readFile(markerPath, "utf8"));
+		toolEvents = Array.isArray(marker.toolEvents) ? marker.toolEvents : [];
+		payloadGuidancePaths = Array.isArray(marker.payloadGuidancePaths)
+			? marker.payloadGuidancePaths
+			: [];
+	} catch {
+		toolEvents = [];
+		payloadGuidancePaths = [];
 	}
 } finally {
 	for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);

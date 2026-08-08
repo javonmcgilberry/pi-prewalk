@@ -72,7 +72,11 @@ import {
 import { needsExecutorCompaction } from "../src/executor-context.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
-import { createProviderOverlay, type ProviderOverlay } from "../src/provider-overlay.js";
+import {
+	createProviderOverlay,
+	type ProviderOverlay,
+	removeExactUserPrompt,
+} from "../src/provider-overlay.js";
 import { mergeSessionTitles, readSessionMetadataTitles } from "../src/session-metadata.js";
 import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
 import {
@@ -1054,6 +1058,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				coordinator.run?.effectiveRoute === "executor",
 			isPrimaryAgentStream: () => primaryAgentStream,
 			currentRunId: () => coordinator.run?.id,
+			prepareExecutorContext: (context) => removeExactUserPrompt(context, prompts.plan),
 			onExecutorStreamStarted: async (runId) => {
 				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
 				if (coordinator.run?.id !== runId || coordinator.run.phase !== "handoff-pending") {

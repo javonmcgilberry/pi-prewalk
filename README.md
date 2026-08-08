@@ -393,6 +393,25 @@ explicit cost confirmation. The directional benchmark is also opt-in and is
 blocked until its public task corpus is reviewed and frozen. Read
 [`benchmark/README.md`](benchmark/README.md) before running either paid path.
 
+The provider canary accepts any configured planner and executor in
+`provider/model` form. For example:
+
+```sh
+npm run canary:provider -- \
+  --confirm-provider-cost I_UNDERSTAND_PROVIDER_REQUESTS \
+  --auth-file "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" \
+  --planner openai-codex/gpt-5.6-luna \
+  --executor anthropic/claude-haiku-4-5
+```
+
+It stages only those two provider credentials into an owner-only temporary
+profile, limits the live run to `prewalk_todo`, `read`, `edit`, and `write`, and
+writes redacted evidence to `--evidence-dir`. Add `--extension
+/absolute/path/to/provider-extension.ts` for a provider supplied by an
+extension. Use `--payload-inspection optional` when that transport does not
+expose Pi's provider-payload hook; the evidence records that boundary instead
+of treating it as proof that the payload was inspected.
+
 ## Documentation
 
 [`docs/README.md`](docs/README.md) separates current user documentation from

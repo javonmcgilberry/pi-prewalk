@@ -3,10 +3,12 @@ import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/p
 import path from "node:path";
 
 export const CANARY_CONFIRMATION = "I_UNDERSTAND_PROVIDER_REQUESTS";
+export const CANARY_TOOL_ALLOWLIST = "prewalk_todo,read,edit,write";
 export const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 export const MAX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const EVIDENCE_PREFIX = "prewalk-canary-";
 const EVIDENCE_SUFFIX = ".json";
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const ALLOWED_EVIDENCE_KEYS = new Set([
 	"schemaVersion",
 	"createdAt",
@@ -19,11 +21,89 @@ const ALLOWED_EVIDENCE_KEYS = new Set([
 	"settingsBefore",
 	"settingsAfter",
 	"assertions",
+	"auditEvents",
+	"toolEvents",
+	"payloadGuidancePaths",
 ]);
 
 export function containsCanaryHiddenGuidance(payload, hiddenPrompts) {
-	const serialized = JSON.stringify(payload);
-	return hiddenPrompts.some((prompt) => serialized.includes(prompt.trim()));
+	return findCanaryHiddenGuidancePaths(payload, hiddenPrompts).length > 0;
+}
+
+export function findCanaryHiddenGuidancePaths(payload, hiddenPrompts) {
+	const expected = hiddenPrompts.map((prompt) => prompt.trim()).filter(Boolean);
+	const paths = [];
+	const visit = (value, path) => {
+		if (paths.length >= 16) return;
+		if (typeof value === "string") {
+			if (expected.some((prompt) => value.includes(prompt))) paths.push(path);
+			return;
+		}
+		if (Array.isArray(value)) {
+			for (let index = 0; index < value.length; index += 1)
+				visit(value[index], `${path}[${index}]`);
+			return;
+		}
+		if (!value || typeof value !== "object") return;
+		for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`);
+	};
+	visit(payload, "$payload");
+	return paths;
+}
+
+export function canaryPayloadTargetsModel(payload, model) {
+	if (!payload || typeof payload !== "object") return false;
+	if (payload.model === model) return true;
+	const request = payload.request;
+	return Boolean(request && typeof request === "object" && request.model === model);
+}
+
+export function canaryAuditState(entries) {
+	const audits = entries.filter(
+		(entry) => entry?.type === "custom" && entry.customType === "prewalk-audit",
+	);
+	const events = audits
+		.map((entry) => entry.data?.event)
+		.filter((event) => typeof event === "string");
+	const latest = audits.at(-1)?.data;
+	if (latest?.event === "failed") {
+		return {
+			state: "failed",
+			events,
+			...(typeof latest.reasonCode === "string" ? { reasonCode: latest.reasonCode } : {}),
+		};
+	}
+	if (events.includes("handoff-completed")) return { state: "completed", events };
+	return { state: events.includes("todo-ready") ? "ready" : "running", events };
+}
+
+export function evaluateCanaryPayloadMarker(marker, requirement) {
+	if (marker?.targetPayloadGuidanceFree === false) {
+		return { ok: false, reasonCode: "hidden-guidance-observed" };
+	}
+	if (
+		marker === undefined ||
+		!Number.isFinite(marker.targetPayloadCount) ||
+		marker.targetPayloadCount < 1
+	) {
+		return requirement === "optional"
+			? { ok: true, assertion: "target-payload-hook-unavailable" }
+			: { ok: false, reasonCode: "target-payload-not-observed" };
+	}
+	if (marker.targetPayloadGuidanceFree !== true) {
+		return { ok: false, reasonCode: "hidden-guidance-observed" };
+	}
+	return { ok: true, assertion: "target-payload-guidance-free" };
+}
+
+export function isCanaryMutationInput(toolName, input, requestedPath, fixturePath) {
+	if (requestedPath !== fixturePath || !input || typeof input !== "object") return false;
+	if (toolName === "write") return input.content === "after" || input.content === "after\n";
+	if (toolName !== "edit") return false;
+	return (
+		(input.oldText === "before" && input.newText === "after") ||
+		(input.oldText === "before\n" && input.newText === "after\n")
+	);
 }
 
 function takeValue(argv, index, name) {
@@ -38,6 +118,12 @@ export function parseCanaryArgs(argv) {
 		authFile: undefined,
 		piExecutable: undefined,
 		evidenceDir: undefined,
+		planner: { provider: "openai-codex", model: "gpt-5.6-sol" },
+		executor: { provider: "openai-codex", model: "gpt-5.6-luna" },
+		plannerThinking: "high",
+		executorThinking: "low",
+		extensions: [],
+		payloadInspection: "required",
 		retentionMs: DEFAULT_RETENTION_MS,
 		timeoutMs: 10 * 60 * 1_000,
 	};
@@ -51,6 +137,18 @@ export function parseCanaryArgs(argv) {
 			options.piExecutable = takeValue(argv, index++, name);
 		} else if (name === "--evidence-dir") {
 			options.evidenceDir = takeValue(argv, index++, name);
+		} else if (name === "--planner") {
+			options.planner = parseCanaryModelRef(takeValue(argv, index++, name), name);
+		} else if (name === "--executor") {
+			options.executor = parseCanaryModelRef(takeValue(argv, index++, name), name);
+		} else if (name === "--planner-thinking") {
+			options.plannerThinking = takeValue(argv, index++, name);
+		} else if (name === "--executor-thinking") {
+			options.executorThinking = takeValue(argv, index++, name);
+		} else if (name === "--extension") {
+			options.extensions.push(takeValue(argv, index++, name));
+		} else if (name === "--payload-inspection") {
+			options.payloadInspection = takeValue(argv, index++, name);
 		} else if (name === "--retention-hours") {
 			options.retentionMs = Number(takeValue(argv, index++, name)) * 60 * 60 * 1_000;
 		} else if (name === "--timeout-ms") {
@@ -71,6 +169,18 @@ export function validateCanaryOptions(options) {
 	if (!options.authFile || !path.isAbsolute(options.authFile)) {
 		throw new Error("Provider canary requires an absolute --auth-file.");
 	}
+	if (!THINKING_LEVELS.has(options.plannerThinking)) {
+		throw new Error("Provider canary planner thinking level is invalid.");
+	}
+	if (!THINKING_LEVELS.has(options.executorThinking)) {
+		throw new Error("Provider canary executor thinking level is invalid.");
+	}
+	if (!options.extensions.every((extension) => path.isAbsolute(extension))) {
+		throw new Error("Provider canary extensions must be absolute paths.");
+	}
+	if (options.payloadInspection !== "required" && options.payloadInspection !== "optional") {
+		throw new Error("Provider canary payload inspection must be required or optional.");
+	}
 	if (
 		!Number.isFinite(options.retentionMs) ||
 		options.retentionMs <= 0 ||
@@ -82,6 +192,27 @@ export function validateCanaryOptions(options) {
 		throw new Error("Provider canary timeout must be at least 1000ms.");
 	}
 	return options;
+}
+
+function parseCanaryModelRef(value, name) {
+	const separator = value.indexOf("/");
+	if (separator <= 0 || separator === value.length - 1) {
+		throw new Error(`${name} must use provider/model format.`);
+	}
+	return { provider: value.slice(0, separator), model: value.slice(separator + 1) };
+}
+
+export function buildCanaryPrewalkConfig(executor, reasoning) {
+	return {
+		executor: { ...executor, reasoning },
+		executorFallbacks: [],
+		analytics: {
+			enabled: false,
+			catalogFallbackEnabled: false,
+			recentReceiptCount: 10,
+			schemaVersion: 1,
+		},
+	};
 }
 
 function safeLabels(values, name) {
@@ -107,6 +238,9 @@ export function buildEvidenceSummary({
 	settingsBefore,
 	settingsAfter,
 	assertions,
+	auditEvents = [],
+	toolEvents = [],
+	payloadGuidancePaths = [],
 }) {
 	if (outcome !== "passed" && outcome !== "failed") {
 		throw new Error("Invalid canary outcome.");
@@ -139,6 +273,9 @@ export function buildEvidenceSummary({
 		settingsBefore,
 		settingsAfter,
 		assertions: safeLabels(assertions, "assertions"),
+		auditEvents: safeLabels(auditEvents, "audit events"),
+		toolEvents: safeLabels(toolEvents, "tool events"),
+		payloadGuidancePaths: safeLabels(payloadGuidancePaths, "payload guidance paths"),
 	};
 }
 
@@ -226,6 +363,23 @@ export async function stageOpenAICodexCredential(sourceFile, targetFile) {
 		throw new Error("The source auth file has no complete openai-codex OAuth credential.");
 	}
 	await writeFile(targetFile, `${JSON.stringify({ "openai-codex": credential })}\n`, {
+		mode: 0o600,
+		flag: "wx",
+	});
+	await chmod(targetFile, 0o600);
+}
+
+export async function stageProviderCredentials(sourceFile, targetFile, providers) {
+	const source = JSON.parse(await readFile(sourceFile, "utf8"));
+	const staged = {};
+	for (const provider of [...new Set(providers)]) {
+		const credential = source?.[provider];
+		if (!credential || typeof credential !== "object" || Array.isArray(credential)) {
+			throw new Error(`The source auth file has no credential for ${provider}.`);
+		}
+		staged[provider] = credential;
+	}
+	await writeFile(targetFile, `${JSON.stringify(staged)}\n`, {
 		mode: 0o600,
 		flag: "wx",
 	});

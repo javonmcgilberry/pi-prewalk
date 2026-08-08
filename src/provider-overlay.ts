@@ -5,6 +5,7 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	isContextOverflow,
+	type Message,
 	type Model,
 	type ProviderEnv,
 	type ProviderHeaders,
@@ -27,6 +28,7 @@ export interface ProviderOverlayState {
 	shouldRouteToExecutor(): boolean;
 	isPrimaryAgentStream(): boolean;
 	currentRunId(): string | undefined;
+	prepareExecutorContext(context: Context): Context;
 	onExecutorStreamStarted(runId: string): void | Promise<void>;
 	onExecutorStreamSucceeded(runId: string): void | Promise<void>;
 	onExecutorStreamFailed(runId: string): void | Promise<void>;
@@ -43,6 +45,40 @@ export interface ProviderOverlay {
 interface ProviderOverlayAPI {
 	registerProvider(name: string, config: ProviderConfig): void;
 	unregisterProvider(name: string): void;
+}
+
+export function removeExactUserPrompt(context: Context, prompt: string): Context {
+	const expected = prompt.trim();
+	let changed = false;
+	const messages: Message[] = [];
+	for (const message of context.messages) {
+		if (message.role !== "user") {
+			messages.push(message);
+			continue;
+		}
+		if (typeof message.content === "string") {
+			if (message.content.trim() === expected) {
+				changed = true;
+				continue;
+			}
+			messages.push(message);
+			continue;
+		}
+		const content = message.content.filter(
+			(block) => block.type !== "text" || block.text.trim() !== expected,
+		);
+		if (content.length === 0) {
+			changed = true;
+			continue;
+		}
+		if (content.length !== message.content.length) {
+			changed = true;
+			messages.push({ ...message, content });
+			continue;
+		}
+		messages.push(message);
+	}
+	return changed ? { ...context, messages } : context;
 }
 
 function forwardStream(
@@ -257,7 +293,8 @@ export function createProviderOverlay(
 				throw new Error("Prewalk executor model is no longer registered.");
 			}
 			const { model: executorModel, delegate: executorDelegate } = resolved;
-			const executorContextTokens = estimateExecutorRequestTokens(context);
+			const executorContext = state.prepareExecutorContext(context);
+			const executorContextTokens = estimateExecutorRequestTokens(executorContext);
 			if (needsExecutorCompaction(executorContextTokens, executorModel)) {
 				return contextPressureStream(executorModel, () =>
 					state.onExecutorContextPressure(runId, true),
@@ -269,7 +306,7 @@ export function createProviderOverlay(
 					if (!auth.ok) throw new Error("Executor authorization is unavailable.");
 					const delegated = executorDelegate(
 						executorModel,
-						context,
+						executorContext,
 						executorOptions(options, auth, config),
 					);
 					await state.onExecutorStreamStarted(runId);
