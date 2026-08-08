@@ -56,6 +56,36 @@ describe("Prewalk audit records", () => {
 		]);
 	});
 
+	it("round-trips a cross-provider run and binds the executor provider", () => {
+		const crossProviderRun: PrewalkRun = {
+			...run,
+			config: {
+				...run.config,
+				executor: { ...run.config.executor, provider: "google" },
+			},
+		};
+		const record = createAuditRecord(crossProviderRun, "handoff-triggered");
+
+		expect(parseAuditRecord(record)).toEqual(record);
+		expect(runFromAudit(record)).toEqual(crossProviderRun);
+		const legacyRecord = {
+			...record,
+			schemaVersion: 2,
+			overlay: `${record.planner.provider}:${record.planner.model}>${record.executor.model}:${record.executor.reasoning}:v1`,
+		};
+		const migrated = parseAuditRecord(legacyRecord);
+		expect(migrated).toMatchObject({
+			schemaVersion: record.schemaVersion,
+			executor: record.executor,
+		});
+		expect(
+			parseAuditRecord({
+				...record,
+				executor: { ...record.executor, provider: "anthropic" },
+			}),
+		).toBeUndefined();
+	});
+
 	it("rejects unknown fields, raw errors, and unsupported reasons", () => {
 		const record = createAuditRecord(run, "handoff-triggered");
 		expect(parseAuditRecord({ ...record, headers: { authorization: "secret" } })).toBeUndefined();
@@ -64,11 +94,19 @@ describe("Prewalk audit records", () => {
 		expect(parseAuditRecord({ ...record, analytics: { enabled: "yes" } })).toBeUndefined();
 	});
 
-	it("keeps older audit records readable without inventing analytics settings", () => {
+	it("migrates version 2 audit records without inventing analytics settings", () => {
 		const record = createAuditRecord(run, "handoff-triggered");
-		const { analytics: _analytics, ...legacy } = record;
+		const { analytics: _analytics, ...current } = record;
+		const legacy = {
+			...current,
+			schemaVersion: 2,
+			overlay: `${record.planner.provider}:${record.planner.model}>${record.executor.model}:${record.executor.reasoning}:v1`,
+		};
 		const parsed = parseAuditRecord(legacy);
-		expect(parsed).toBeDefined();
+		expect(parsed).toMatchObject({
+			schemaVersion: record.schemaVersion,
+			executor: record.executor,
+		});
 		expect(runFromAudit(parsed as NonNullable<typeof parsed>).config.analytics).toBeUndefined();
 	});
 

@@ -191,8 +191,9 @@ Manual mode is the simplest place to start:
 4. Check `/prewalk status` if you want to see which model owns the next turn.
 
 After handoff, later turns stay on the executor, including after `/reload` in
-the same live Pi session. `/prewalk release` restores the planner in the same
-transcript. Closing and reopening Pi starts on the planner; an old unfinished
+the same live Pi session and when the planner and executor use different
+providers. `/prewalk release` restores the planner in the same transcript.
+Closing and reopening Pi starts on the planner; an old unfinished
 receipt is recorded as interrupted rather than silently restoring the route.
 
 If an executor provider fails for a reason other than context pressure, Prewalk

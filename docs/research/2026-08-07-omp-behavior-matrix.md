@@ -65,9 +65,9 @@ Several rows below are consequences of that, not preferences.
 | 5 | Hidden deep-plan nudge | Injected once | Injected once | Same | `session/prewalk.ts:107`; `PREWALK_PLAN_MESSAGE_TYPE` |
 | 6 | Continuation nudge | Yes | Yes | Same | `session/prewalk.ts:88`; `requestContinuation` |
 | 7 | Checklist at handoff | Yes | Yes | Same | `session/prewalk.ts:146`; `PREWALK_CHECKLIST_MESSAGE_TYPE` |
-| 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | `pi.on("context")` filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts` context hook |
-| 9 | Cross-provider planner/executor | Yes, and it is the default | **Yes, as of this change** | Same | `priority.json` `smol`; `src/provider-overlay.ts` executor delegate |
-| 10 | Cross-API planner/executor | Yes | Yes | Same | see "Cross-provider evidence" below |
+| 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | Context filter plus exact outgoing executor-context filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts`; `src/provider-overlay.ts` |
+| 9 | Cross-provider planner/executor | Yes, and it is the default | **Yes, including authenticated provider-backed responses** | Same | `priority.json` `smol`; provider-backed evidence below |
+| 10 | Cross-API planner/executor | Yes | **Yes, including one third-party transport** | Same at the routing boundary | see "Cross-provider evidence" below |
 | 11 | Default executor | `smol` role, resolved from a priority list | Configured `executor` plus inferred or explicit ordered fallbacks | **Chosen** | OMP `priority.json`; `src/default-executors.ts`; `src/core.ts` |
 | 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks inferred or configured chain** | Same | OMP `model-resolver.ts:966`; `src/executor-chain.ts` |
 | 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | **Yes, from OMP's `smol` patterns; explicit `[]` opts out** | Same outcome | OMP `priority.json`; `src/default-executors.ts`; `test/extension.test.ts` |
@@ -106,6 +106,22 @@ run rather than only booting the extension, and it asserts against the audit
 trail rather than stderr, because a refused arm never reaches stderr and the
 first version of this test passed against a deliberately broken build.
 
+The authenticated canary now covers the rest of the route. Two isolated,
+provider-backed runs completed the todo gate, bounded fixture mutation, and
+executor handoff:
+
+- `openai-codex/gpt-5.6-luna` to `anthropic/claude-haiku-4-5`
+- `anthropic/claude-haiku-4-5` to `cursor/gemini-3.6-flash`
+
+Both runs recorded the executor model in the assistant transcript, reached
+`handoff-completed`, left Pi's selected planner unchanged, and kept the isolated
+settings file byte-identical. The Cursor run also proves that a third-party
+transport can receive and finish a Prewalk handoff. It does not prove the
+transport's serialized wire payload was inspected: both custom transports
+bypass Pi's `before_provider_request` hook, and the canary records that as
+`target-payload-hook-unavailable` rather than treating missing observation as a
+clean payload.
+
 ## Cross-provider evidence
 
 The blocking concern was whether history from one API family can be replayed to
@@ -140,9 +156,10 @@ pass; the final wire conversion still belongs to each target API adapter
 (`anthropic-messages.js`, `openai-responses-shared.js`, `google-shared.js`), so
 a cross-API pair does not take a byte-identical path end to end — only an
 identical generic-normalization path. Transports that forward context to a
-backend without their own normalization, such as `pi-messages.js`, and any
-provider a third party registers, are outside what was tested. Treat those as
-unverified rather than supported.
+backend without their own normalization, such as `pi-messages.js`, remain
+outside the conversion test. The Cursor canary verifies routing and a complete
+response through one third-party transport, not its internal normalization or
+final wire payload, and not every registered provider.
 
 An earlier draft of this document claimed `openai-responses-shared.js` would
 throw on a foreign `thinkingSignature` via an unguarded `JSON.parse`. That was
@@ -201,19 +218,17 @@ starting point a user can override rather than a set of permitted models.
 - Whether losing reasoning signatures measurably degrades executor quality or
   prompt-cache hit rate. Untested here, and it already applies to the shipped
   same-provider default.
-- Google and Bedrock-family converters beyond the three pairs executed above.
+- Additional Google and Bedrock-family paths beyond the direct conversion
+  probes above.
 - Whether OMP's published guidance recommends a specific planner/executor pair.
   No such document was found in the repository; the `smol` and `slow` priority
   lists are the only in-repo signal.
 - Rows 5, 6, 7, 8, 18, 19, 20 were checked against OMP source but not executed
   in a live OMP session.
-- Cross-family replay through `pi-messages.js` or any third-party registered
-  transport. Only the three built-in adapters above were executed.
+- Cross-family replay through `pi-messages.js`, and payload-level inspection of
+  third-party transports that bypass Pi's provider-payload hook. Cursor routing
+  and response completion are verified, but its serialized payload is not.
 - Whether a provider tokenizer or custom transport can defeat the conservative
   executor estimate and produce a native overflow in practice. The mechanism is
   real; the frequency is unmeasured, and stock Pi still skips recovery for the
   executor's foreign assistant identity.
-- Cross-provider routing arms correctly in a real Pi process
-  (`npm run smoke:rpc-cross-provider`), but no executor request has yet been
-  billed to a second provider. Arming proves resolution, registration, and
-  overlay install; it does not prove a live response streams back.

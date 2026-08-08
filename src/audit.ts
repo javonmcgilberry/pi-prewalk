@@ -16,7 +16,8 @@ import { isRecord } from "./guards.js";
 
 export const PREWALK_AUDIT_TYPE = "prewalk-audit";
 export const PREWALK_AUTO_MODE_TYPE = "prewalk-auto-mode";
-const PREWALK_AUDIT_VERSION = 2;
+const PREWALK_AUDIT_VERSION = 3;
+const LEGACY_PREWALK_AUDIT_VERSION = 2;
 const PREWALK_AUTO_MODE_VERSION = 1;
 
 export interface PrewalkAutoModeRecord {
@@ -40,7 +41,7 @@ export type AuditEventKind =
 	| "failed";
 
 export interface PrewalkAuditRecord {
-	schemaVersion: 2;
+	schemaVersion: typeof PREWALK_AUDIT_VERSION;
 	runId: string;
 	epoch: string;
 	event: AuditEventKind;
@@ -171,8 +172,24 @@ function isExecutorConfig(value: unknown): value is ExecutorConfig {
 	);
 }
 
-function overlayFingerprint(planner: ModelConfig, executor: ExecutorConfig): string {
+function legacyOverlayFingerprint(planner: ModelConfig, executor: ExecutorConfig): string {
 	return `${planner.provider}:${planner.model}>${executor.model}:${executor.reasoning}:v1`;
+}
+
+function overlayFingerprint(planner: ModelConfig, executor: ExecutorConfig): string {
+	return `${planner.provider}:${planner.model}>${executor.provider}:${executor.model}:${executor.reasoning}:v2`;
+}
+
+function overlayMatchesVersion(
+	version: unknown,
+	planner: ModelConfig,
+	executor: ExecutorConfig,
+	overlay: unknown,
+): boolean {
+	if (version === LEGACY_PREWALK_AUDIT_VERSION) {
+		return overlay === legacyOverlayFingerprint(planner, executor);
+	}
+	return version === PREWALK_AUDIT_VERSION && overlay === overlayFingerprint(planner, executor);
 }
 
 export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): PrewalkAuditRecord {
@@ -208,7 +225,8 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 	if (
 		!isRecord(value) ||
 		Object.keys(value).some((key) => !AUDIT_KEYS.has(key)) ||
-		value.schemaVersion !== PREWALK_AUDIT_VERSION ||
+		(value.schemaVersion !== LEGACY_PREWALK_AUDIT_VERSION &&
+			value.schemaVersion !== PREWALK_AUDIT_VERSION) ||
 		typeof value.runId !== "string" ||
 		typeof value.epoch !== "string" ||
 		!isEvent(value.event) ||
@@ -217,13 +235,14 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		!isMode(value.mode) ||
 		!isPlannerProfile(value.planner) ||
 		!isExecutorConfig(value.executor) ||
-		value.planner.provider !== value.executor.provider ||
-		value.overlay !== overlayFingerprint(value.planner, value.executor) ||
 		typeof value.planningPromptInjected !== "boolean" ||
 		typeof value.continuePending !== "boolean" ||
 		typeof value.todoActive !== "boolean" ||
 		typeof value.todoSeen !== "boolean"
 	) {
+		return undefined;
+	}
+	if (!overlayMatchesVersion(value.schemaVersion, value.planner, value.executor, value.overlay)) {
 		return undefined;
 	}
 	if (value.trigger !== undefined && !isTrigger(value.trigger)) return undefined;
@@ -242,7 +261,7 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		return undefined;
 	}
 	return {
-		schemaVersion: 2,
+		schemaVersion: PREWALK_AUDIT_VERSION,
 		runId: value.runId,
 		epoch: value.epoch,
 		event: value.event,
@@ -252,7 +271,7 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		planner: value.planner,
 		executor: value.executor,
 		...(analytics ? { analytics } : {}),
-		overlay: value.overlay,
+		overlay: overlayFingerprint(value.planner, value.executor),
 		planningPromptInjected: value.planningPromptInjected,
 		continuePending: value.continuePending,
 		todoActive: value.todoActive,
