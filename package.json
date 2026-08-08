@@ -40,7 +40,7 @@
     "lint": "biome check .",
     "smoke:rpc": "node scripts/smoke-rpc.mjs",
     "smoke:rpc-cross-provider": "node scripts/smoke-rpc-cross-provider.mjs",
-    "verify:teeth": "node scripts/verify-teeth.mjs",
+    "verify:teeth": "node scripts/verify-teeth.mjs scripts/teeth/cross-provider.teeth.json",
     "canary:provider": "node scripts/canary-provider.mjs",
     "benchmark": "node scripts/benchmark-prewalk.mjs",
     "benchmark:report": "node scripts/benchmark-report.mjs",

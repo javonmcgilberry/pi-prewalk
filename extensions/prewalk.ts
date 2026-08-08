@@ -1164,12 +1164,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		audit(prompt.event, ctx);
 	};
 
+	/**
+	 * Reports whether the run took hold, so a caller such as the child path can
+	 * explain an unarmed session instead of leaving the reason nowhere.
+	 */
 	const startRun = async (
 		mode: "automatic" | "manual",
 		ctx: ExtensionContext,
 		triggerTurn = false,
 		configOverride?: PrewalkConfig,
-	): Promise<void> => {
+	): Promise<"armed" | "executor-unavailable" | "failed"> => {
 		try {
 			const config = configOverride ?? (await readConfig());
 			const compactionState = nativeResponsesCompactionState();
@@ -1193,7 +1197,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				deactivatePrewalkTools();
 				ctx.ui.notify(unavailableExecutorNotice(resolution.rejected), "error");
 				updateStatus(ctx);
-				return;
+				return "executor-unavailable";
 			}
 			const effectiveConfig: PrewalkConfig = { ...config, executor: resolution.executor };
 			const todoActive = pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME);
@@ -1225,6 +1229,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (action.type === "send-planning") {
 				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, triggerTurn);
 			}
+			return "armed";
 		} catch (error) {
 			const reason =
 				error instanceof Error &&
@@ -1239,6 +1244,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					? error.message
 					: "provider-unavailable";
 			fail(reason, false, ctx);
+			return "failed";
 		}
 	};
 
@@ -1293,11 +1299,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		// A child runs the executor its own agent entry names. Session-level
 		// fallbacks belong to the parent and must not silently redirect a child to
 		// a model nobody opted it into.
-		await startRun("automatic", ctx, false, {
+		const outcome = await startRun("automatic", ctx, false, {
 			...config,
 			executor: target.executor,
 			executorFallbacks: [],
 		});
+		if (outcome === "executor-unavailable") {
+			// Without this the child reports no diagnostic at all, so `/prewalk
+			// status` cannot say why the hand-off never happened.
+			childDiagnostic = "executor-unavailable";
+			updateStatus(ctx);
+		}
 	};
 
 	const configure = async (ctx: ExtensionContext): Promise<void> => {

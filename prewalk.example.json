@@ -4,6 +4,13 @@
     "model": "gpt-5.6-luna",
     "reasoning": "low"
   },
+  "executorFallbacks": [
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "reasoning": "low"
+    }
+  ],
   "analytics": {
     "enabled": true,
     "catalogFallbackEnabled": false,

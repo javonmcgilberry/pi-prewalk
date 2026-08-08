@@ -1514,6 +1514,48 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("All time");
 	});
 
+	it("keeps a hand-written executor fallback chain through the wizard", async () => {
+		// The wizard only edits the primary executor. Dropping the chain would
+		// silently remove the thing that keeps a run alive when the primary is gone.
+		const fallbacks = [{ provider: "anthropic", model: "claude-sonnet-5", reasoning: "low" }];
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ executor: DEFAULT_EXECUTOR, executorFallbacks: fallbacks })}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		vi.mocked(harness.context.ui.select)
+			.mockResolvedValueOnce("openai-codex/gpt-5.6-luna")
+			.mockResolvedValueOnce("medium")
+			.mockResolvedValueOnce("enabled")
+			.mockResolvedValueOnce("disabled");
+		vi.mocked(harness.context.ui.confirm).mockResolvedValueOnce(true);
+
+		await harness.commands.get("prewalk")?.("configure", harness.context);
+
+		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
+			{
+				executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
+				executorFallbacks: fallbacks,
+			},
+		);
+	});
+
+	it("refuses to configure the running model at its own reasoning level", async () => {
+		// Mirrors the resolver's same-as-planner rule so the wizard cannot save a
+		// pairing that would be rejected at arm time.
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		vi.mocked(harness.context.ui.select)
+			.mockResolvedValueOnce(`openai-codex/${PLANNER_MODEL_ID}`)
+			.mockResolvedValueOnce("low");
+
+		await harness.commands.get("prewalk")?.("configure", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("nothing to hand off to");
+		expect(harness.context.ui.confirm).not.toHaveBeenCalled();
+	});
+
 	it("configures an executor without starting Prewalk work", async () => {
 		await writeChildConfig(
 			{
@@ -1856,6 +1898,26 @@ describe("Prewalk extension harness", () => {
 		).toEqual([undefined]);
 		expect(launch).toEqual(launchSnapshot);
 		expect(schedule).toEqual(scheduleSnapshot);
+	});
+
+	it("reports why a child stayed unarmed when its executor is unavailable", async () => {
+		// startRun leaves the child unarmed rather than failing the spawn, so the
+		// reason has to reach /prewalk status or it exists nowhere.
+		identifyChild();
+		await writeChildConfig({
+			worker: {
+				mode: "implementation",
+				executor: { provider: "openai-codex", model: "absent-model", reasoning: "low" },
+			},
+		});
+		const harness = createHarness({ unresolvableModelIds: ["absent-model"] });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(harness.messages).toEqual([]);
+		await harness.commands.get("prewalk")?.("status", harness.context);
+		expect(harness.notifications.at(-1)).toContain("executor-unavailable");
 	});
 
 	it.each([
