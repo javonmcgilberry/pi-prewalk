@@ -87,6 +87,25 @@ Several rows below are consequences of that, not preferences.
 | 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/status.ts:17`; `extensions/prewalk.ts` `modelLabelForNotice` |
 | 26 | `configure` offers cross-provider executors | n/a, no wizard | **Yes, planner's provider ranked first** | **Addition** | `extensions/prewalk.ts` `configure` |
 
+## What the live smoke test caught
+
+Unit tests with hand-built fakes reported cross-provider working while the real
+thing could not arm at all. `src/provider-overlay.ts` registered the overlay as
+`{ ...previous, streamSimple }`, and Pi rejects a `streamSimple` registration
+that carries no `api`. Only a provider another extension had already configured
+contributed one, so the overlay installed exclusively on `openai-codex`, where
+Pi Codex Conversion supplies it. A planner on any stock provider failed with a
+swallowed error surfaced as `provider-unavailable`.
+
+The bug predates cross-provider support and was never same-provider specific. It
+survived because the existing RPC smoke test never armed a run: it exercised
+`status`, `cancel`, and `reload`, none of which install the overlay.
+
+Two lessons are now encoded in `scripts/smoke-rpc-cross-provider.mjs`. It arms a
+run rather than only booting the extension, and it asserts against the audit
+trail rather than stderr, because a refused arm never reaches stderr and the
+first version of this test passed against a deliberately broken build.
+
 ## Cross-provider evidence
 
 The blocking concern was whether history from one API family can be replayed to
@@ -190,5 +209,7 @@ starting point a user can override rather than a set of permitted models.
   transport. Only the three built-in adapters above were executed.
 - Whether a tokenizer difference between two equal-window models can overflow
   the executor in practice. The mechanism is real; the frequency is unmeasured.
-- Cross-provider routing has unit coverage but has never run against two live
-  provider credentials end to end.
+- Cross-provider routing arms correctly in a real Pi process
+  (`npm run smoke:rpc-cross-provider`), but no executor request has yet been
+  billed to a second provider. Arming proves resolution, registration, and
+  overlay install; it does not prove a live response streams back.

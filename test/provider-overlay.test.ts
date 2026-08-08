@@ -422,6 +422,32 @@ describe("provider overlay", () => {
 		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
 	});
 
+	it("supplies the planner's api when its provider has no prior registration", () => {
+		// Pi rejects a streamSimple registration that carries no api. Only a
+		// provider another extension already configured contributes one, so a stock
+		// provider such as anthropic would otherwise fail to arm at all.
+		const fixture = setup();
+		fixture.setConfig(undefined);
+
+		fixture.overlay.install();
+
+		expect(fixture.pi.registerProvider).toHaveBeenCalledWith(
+			PLANNER_PROVIDER,
+			expect.objectContaining({ api: fixture.planner.api }),
+		);
+	});
+
+	it("keeps the existing provider api when one is already registered", () => {
+		const fixture = setup();
+
+		fixture.overlay.install();
+
+		expect(fixture.pi.registerProvider).toHaveBeenCalledWith(
+			PLANNER_PROVIDER,
+			expect.objectContaining({ api: "openai-codex-responses" }),
+		);
+	});
+
 	it("sends a cross-provider executor through its own provider transport", async () => {
 		const fixture = setupCrossProvider();
 		fixture.overlay.install();

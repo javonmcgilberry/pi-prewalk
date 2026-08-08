@@ -228,8 +228,13 @@ export function createProviderOverlay(
 		};
 
 		overlayStream = stream;
+		// Pi rejects a streamSimple registration that carries no api. A provider
+		// with no prior custom configuration contributes none, which is the normal
+		// case for a stock provider, so take it from the planner model that already
+		// belongs to this provider.
 		pi.registerProvider(plannerProfile.provider, {
 			...previous,
+			api: previous?.api ?? planner.api,
 			streamSimple: stream,
 		});
 	};
