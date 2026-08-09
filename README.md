@@ -88,14 +88,17 @@ match. That applies equally to the same-provider default pair, so a
 cross-provider pair does not lose anything extra.
 
 The executor may have a smaller context window than the planner. Pi still keeps
-the planner selected, so Prewalk adds a request-time watchdog using stock Pi's
-default 16,384-token compaction reserve. It prevents an oversized executor
-request from reaching the provider, triggers Pi's public compaction API, and
-retries the hidden executor checklist once when the blocked or failed request
-needs a replay. A completed over-window response is compacted without
-duplicating its answer; if the executor is still oversized after that retry,
-Prewalk fails safely instead of looping. The behavior matrix records the
-remaining limits of this public-API implementation:
+the planner selected, so Prewalk adds a request-time watchdog using Pi's
+effective `compaction.reserveTokens` setting (16,384 when it is not configured).
+It prevents an oversized executor request from reaching the provider, triggers
+Pi's public compaction API after the agent settles, and retries the hidden
+executor checklist once when the blocked or failed request needs a replay. If
+Pi's own compaction already handled the turn, Prewalk reuses that result instead
+of starting a second compaction. When automatic compaction is disabled, Prewalk
+fails closed rather than issuing an oversized request. A completed over-window
+response is compacted without duplicating its answer; if the executor is still
+oversized after that retry, Prewalk fails safely instead of looping. The behavior
+matrix records the remaining limits of this public-API implementation:
 `docs/research/2026-08-07-omp-behavior-matrix.md`.
 
 ## Why Prewalk is not plan mode
@@ -243,9 +246,11 @@ Prewalk works without pi-subagents, Context Mode, or Pi Codex Conversion.
 - pi-subagents remains independent. Prewalk does not rewrite child models,
   thinking levels, fallback models, scheduled launches, or nested descendants.
 - Pi Codex Conversion can wrap the same public provider stream. Keep
-  `compaction.responsesCompaction` set to `false`. Prewalk refuses to arm when
-  native Responses compaction is explicitly enabled because hook order could
-  otherwise compact planning-only context before Prewalk filters it.
+  `compaction.responsesCompaction` set to `false` (the legacy top-level
+  `responsesCompaction` setting is recognized too). Prewalk refuses to arm,
+  including when restoring an active run, when native Responses compaction is
+  explicitly enabled because hook order could otherwise compact planning-only
+  context before Prewalk filters it.
 
 Guessed mutation results are deliberately unsupported: Prewalk hands off only on
 a positively proven code mutation.
@@ -255,14 +260,16 @@ a positively proven code mutation.
 Prewalk removes its planning-only prompt before handoff and from the text Pi
 sends to its summarizer. Pi still sizes its own automatic compaction against the
 selected planner, so Prewalk supplements it for the executor: the overlay
-estimates the exact outgoing context, blocks a request above the executor's
-reserve, and the turn boundary calls public `ctx.compact()` before retrying the
-checklist once when a replay is needed. A completed response may compact without
-a retry, so the answer is not duplicated. A second unchanged pressure failure,
-or failed/cancelled compaction, leaves the session on the planner instead of
-looping. This protection does not mean that prompt-cache reads survive a
-model/provider switch; the executor receives the history, but its provider may
-charge those input tokens as a cache miss.
+conservatively estimates the outgoing context, blocks a request above the
+executor's reserve, and calls public `ctx.compact()` after the agent settles
+when a replay is needed. A completed response may compact without a retry, so
+the answer is not duplicated. If Pi already compacted the turn, Prewalk uses
+that result instead of starting another compaction. A second unchanged pressure
+failure, or failed/cancelled compaction, leaves the session on the planner
+instead of looping. The estimate is not a tokenizer, so provider-specific
+serialization can still differ. Prompt-cache reads also do not necessarily
+survive a model/provider switch; the executor receives the history, but its
+provider may charge those input tokens as a cache miss.
 
 ### Experimental child-local Prewalk
 

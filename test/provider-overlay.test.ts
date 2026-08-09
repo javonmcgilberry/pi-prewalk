@@ -152,10 +152,12 @@ function setup() {
 	};
 	let route = false;
 	let primary = false;
+	let executorReserveTokens: number | undefined;
 	const state: ProviderOverlayState = {
 		shouldRouteToExecutor: () => route,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
+		getExecutorCompactionReserveTokens: () => executorReserveTokens,
 		prepareExecutorContext: (context) => removeExactUserPrompt(context, "deep planner guidance"),
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
@@ -213,6 +215,9 @@ function setup() {
 		},
 		setPrimary: (value: boolean) => {
 			primary = value;
+		},
+		setExecutorReserve: (value: number | undefined) => {
+			executorReserveTokens = value;
 		},
 		setConfig: (value: ProviderConfig | undefined) => {
 			config = value;
@@ -436,6 +441,25 @@ describe("provider overlay", () => {
 		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
 		expect(fixture.state.onExecutorStreamFailed).not.toHaveBeenCalled();
 		expect(result?.stopReason).toBe("error");
+		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
+	});
+
+	it("uses the host's effective reserve for executor preflight", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.setExecutorReserve(32_768);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, {
+				messages: [{ role: "user", content: "x".repeat(280_000), timestamp: 1 }],
+			})
+			.result();
+
+		expect(fixture.delegatedModels).toEqual([]);
+		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
 		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
 	});
 

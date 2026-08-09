@@ -28,6 +28,8 @@ export interface ProviderOverlayState {
 	shouldRouteToExecutor(): boolean;
 	isPrimaryAgentStream(): boolean;
 	currentRunId(): string | undefined;
+	/** Effective Pi compaction reserve, when the host can provide it. */
+	getExecutorCompactionReserveTokens?(): number | undefined;
 	prepareExecutorContext(context: Context): Context;
 	onExecutorStreamStarted(runId: string): void | Promise<void>;
 	onExecutorStreamSucceeded(runId: string): void | Promise<void>;
@@ -295,7 +297,13 @@ export function createProviderOverlay(
 			const { model: executorModel, delegate: executorDelegate } = resolved;
 			const executorContext = state.prepareExecutorContext(context);
 			const executorContextTokens = estimateExecutorRequestTokens(executorContext);
-			if (needsExecutorCompaction(executorContextTokens, executorModel)) {
+			if (
+				needsExecutorCompaction(
+					executorContextTokens,
+					executorModel,
+					state.getExecutorCompactionReserveTokens?.(),
+				)
+			) {
 				return contextPressureStream(executorModel, () =>
 					state.onExecutorContextPressure(runId, true),
 				);

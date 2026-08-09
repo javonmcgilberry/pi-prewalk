@@ -13,6 +13,7 @@ import {
 	type ExtensionContext,
 	getAgentDir,
 	SessionManager,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -70,7 +71,10 @@ import {
 	type RejectedExecutor,
 	resolveExecutorChain,
 } from "../src/executor-chain.js";
-import { needsExecutorCompaction } from "../src/executor-context.js";
+import {
+	EXECUTOR_CONTEXT_RESERVE_TOKENS,
+	needsExecutorCompaction,
+} from "../src/executor-context.js";
 import { isRecord } from "../src/guards.js";
 import { MutationTurnBuffer } from "../src/mutation.js";
 import {
@@ -118,6 +122,35 @@ const PROMPT_TYPES = new Set([
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_ASSESS_MESSAGE_TYPE,
 ]);
+
+type ExecutorCompactionPolicy = {
+	enabled: boolean;
+	reserveTokens: number;
+};
+
+const DEFAULT_EXECUTOR_COMPACTION_POLICY: ExecutorCompactionPolicy = {
+	enabled: true,
+	reserveTokens: EXECUTOR_CONTEXT_RESERVE_TOKENS,
+};
+
+function readExecutorCompactionPolicy(ctx: ExtensionContext): ExecutorCompactionPolicy {
+	try {
+		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
+			projectTrusted: ctx.isProjectTrusted(),
+		}).getCompactionSettings();
+		return {
+			enabled: settings.enabled,
+			reserveTokens:
+				Number.isFinite(settings.reserveTokens) && settings.reserveTokens >= 0
+					? settings.reserveTokens
+					: DEFAULT_EXECUTOR_COMPACTION_POLICY.reserveTokens,
+		};
+	} catch {
+		// A settings read must not prevent the extension from loading. The stock
+		// reserve is safer than sending an unguarded executor request.
+		return DEFAULT_EXECUTOR_COMPACTION_POLICY;
+	}
+}
 
 const TodoParameters = Type.Object({
 	op: Type.Union([
@@ -211,7 +244,12 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 		return "invalid";
 	}
 	if (!isRecord(config)) return "invalid";
-	if (config.compaction === undefined) return "disabled";
+	if (config.compaction === undefined) {
+		const legacyResponsesCompaction = config.responsesCompaction;
+		if (legacyResponsesCompaction === undefined) return "disabled";
+		if (typeof legacyResponsesCompaction !== "boolean") return "invalid";
+		return legacyResponsesCompaction ? "enabled" : "disabled";
+	}
 	if (!isRecord(config.compaction)) return "invalid";
 	if (config.compaction.responsesCompaction === undefined) return "disabled";
 	if (typeof config.compaction.responsesCompaction !== "boolean") return "invalid";
@@ -600,11 +638,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let delegation: DelegationStatus | undefined;
 	let compactionChecklistRunId: string | undefined;
 	let executorContextPressure: { runId: string; retry: boolean } | undefined;
+	let hostCompactionForExecutor: { runId: string; retry: boolean } | undefined;
 	let pendingExecutorCompaction: { runId: string; retry: boolean } | undefined;
 	let committedExecutorCompaction: { runId: string; retry: boolean } | undefined;
 	let executorCompactionRetry: { runId: string; count: number } | undefined;
 	let pendingExecutorFailureRunId: string | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
+	let executorCompactionPolicy = DEFAULT_EXECUTOR_COMPACTION_POLICY;
+	const refreshExecutorCompactionPolicy = (ctx: ExtensionContext): ExecutorCompactionPolicy => {
+		executorCompactionPolicy = readExecutorCompactionPolicy(ctx);
+		return executorCompactionPolicy;
+	};
 	const deactivatePrewalkTools = (): void => {
 		const baseline =
 			prewalkToolSlate ??
@@ -707,6 +751,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	const resetExecutorCompactionState = (): void => {
 		executorContextPressure = undefined;
+		hostCompactionForExecutor = undefined;
 		pendingExecutorCompaction = undefined;
 		committedExecutorCompaction = undefined;
 		executorCompactionRetry = undefined;
@@ -1061,6 +1106,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				coordinator.run?.effectiveRoute === "executor",
 			isPrimaryAgentStream: () => primaryAgentStream,
 			currentRunId: () => coordinator.run?.id,
+			getExecutorCompactionReserveTokens: () => executorCompactionPolicy.reserveTokens,
 			prepareExecutorContext: (context) => removeExactUserPrompt(context, prompts.plan),
 			onExecutorStreamStarted: async (runId) => {
 				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
@@ -1216,6 +1262,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		) {
 			return;
 		}
+		const policy = refreshExecutorCompactionPolicy(ctx);
+		if (!policy.enabled) {
+			executorContextPressure = undefined;
+			ctx.ui.notify(
+				"Prewalk stopped before an oversized executor request because Pi automatic compaction is disabled.",
+				"error",
+			);
+			fail("executor-compaction-failed", false, ctx);
+			return;
+		}
 		if (
 			retry &&
 			executorCompactionRetry?.runId === run.id &&
@@ -1358,6 +1414,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					tools: [...prewalkToolSlate],
 				});
 			}
+			refreshExecutorCompactionPolicy(ctx);
 			ensureOverlay(ctx);
 			if (armedRun) {
 				await openAnalyticsJournal(armedRun, ctx).catch(() => {
@@ -1868,6 +1925,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		resetExecutorCompactionState();
+		refreshExecutorCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
 		delegation = undefined;
@@ -1912,6 +1970,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (record) {
 				const restored = runFromAudit(record);
 				if (restored.phase === "failed" && restored.reasonCode === "configuration-invalid") {
+					coordinator.reset();
+					lastAuditKey = JSON.stringify(record);
+					await startRun("automatic", ctx);
+					return;
+				}
+				if (restored.phase !== "failed" && nativeResponsesCompactionState() !== "disabled") {
 					coordinator.reset();
 					lastAuditKey = JSON.stringify(record);
 					await startRun("automatic", ctx);
@@ -2073,6 +2137,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", (_event, ctx) => {
 		if (!verifyOverlayOwnership(ctx)) return;
+		refreshExecutorCompactionPolicy(ctx);
 		primaryAgentStream = true;
 	});
 
@@ -2116,6 +2181,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		const run = coordinator.run;
 		if (!run) return;
+		if (hostCompactionForExecutor?.runId === run.id) {
+			hostCompactionForExecutor = undefined;
+			executorContextPressure = undefined;
+			updateStatus(ctx);
+			return;
+		}
+		if (executorContextPressure?.runId === run.id) {
+			requestExecutorCompaction(ctx, executorContextPressure.retry);
+			updateStatus(ctx);
+			return;
+		}
 		if (pendingExecutorCompaction) {
 			// ctx.compact() aborts the active Agent loop before its own completion
 			// callback runs. Keep a handoff-pending run alive across that settlement;
@@ -2258,6 +2334,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!verifyOverlayOwnership(ctx)) return;
+		refreshExecutorCompactionPolicy(ctx);
 		const run = coordinator.run;
 		if (!run) return;
 		if (acceptsMutationEvidence(run)) {
@@ -2283,7 +2360,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const currentRun = coordinator.run;
 		if (currentRun?.id === run.id) {
 			if (executorContextPressure?.runId === run.id) {
-				requestExecutorCompaction(ctx, executorContextPressure.retry);
+				// Pi's own compaction check runs after this extension's turn_end
+				// handlers. Defer the executor request until agent_settled so the
+				// host cannot start two compactions for the same turn.
 			} else if (
 				currentRun.effectiveRoute === "executor" &&
 				(currentRun.phase === "active" || currentRun.phase === "completed") &&
@@ -2297,8 +2376,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				);
 				const usage = ctx.getContextUsage();
 				if (executor && usage?.tokens !== null && usage?.tokens !== undefined) {
-					if (needsExecutorCompaction(usage.tokens, executor)) {
-						requestExecutorCompaction(ctx, event.message.stopReason !== "stop");
+					if (
+						needsExecutorCompaction(
+							usage.tokens,
+							executor,
+							executorCompactionPolicy.reserveTokens,
+						)
+					) {
+						executorContextPressure = {
+							runId: run.id,
+							retry: event.message.stopReason !== "stop",
+						};
 					}
 				}
 			}
@@ -2339,8 +2427,18 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_compact", async (event, ctx) => {
 		const run = coordinator.run;
+		const pressure = executorContextPressure;
 		if (pendingExecutorCompaction?.runId === run?.id) {
 			committedExecutorCompaction = pendingExecutorCompaction;
+		} else if (run && pressure && pressure.runId === run.id) {
+			// Pi's own planner-sized compaction runs after turn_end. Treat its
+			// persisted entry as satisfying the pending executor pressure instead
+			// of starting a second compaction from agent_settled.
+			hostCompactionForExecutor = pressure;
+			executorContextPressure = undefined;
+			if (pressure.retry && compactionChecklistRunId !== run.id) {
+				await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true);
+			}
 		}
 		if (
 			run &&

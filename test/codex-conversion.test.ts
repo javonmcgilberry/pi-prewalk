@@ -28,7 +28,10 @@ afterEach(async () => {
 });
 
 describe("installed Codex conversion composition", () => {
-	it("loads the installed conversion first and sends a deterministic request through its public stream", async () => {
+	// biome-ignore format: keep the existing composition fixture diff small
+	it.each(["conversion-first", "prewalk-first"] as const)(
+		"composes Prewalk with the installed conversion in %s order",
+		async (order) => {
 		const accessToken = `e30.${Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
 		).toString("base64url")}.signature`;
@@ -80,11 +83,18 @@ describe("installed Codex conversion composition", () => {
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
-			extensionFactories: [
-				{ name: "codex-conversion", factory: codexConversion },
-				{ name: "conversion-probe", factory: probe },
-				{ name: "prewalk", factory: prewalkExtension },
-			],
+			extensionFactories:
+				order === "conversion-first"
+					? [
+							{ name: "codex-conversion", factory: codexConversion },
+							{ name: "conversion-probe", factory: probe },
+							{ name: "prewalk", factory: prewalkExtension },
+						]
+					: [
+							{ name: "prewalk", factory: prewalkExtension },
+							{ name: "codex-conversion", factory: codexConversion },
+							{ name: "conversion-probe", factory: probe },
+						],
 		});
 		await loader.reload();
 		expect(loader.getExtensions().errors).toEqual([]);
@@ -182,5 +192,6 @@ describe("installed Codex conversion composition", () => {
 		);
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "message")).toEqual([]);
-	});
+		},
+	);
 });

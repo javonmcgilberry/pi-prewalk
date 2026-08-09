@@ -252,6 +252,7 @@ function createHarness(
 		getRegisteredProviderConfig: vi.fn(() => providerConfig),
 	};
 	const context = {
+		cwd: process.cwd(),
 		model: planner,
 		thinkingLevel: "low",
 		modelRegistry,
@@ -274,6 +275,7 @@ function createHarness(
 			confirm: vi.fn(),
 		},
 		getContextUsage: () => contextUsage,
+		isProjectTrusted: () => true,
 		compact: (options: {
 			onComplete?: (result: unknown) => void;
 			onError?: (error: Error) => void;
@@ -959,6 +961,21 @@ describe("Prewalk extension harness", () => {
 			event: "failed",
 			reasonCode: "native-compaction-unsupported",
 		});
+	});
+
+	it("refuses legacy Conversion native compaction settings", async () => {
+		await writeFile(
+			path.join(agentDir, "pi-codex-conversion.json"),
+			`${JSON.stringify({ responsesCompaction: true })}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: native-compaction-unsupported.");
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 	});
 
 	it.each([
@@ -2598,6 +2615,18 @@ describe("Prewalk extension harness", () => {
 		await restored.providerConfig()?.streamSimple?.(restored.planner, { messages: [] }).result();
 		expect(restored.delegated).toEqual([restored.executor]);
 		expect(restored.entries).toEqual([]);
+
+		await writeFile(
+			path.join(agentDir, "pi-codex-conversion.json"),
+			`${JSON.stringify({ compaction: { responsesCompaction: true } })}\n`,
+		);
+		const refused = createHarness();
+		refused.setBranch(auditBranch(first));
+		prewalkExtension(refused.pi);
+		await refused.emit("session_start", { type: "session_start", reason: "reload" });
+
+		expect(refused.notifications.at(-1)).toBe("Prewalk failed: native-compaction-unsupported.");
+		expect(refused.providerConfig()?.streamSimple).toBe(refused.baseStream);
 	});
 
 	it("retries a repaired startup configuration on reload", async () => {
@@ -2960,11 +2989,118 @@ describe("Prewalk extension harness", () => {
 			},
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		harness.completeCompaction();
 		expect(harness.messages).toHaveLength(before + 1);
 		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+	});
+
+	it("uses Pi's configured reserve for executor threshold compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await writeFile(
+			path.join(agentDir, "settings.json"),
+			JSON.stringify({ compaction: { enabled: true, reserveTokens: 32_768 } }),
+		);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		harness.setContextUsage({ tokens: 170_000, contextWindow: 200_000, percent: 85 });
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				provider: harness.executor.provider,
+				model: harness.executor.id,
+				stopReason: "stop",
+			},
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toHaveLength(1);
+	});
+
+	it("fails closed when Pi automatic compaction is disabled", async () => {
+		await writeFile(
+			path.join(agentDir, "settings.json"),
+			JSON.stringify({ compaction: { enabled: false, reserveTokens: 32_768 } }),
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				provider: harness.executor.provider,
+				model: harness.executor.id,
+				stopReason: "stop",
+			},
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toHaveLength(0);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: executor-compaction-failed.");
+	});
+
+	it("does not start a second compaction when Pi compacts after turn_end", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
+		const beforeMessages = harness.messages.length;
+		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				provider: harness.executor.provider,
+				model: harness.executor.id,
+				stopReason: "toolUse",
+			},
+			toolResults: [],
+		});
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: {
+				messagesToSummarize: [
+					{
+						role: "custom",
+						customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+						details: { runId },
+					},
+				],
+				turnPrefixMessages: [],
+			},
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "host-threshold" },
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toHaveLength(0);
+		expect(harness.messages).toHaveLength(beforeMessages + 1);
+		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
 	});
 
 	it("does not retry a completed executor stop after threshold compaction", async () => {
@@ -2988,6 +3124,7 @@ describe("Prewalk extension harness", () => {
 			},
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		harness.completeCompaction();
@@ -3016,6 +3153,7 @@ describe("Prewalk extension harness", () => {
 			message: errorMessage,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		const beforeRetry = harness.messages.length;
@@ -3063,9 +3201,11 @@ describe("Prewalk extension harness", () => {
 			message: first,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(harness.compactionCalls).toHaveLength(1);
 		harness.completeCompaction();
 
+		await harness.emit("agent_start", { type: "agent_start" });
 		const second = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized as never)
@@ -3076,6 +3216,7 @@ describe("Prewalk extension harness", () => {
 			message: second,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(harness.compactionCalls).toHaveLength(1);
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(harness.statuses.at(-1)).toContain("last failed");
@@ -3104,6 +3245,7 @@ describe("Prewalk extension harness", () => {
 			message: errorMessage,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(harness.compactionCalls).toHaveLength(1);
 	});
 
@@ -3124,6 +3266,7 @@ describe("Prewalk extension harness", () => {
 			message: errorMessage,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		await harness.emit("agent_settled", { type: "agent_settled" });
@@ -3175,6 +3318,7 @@ describe("Prewalk extension harness", () => {
 			message: errorMessage,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		harness.failCompaction();
 		expect(harness.notifications.at(-1)).toContain("Prewalk failed: executor-compaction-failed");
@@ -3200,6 +3344,7 @@ describe("Prewalk extension harness", () => {
 			message: errorMessage,
 			toolResults: [],
 		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		await harness.emit("session_compact", {

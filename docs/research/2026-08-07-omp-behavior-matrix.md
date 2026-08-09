@@ -72,7 +72,7 @@ Several rows below are consequences of that, not preferences.
 | 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks inferred or configured chain** | Same | OMP `model-resolver.ts:966`; `src/executor-chain.ts` |
 | 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | **Yes, from OMP's `smol` patterns; explicit `[]` opts out** | Same outcome | OMP `priority.json`; `src/default-executors.ts`; `test/extension.test.ts` |
 | 13 | Executor context window must be >= planner's | No such rule | **No startup floor; request-time executor guard** | Same outcome with safety guard | `src/executor-chain.ts`; `src/executor-context.ts`; `test/extension.test.ts` |
-| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor reserve watchdog supplements planner-sized Pi compaction** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/provider-overlay.ts`; `extensions/prewalk.ts` |
+| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor watchdog uses Pi's effective reserve (16,384 fallback), waits for settlement, and reuses native compaction when it already ran** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/provider-overlay.ts`; `extensions/prewalk.ts` |
 | 14b | Context-overflow *recovery* covers the executor | Yes | **Preflight and failed detectable overflow compact and retry; completed over-window responses compact without replay; unknown native overflow remains outside Pi's `sameModel` path** | Partial parity | OMP `agent-session.js:1522`; `src/provider-overlay.ts`; `test/provider-overlay.test.ts` |
 | 15 | Same model + same effective effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `isSameModelAtEffectiveReasoning` |
 | 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares model-clamped reasoning before rejecting |
@@ -177,9 +177,10 @@ produced by the executor carry the executor's identity while the selected model
 is the planner, so that branch still does not run.
 
 Prewalk now closes the practical request-safety gap through public seams: it
-estimates the exact context sent to the executor, blocks a request above the
-executor's default reserve, triggers Pi's public compaction API at the turn
-boundary, and retries the hidden checklist once when a blocked or failed
+conservatively estimates the context sent to the executor, blocks a request
+above Pi's effective reserve, waits until the agent settles before invoking
+Pi's public compaction API, and reuses a native compaction entry when Pi already
+handled the turn. It retries the hidden checklist once when a blocked or failed
 request needs replay. A completed response may compact without replay; a second
 unchanged pressure failure stops the run rather than looping. It also
 supplements Pi's planner threshold after executor turns. This removes the

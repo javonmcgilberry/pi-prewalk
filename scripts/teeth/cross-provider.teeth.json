@@ -34,13 +34,13 @@
     {
       "name": "an oversized executor request reaches transport instead of compaction",
       "file": "src/provider-overlay.ts",
-      "find": "\t\t\tif (needsExecutorCompaction(executorContextTokens, executorModel)) {",
+      "find": "\t\t\tif (\n\t\t\t\tneedsExecutorCompaction(\n\t\t\t\t\texecutorContextTokens,\n\t\t\t\t\texecutorModel,\n\t\t\t\t\tstate.getExecutorCompactionReserveTokens?.(),\n\t\t\t\t)\n\t\t\t) {",
       "replace": "\t\t\tif (false) {"
     },
     {
       "name": "executor threshold compaction is skipped after a turn",
       "file": "extensions/prewalk.ts",
-      "find": "\t\t\t\t\t\trequestExecutorCompaction(ctx, event.message.stopReason !== \"stop\");",
+      "find": "\t\t\t\t\t\texecutorContextPressure = {\n\t\t\t\t\t\t\trunId: run.id,\n\t\t\t\t\t\t\tretry: event.message.stopReason !== \"stop\",\n\t\t\t\t\t\t};",
       "replace": ""
     },
     {
@@ -58,7 +58,7 @@
     {
       "name": "agent settlement resets a handoff while executor compaction is pending",
       "file": "extensions/prewalk.ts",
-      "find": "\t\tif (pendingExecutorCompaction) {",
+      "find": "\t\tif (pendingExecutorCompaction) {\n\t\t\t// ctx.compact() aborts the active Agent loop before its own completion\n\t\t\t// callback runs. Keep a handoff-pending run alive across that settlement;\n\t\t\t// the callback owns the only checklist retry.\n\t\t\tupdateStatus(ctx);\n\t\t\treturn;\n\t\t}",
       "replace": "\t\tif (false) {"
     },
     {

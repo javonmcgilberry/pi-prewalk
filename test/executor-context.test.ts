@@ -17,6 +17,11 @@ describe("executor context watchdog", () => {
 		expect(executorContextThreshold(executor())).toBe(83_616);
 	});
 
+	it("uses the effective Pi reserve instead of always using the stock default", () => {
+		expect(executorContextThreshold(executor(), 32_768)).toBe(67_232);
+		expect(needsExecutorCompaction(67_233, executor(), 32_768)).toBe(true);
+	});
+
 	it("compacts only after the executor threshold is crossed", () => {
 		expect(needsExecutorCompaction(83_616, executor())).toBe(false);
 		expect(needsExecutorCompaction(83_617, executor())).toBe(true);

@@ -4,24 +4,33 @@ import type { AssistantMessage, Context, Message, Model, Usage } from "@earendil
 export const EXECUTOR_CONTEXT_RESERVE_TOKENS = 16_384;
 
 /**
- * Return the request budget below which stock Pi's automatic compaction keeps
- * enough room for the next response. An invalid model window fails closed.
+ * Return the executor request budget using the same reserve Pi uses for its
+ * own compaction checks. Callers supply the effective reserve when the host
+ * exposes it; this value remains the safe fallback for older hosts.
  */
-export function executorContextThreshold(model: Pick<Model<any>, "contextWindow">): number {
+export function executorContextThreshold(
+	model: Pick<Model<any>, "contextWindow">,
+	reserveTokens = EXECUTOR_CONTEXT_RESERVE_TOKENS,
+): number {
 	if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0) return 0;
-	return Math.max(0, model.contextWindow - EXECUTOR_CONTEXT_RESERVE_TOKENS);
+	const reserve =
+		Number.isFinite(reserveTokens) && reserveTokens >= 0
+			? reserveTokens
+			: EXECUTOR_CONTEXT_RESERVE_TOKENS;
+	return Math.max(0, model.contextWindow - reserve);
 }
 
 /**
- * The public extension API does not expose Pi's effective compaction settings,
- * so this deliberately follows the stock default reserve. Unknown context
- * usage is treated as pressure rather than risking an oversized request.
+ * Callers pass Pi's effective compaction reserve when available. Unknown
+ * context usage is treated as pressure rather than risking an oversized
+ * request.
  */
 export function needsExecutorCompaction(
 	contextTokens: number | null | undefined,
 	model: Pick<Model<any>, "contextWindow">,
+	reserveTokens = EXECUTOR_CONTEXT_RESERVE_TOKENS,
 ): boolean {
-	const threshold = executorContextThreshold(model);
+	const threshold = executorContextThreshold(model, reserveTokens);
 	if (threshold <= 0 || contextTokens === null || contextTokens === undefined) return true;
 	if (!Number.isFinite(contextTokens) || contextTokens < 0) return true;
 	return contextTokens > threshold;
