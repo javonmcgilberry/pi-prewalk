@@ -51,28 +51,29 @@ limitation is recorded in
 
 So Prewalk keeps the planner selected and overlays the provider's
 `streamSimple`, substituting the executor for primary Agent-loop requests
-(`src/provider-overlay.ts`). Pi's session still believes the planner is active.
+(`src/model-runtime.ts` over `src/provider-overlay.ts`). Pi's session still
+believes the planner is active.
 Several rows below are consequences of that, not preferences.
 
 ## Matrix
 
 | # | Behavior | OMP | This extension | Kind | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Handoff mechanism | Real session model switch, ephemeral | Provider `streamSimple` overlay; selected model never changes | **Forced** | OMP `session/prewalk.ts:138`; here `src/provider-overlay.ts` |
+| 1 | Handoff mechanism | Real session model switch, ephemeral | Run-scoped temporary-model lease over a provider `streamSimple` overlay; selected model never changes | **Forced** | OMP `session/prewalk.ts:138`; here `src/model-runtime.ts` |
 | 2 | Persists a new default model | No, `ephemeral: true` | No, nothing is written | Same outcome | `session/model-controls.ts:255`; overlay writes no settings |
 | 3 | Handoff trigger | First `edit`/`write` tool result after the todo gate | Same | Same | `session/prewalk.ts:22,101`; `src/core.ts` `onTurnEnd` |
 | 4 | Todo gate before handoff | Yes | Yes | Same | `session/prewalk.ts:83,100`; `src/core.ts` |
 | 5 | Hidden deep-plan nudge | Injected once | Injected once | Same | `session/prewalk.ts:107`; `PREWALK_PLAN_MESSAGE_TYPE` |
 | 6 | Continuation nudge | Yes | Yes | Same | `session/prewalk.ts:88`; `requestContinuation` |
 | 7 | Checklist at handoff | Yes | Yes | Same | `session/prewalk.ts:146`; `PREWALK_CHECKLIST_MESSAGE_TYPE` |
-| 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | Context filter plus exact outgoing executor-context filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts`; `src/provider-overlay.ts` |
+| 8 | Plan nudge scrubbed from history | `#scrubPlanNudge` | Context filter plus exact outgoing executor-context filter | Same outcome | `session/prewalk.ts:127`; `extensions/prewalk.ts`; `src/model-runtime.ts` |
 | 9 | Cross-provider planner/executor | Yes, and it is the default | **Yes, including authenticated provider-backed responses** | Same | `priority.json` `smol`; provider-backed evidence below |
 | 10 | Cross-API planner/executor | Yes | **Yes, including one third-party transport** | Same at the routing boundary | see "Cross-provider evidence" below |
 | 11 | Default executor | `smol` role, resolved from a priority list | Configured `executor` plus inferred or explicit ordered fallbacks | **Chosen** | OMP `priority.json`; `src/default-executors.ts`; `src/core.ts` |
 | 12 | Executor degrades when unavailable | Yes, walks the priority list | **Yes, walks inferred or configured chain** | Same | OMP `model-resolver.ts:966`; `src/executor-chain.ts` |
 | 12b | Executor chain is inferred, not configured | Yes, a built-in priority list ships | **Yes, from OMP's `smol` patterns; explicit `[]` opts out** | Same outcome | OMP `priority.json`; `src/default-executors.ts`; `test/extension.test.ts` |
 | 13 | Executor context window must be >= planner's | No such rule | **No startup floor; request-time executor guard** | Same outcome with safety guard | `src/executor-chain.ts`; `src/executor-context.ts`; `test/extension.test.ts` |
-| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor watchdog uses Pi's effective reserve (16,384 fallback), waits for settlement, and reuses native compaction when it already ran** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/provider-overlay.ts`; `extensions/prewalk.ts` |
+| 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor watchdog uses Pi's effective reserve (16,384 fallback), waits for settlement, and reuses native compaction when it already ran** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/model-runtime.ts`; `extensions/prewalk.ts` |
 | 14b | Context-overflow *recovery* covers the executor | Yes | **Preflight and failed detectable overflow compact and retry; completed over-window responses compact without replay; unknown native overflow remains outside Pi's `sameModel` path** | Partial parity | OMP `agent-session.js:1522`; `src/provider-overlay.ts`; `test/provider-overlay.test.ts` |
 | 15 | Same model + same effective effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `isSameModelAtEffectiveReasoning` |
 | 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares model-clamped reasoning before rejecting |

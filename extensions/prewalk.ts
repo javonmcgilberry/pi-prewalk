@@ -76,12 +76,12 @@ import {
 	needsExecutorCompaction,
 } from "../src/executor-context.js";
 import { isRecord } from "../src/guards.js";
-import { MutationTurnBuffer } from "../src/mutation.js";
 import {
-	createProviderOverlay,
-	type ProviderOverlay,
-	removeExactUserPrompt,
-} from "../src/provider-overlay.js";
+	createTemporaryModelRuntime,
+	type TemporaryModelLease,
+	type TemporaryModelRuntime,
+} from "../src/model-runtime.js";
+import { MutationTurnBuffer } from "../src/mutation.js";
 import { mergeSessionTitles, readSessionMetadataTitles } from "../src/session-metadata.js";
 import { compactStatus, type DelegationStatus, detailedStatus } from "../src/status.js";
 import {
@@ -368,6 +368,25 @@ function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
 	return "not-started";
 }
 
+type RunIdentity = Readonly<{ runId: string; epoch: string }>;
+
+function identityOf(run: PrewalkRun | undefined): RunIdentity | undefined {
+	return run ? { runId: run.id, epoch: run.epoch } : undefined;
+}
+
+function sameRunIdentity(identity: RunIdentity | undefined, run: PrewalkRun | undefined): boolean {
+	return (
+		identity !== undefined &&
+		run !== undefined &&
+		identity.runId === run.id &&
+		identity.epoch === run.epoch
+	);
+}
+
+function sameIdentityValue(left: RunIdentity, right: RunIdentity): boolean {
+	return left.runId === right.runId && left.epoch === right.epoch;
+}
+
 function isMissingFile(error: unknown): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
@@ -628,21 +647,34 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let lastOutcome: "bypassed" | "completed" | "failed" | "released" | undefined;
 	let pendingAdmission = false;
 	let evaluation: EvaluationState | undefined;
-	let overlay: ProviderOverlay | undefined;
+	let modelRuntime: TemporaryModelRuntime | undefined;
+	let modelLease: TemporaryModelLease | undefined;
+	let modelLeaseRun: RunIdentity | undefined;
 	let primaryAgentStream = false;
+	type HostRunMarker = RunIdentity | null;
+	type HostEventOwnership = { known: boolean; marker?: HostRunMarker };
+	const messageRunIds = new WeakMap<object, HostRunMarker>();
+	const messageRunKeys = new Map<string, HostRunMarker>();
+	const toolRunIds = new Map<string, HostRunMarker>();
+	const hostSettlementRuns: HostRunMarker[] = [];
+	const hostCompactionRuns: HostRunMarker[] = [];
+	const pendingHostRuns: HostRunMarker[] = [];
+	const agentEndRuns: HostRunMarker[] = [];
+	let activeHostRun: HostRunMarker | undefined;
 	let todoPhases: TodoPhase[] = [];
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
-	let compactionChecklistRunId: string | undefined;
-	let executorContextPressure: { runId: string; retry: boolean } | undefined;
-	let hostCompactionForExecutor: { runId: string; retry: boolean } | undefined;
-	let pendingExecutorCompaction: { runId: string; retry: boolean } | undefined;
-	let committedExecutorCompaction: { runId: string; retry: boolean } | undefined;
-	let executorCompactionRetry: { runId: string; count: number } | undefined;
-	let pendingExecutorFailureRunId: string | undefined;
+	let compactionChecklistRun: RunIdentity | undefined;
+	let suppressUnownedCompaction = false;
+	let executorContextPressure: (RunIdentity & { retry: boolean }) | undefined;
+	let hostCompactionForExecutor: (RunIdentity & { retry: boolean }) | undefined;
+	let pendingExecutorCompaction: (RunIdentity & { retry: boolean }) | undefined;
+	let committedExecutorCompaction: (RunIdentity & { retry: boolean }) | undefined;
+	let executorCompactionRetry: (RunIdentity & { count: number }) | undefined;
+	let pendingExecutorFailureRun: RunIdentity | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
 	let executorCompactionPolicy = DEFAULT_EXECUTOR_COMPACTION_POLICY;
 	const refreshExecutorCompactionPolicy = (ctx: ExtensionContext): ExecutorCompactionPolicy => {
@@ -697,11 +729,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				executor: ReturnType<typeof pricingSchedule>;
 			};
 		};
+		finalization?: Promise<void>;
 	};
 	let analyticsState: ActiveAnalyticsState | undefined;
 
 	let analyticsWrites = Promise.resolve();
-	let analyticsFinalization: { runId: string; epoch: string; promise: Promise<void> } | undefined;
 	type DelegationInvocation = {
 		toolCallId: string;
 		rootSessionId: string;
@@ -755,8 +787,114 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		pendingExecutorCompaction = undefined;
 		committedExecutorCompaction = undefined;
 		executorCompactionRetry = undefined;
-		pendingExecutorFailureRunId = undefined;
-		compactionChecklistRunId = undefined;
+		pendingExecutorFailureRun = undefined;
+		compactionChecklistRun = undefined;
+	};
+
+	const messageKey = (message: AgentMessage): string =>
+		`${message.role}:${String(message.timestamp)}`;
+	const rememberMessageRun = (message: AgentMessage, runId: HostRunMarker): void => {
+		messageRunIds.set(message, runId);
+		messageRunKeys.set(messageKey(message), runId);
+		if (messageRunKeys.size > 512) {
+			const oldest = messageRunKeys.keys().next().value;
+			if (typeof oldest === "string") messageRunKeys.delete(oldest);
+		}
+	};
+	const messageOwnership = (message: AgentMessage): HostEventOwnership => {
+		if (messageRunIds.has(message)) return { known: true, marker: messageRunIds.get(message) };
+		const key = messageKey(message);
+		if (messageRunKeys.has(key)) return { known: true, marker: messageRunKeys.get(key) };
+		return { known: false };
+	};
+	const currentHostRun = (): HostRunMarker => identityOf(coordinator.run) ?? null;
+	const activeHostRunMarker = (): HostEventOwnership =>
+		activeHostRun === undefined ? { known: false } : { known: true, marker: activeHostRun };
+	const fallbackEventOwnership = (): HostEventOwnership => {
+		const active = activeHostRunMarker();
+		if (active.known) return active;
+		const queued = hostSettlementRuns[0];
+		return queued === undefined ? { known: false } : { known: true, marker: queued };
+	};
+	const eventOwnership = (message: AgentMessage): HostEventOwnership => {
+		const ownership = messageOwnership(message);
+		return ownership.known ? ownership : fallbackEventOwnership();
+	};
+	const belongsToCurrentRun = (
+		ownership: HostEventOwnership,
+		run: PrewalkRun | undefined = coordinator.run,
+	): boolean => {
+		if (!ownership.known) return true;
+		const marker = ownership.marker;
+		if (marker === null) return run === undefined;
+		return marker !== undefined && sameRunIdentity(marker, run);
+	};
+	const rememberToolRun = (toolCallId: string, runId: HostRunMarker): void => {
+		toolRunIds.set(toolCallId, runId);
+		if (toolRunIds.size > 512) {
+			const oldest = toolRunIds.keys().next().value;
+			if (typeof oldest === "string") toolRunIds.delete(oldest);
+		}
+	};
+	const toolOwnership = (toolCallId: string): HostEventOwnership =>
+		toolRunIds.has(toolCallId)
+			? { known: true, marker: toolRunIds.get(toolCallId) }
+			: fallbackEventOwnership();
+	const rememberAgentContext = (): void => {
+		const marker = currentHostRun();
+		pendingHostRuns.push(marker);
+	};
+	const discardPendingHostRun = (identity: RunIdentity | undefined): void => {
+		if (identity === undefined) return;
+		for (let index = pendingHostRuns.length - 1; index >= 0; index -= 1) {
+			const marker = pendingHostRuns[index];
+			if (marker !== null && marker !== undefined && sameIdentityValue(marker, identity)) {
+				pendingHostRuns.splice(index, 1);
+			}
+		}
+	};
+	const discardHostCompactionRun = (marker: HostRunMarker | undefined): boolean => {
+		if (marker === null || marker === undefined) return false;
+		let discarded = false;
+		for (let index = hostCompactionRuns.length - 1; index >= 0; index -= 1) {
+			const queued = hostCompactionRuns[index];
+			if (queued !== null && queued !== undefined && sameIdentityValue(queued, marker)) {
+				hostCompactionRuns.splice(index, 1);
+				discarded = true;
+			}
+		}
+		return discarded;
+	};
+	const discardAgentEndRun = (marker: HostRunMarker | undefined): void => {
+		if (marker === null || marker === undefined) return;
+		const index = agentEndRuns.findIndex(
+			(queued) => queued !== null && queued !== undefined && sameIdentityValue(queued, marker),
+		);
+		if (index >= 0) agentEndRuns.splice(index, 1);
+	};
+	const beginAgentStream = (): HostEventOwnership => {
+		const pending = pendingHostRuns.shift();
+		const marker = pending !== undefined ? pending : currentHostRun();
+		agentEndRuns.push(marker);
+		activeHostRun = marker;
+		return { known: true, marker };
+	};
+	const settleAgentStream = (): HostEventOwnership => {
+		const marker =
+			hostSettlementRuns.length > 0
+				? hostSettlementRuns.shift()
+				: activeHostRun !== undefined
+					? activeHostRun
+					: currentHostRun();
+		if (
+			activeHostRun !== undefined &&
+			marker !== undefined &&
+			((activeHostRun === null && marker === null) ||
+				(activeHostRun !== null && marker !== null && sameIdentityValue(activeHostRun, marker)))
+		) {
+			activeHostRun = undefined;
+		}
+		return { known: true, marker };
 	};
 
 	const recordDelegationProjection = async (
@@ -804,7 +942,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 
 	const openAnalyticsJournal = async (run: PrewalkRun, ctx: ExtensionContext): Promise<void> => {
 		analyticsState = undefined;
-		analyticsFinalization = undefined;
 		const analytics = run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
 		if (!analytics.enabled) return;
 		const planner = ctx.modelRegistry.find(run.planner.provider, run.planner.model);
@@ -841,6 +978,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		};
 		const catalog = { catalogDate: pricing.capturedAt.slice(0, 10), rates: pricing.rates };
 		await analyticsStore.writeJournal(journal);
+		if (!sameRunIdentity(identityOf(run), coordinator.run)) return;
 		analyticsState = { journal, pricing, catalog };
 	};
 
@@ -849,7 +987,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 	): Promise<void> => {
 		analyticsState = undefined;
-		analyticsFinalization = undefined;
 		const analytics = run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG;
 		if (!analytics.enabled) return;
 		const journal = await analyticsStore.restoreJournal(run.id, run.epoch);
@@ -868,6 +1005,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			},
 		};
 		const catalog = { catalogDate: pricing.capturedAt.slice(0, 10), rates: pricing.rates };
+		if (!sameRunIdentity(identityOf(run), coordinator.run)) return;
 		analyticsState = { journal, pricing, catalog };
 	};
 
@@ -878,9 +1016,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		model: string,
 		role: UsageRole,
 		usage: Usage,
+		targetState?: ActiveAnalyticsState,
+		targetRun?: PrewalkRun,
 	): Promise<void> => {
-		const state = analyticsState;
-		if (!state) return Promise.resolve();
+		const state = targetState ?? analyticsState;
+		if (
+			!state ||
+			(targetRun !== undefined &&
+				(state.journal.runId !== targetRun.id || state.journal.epoch !== targetRun.epoch))
+		)
+			return Promise.resolve();
 		const observation = {
 			sequence: state.journal.lastObservedSequence + 1,
 			evidenceId,
@@ -902,7 +1047,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		evidenceKeys.push(key);
 		// Keep the journal's handoff state current so a journal recovered after a
 		// crash reports the handoff that actually happened.
-		if (coordinator.run) state.journal.handoffState = handoffState(coordinator.run);
+		if (targetRun) state.journal.handoffState = handoffState(targetRun);
+		else if (
+			coordinator.run?.id === state.journal.runId &&
+			coordinator.run.epoch === state.journal.epoch
+		)
+			state.journal.handoffState = handoffState(coordinator.run);
 		const [slice] = normalizeUsageObservations([observation]);
 		if (slice) state.journal.usage.push(slice);
 		return enqueueAnalytics(async () => {
@@ -910,23 +1060,23 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		});
 	};
 
-	const finalizeAnalytics = (outcome: RunOutcome): Promise<void> => {
-		const state = analyticsState;
+	const finalizeAnalytics = (
+		outcome: RunOutcome,
+		targetState: ActiveAnalyticsState | undefined = analyticsState,
+		targetRun?: PrewalkRun,
+	): Promise<void> => {
+		const state = targetState;
 		if (!state) return analyticsWrites;
-		if (analyticsFinalization) {
-			if (
-				analyticsFinalization.runId === state.journal.runId &&
-				analyticsFinalization.epoch === state.journal.epoch
-			)
-				return analyticsFinalization.promise;
-			analyticsFinalization = undefined;
-		}
+		if (state.finalization) return state.finalization;
 		const { journal, pricing } = state;
+		const intendedRun = targetRun ?? coordinator.run;
+		const finalHandoffState =
+			intendedRun?.id === journal.runId && intendedRun.epoch === journal.epoch
+				? handoffState(intendedRun)
+				: journal.handoffState;
 		const promise = enqueueAnalytics(async () => {
 			journal.outcome = outcome;
-			journal.handoffState = coordinator.run
-				? handoffState(coordinator.run)
-				: journal.handoffState;
+			journal.handoffState = finalHandoffState;
 			const calculation = calculateSavings({
 				outcome,
 				handoffState: journal.handoffState,
@@ -964,11 +1114,23 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			}
 			if (analyticsState === state) analyticsState = undefined;
 		}).catch((error) => {
-			if (analyticsFinalization?.promise === promise) analyticsFinalization = undefined;
+			if (state.finalization === promise) state.finalization = undefined;
 			throw error;
 		});
-		analyticsFinalization = { runId: journal.runId, epoch: journal.epoch, promise };
+		state.finalization = promise;
 		return promise;
+	};
+
+	const restoreModelLease = (run?: RunIdentity): void => {
+		if (
+			run !== undefined &&
+			(modelLeaseRun === undefined || !sameIdentityValue(modelLeaseRun, run))
+		) {
+			return;
+		}
+		modelLease?.restore();
+		modelLease = undefined;
+		modelLeaseRun = undefined;
 	};
 
 	const finalizeInterruptedAnalytics = async (
@@ -1025,7 +1187,23 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const fail = (reasonCode: string, holdExecutorRoute: boolean, ctx: ExtensionContext): void => {
+	const fail = (
+		reasonCode: string,
+		holdExecutorRoute: boolean,
+		ctx: ExtensionContext,
+		expectedRun?: RunIdentity,
+	): void => {
+		const failedRun = coordinator.run;
+		if (expectedRun !== undefined && !sameRunIdentity(expectedRun, failedRun)) return;
+		discardPendingHostRun(identityOf(failedRun));
+		if (discardHostCompactionRun(identityOf(failedRun))) suppressUnownedCompaction = true;
+		const failedState =
+			analyticsState &&
+			failedRun &&
+			analyticsState.journal.runId === failedRun.id &&
+			analyticsState.journal.epoch === failedRun.epoch
+				? analyticsState
+				: undefined;
 		resetExecutorCompactionState();
 		if (!coordinator.run) {
 			if (!ctx.model) {
@@ -1046,15 +1224,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 		}
 		coordinator.fail(reasonCode, holdExecutorRoute);
-		overlay?.restore();
-		overlay = undefined;
+		restoreModelLease(identityOf(failedRun));
 		mutations.resetForRun();
 		audit("failed", ctx);
 		if (
 			reasonCode === "executor-stream-failed" ||
-			(reasonCode !== "provider-drift" && (analyticsState?.journal.usage.length ?? 0) > 0)
+			(reasonCode !== "provider-drift" && (failedState?.journal.usage.length ?? 0) > 0)
 		) {
-			void finalizeAnalytics("failed").catch(() => {
+			void finalizeAnalytics("failed", failedState, failedRun).catch(() => {
 				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
 			});
 		}
@@ -1063,13 +1240,24 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	};
 
 	const cancel = async (selectedModelIsPlanner: boolean, ctx: ExtensionContext): Promise<void> => {
+		const run = coordinator.run;
+		if (!run) return;
+		const runIdentity = identityOf(run);
+		discardPendingHostRun(runIdentity);
+		if (discardHostCompactionRun(runIdentity)) suppressUnownedCompaction = true;
+		const state =
+			analyticsState?.journal.runId === run.id && analyticsState.journal.epoch === run.epoch
+				? analyticsState
+				: undefined;
 		resetExecutorCompactionState();
 		coordinator.cancel(selectedModelIsPlanner);
+		primaryAgentStream = false;
 		mutations.resetForRun();
 		audit("cancelled", ctx);
-		await finalizeAnalytics("cancelled");
-		overlay?.restore();
-		overlay = undefined;
+		restoreModelLease(runIdentity);
+		await finalizeAnalytics("cancelled", state, run).catch(() => {
+			ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+		});
 	};
 
 	const release = async (ctx: ExtensionContext): Promise<void> => {
@@ -1082,12 +1270,19 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Prewalk release is valid only after the executor handoff.", "error");
 			return;
 		}
+		const runIdentity = identityOf(run);
 		resetExecutorCompactionState();
 		coordinator.release();
 		audit("manual-release", ctx);
-		await finalizeAnalytics("released");
-		overlay?.restore();
-		overlay = undefined;
+		const state =
+			analyticsState?.journal.runId === run.id && analyticsState.journal.epoch === run.epoch
+				? analyticsState
+				: undefined;
+		restoreModelLease(runIdentity);
+		await finalizeAnalytics("released", state, run).catch(() => {
+			ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+		});
+		if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 		coordinator.reset();
 		mutations.resetForRun();
 		lastOutcome = "released";
@@ -1096,64 +1291,90 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify("Prewalk released; the planner is active again.", "info");
 	};
 
-	const ensureOverlay = (ctx: ExtensionContext): ProviderOverlay => {
-		if (overlay) return overlay;
+	const ensureModelRuntime = (ctx: ExtensionContext): TemporaryModelLease => {
 		const run = coordinator.run;
 		if (!run) throw new Error("Prewalk is inactive.");
-		const candidate = createProviderOverlay(pi, ctx.modelRegistry, run.planner, run.config, {
-			shouldRouteToExecutor: () =>
-				coordinator.run?.phase === "handoff-pending" ||
-				coordinator.run?.effectiveRoute === "executor",
-			isPrimaryAgentStream: () => primaryAgentStream,
-			currentRunId: () => coordinator.run?.id,
-			getExecutorCompactionReserveTokens: () => executorCompactionPolicy.reserveTokens,
-			prepareExecutorContext: (context) => removeExactUserPrompt(context, prompts.plan),
-			onExecutorStreamStarted: async (runId) => {
-				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
-				if (coordinator.run?.id !== runId || coordinator.run.phase !== "handoff-pending") {
-					return;
-				}
-				try {
-					coordinator.activateExecutor();
-					audit("executor-active", ctx);
-				} catch {
-					fail("provider-drift", false, ctx);
-					await analyticsWrites;
-				}
+		const runIdentity: RunIdentity = { runId: run.id, epoch: run.epoch };
+		if (
+			modelLease &&
+			modelLeaseRun !== undefined &&
+			sameIdentityValue(modelLeaseRun, runIdentity)
+		) {
+			return modelLease;
+		}
+		restoreModelLease(modelLeaseRun);
+		modelRuntime ??= createTemporaryModelRuntime(pi, ctx.modelRegistry);
+		const candidate = modelRuntime.mount(
+			{
+				runId: run.id,
+				planner: run.planner,
+				executor: run.config.executor,
+				hiddenPlanPrompt: prompts.plan,
 			},
-			onExecutorStreamSucceeded: async (runId) => {
-				if (pendingExecutorFailureRunId === runId) pendingExecutorFailureRunId = undefined;
-				if (executorCompactionRetry?.runId === runId) executorCompactionRetry = undefined;
-				if (coordinator.run?.id !== runId || coordinator.run.phase !== "active") return;
-				try {
-					coordinator.completeHandoff();
-					audit("handoff-completed", ctx);
-				} catch {
-					fail("provider-drift", true, ctx);
-					await analyticsWrites;
-				}
+			{
+				isCurrent: () => sameRunIdentity(runIdentity, coordinator.run),
+				shouldRouteToExecutor: () =>
+					coordinator.run?.phase === "handoff-pending" ||
+					coordinator.run?.effectiveRoute === "executor",
+				isPrimaryAgentStream: () => primaryAgentStream,
+				getExecutorCompactionReserveTokens: () => executorCompactionPolicy.reserveTokens,
+				onExecutorStreamStarted: async () => {
+					if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+					if (sameRunIdentity(pendingExecutorFailureRun, coordinator.run))
+						pendingExecutorFailureRun = undefined;
+					if (coordinator.run?.phase !== "handoff-pending") return;
+					try {
+						coordinator.activateExecutor();
+						audit("executor-active", ctx);
+					} catch {
+						fail("provider-drift", false, ctx, runIdentity);
+						await analyticsWrites;
+					}
+				},
+				onExecutorStreamSucceeded: async () => {
+					if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+					if (sameRunIdentity(pendingExecutorFailureRun, coordinator.run))
+						pendingExecutorFailureRun = undefined;
+					if (sameRunIdentity(executorCompactionRetry, coordinator.run))
+						executorCompactionRetry = undefined;
+					if (coordinator.run?.phase !== "active") return;
+					try {
+						coordinator.completeHandoff();
+						audit("handoff-completed", ctx);
+					} catch {
+						fail("provider-drift", true, ctx, runIdentity);
+						await analyticsWrites;
+					}
+				},
+				onExecutorStreamFailed: async () => {
+					if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+					pendingExecutorFailureRun = runIdentity;
+				},
+				onExecutorContextPressure: (retry) => {
+					if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+					pendingExecutorFailureRun = undefined;
+					executorContextPressure = { ...runIdentity, retry };
+				},
+				onProviderDrift: () => {
+					if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+					fail(
+						"provider-drift",
+						coordinator.run?.effectiveRoute === "executor",
+						ctx,
+						runIdentity,
+					);
+				},
 			},
-			onExecutorStreamFailed: async (runId) => {
-				if (coordinator.run?.id !== runId) return;
-				pendingExecutorFailureRunId = runId;
-			},
-			onExecutorContextPressure: (runId, retry) => {
-				if (coordinator.run?.id !== runId) return;
-				pendingExecutorFailureRunId = undefined;
-				executorContextPressure = { runId, retry };
-			},
-			onProviderDrift: () =>
-				fail("provider-drift", coordinator.run?.effectiveRoute === "executor", ctx),
-		});
-		candidate.install();
-		overlay = candidate;
+		);
+		modelLease = candidate;
+		modelLeaseRun = runIdentity;
 		return candidate;
 	};
 
-	const verifyOverlayOwnership = (ctx: ExtensionContext): boolean => {
+	const verifyModelRuntimeOwnership = (ctx: ExtensionContext): boolean => {
 		if (
-			!overlay ||
-			overlay.ownsRegistration() ||
+			!modelLease ||
+			modelLease.ownsRoute() ||
 			coordinator.run?.phase === "cancelled" ||
 			coordinator.run?.phase === "failed"
 		) {
@@ -1262,6 +1483,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		) {
 			return;
 		}
+		const runIdentity: RunIdentity = { runId: run.id, epoch: run.epoch };
 		const policy = refreshExecutorCompactionPolicy(ctx);
 		if (!policy.enabled) {
 			executorContextPressure = undefined;
@@ -1269,31 +1491,35 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				"Prewalk stopped before an oversized executor request because Pi automatic compaction is disabled.",
 				"error",
 			);
-			fail("executor-compaction-failed", false, ctx);
+			fail("executor-compaction-failed", false, ctx, runIdentity);
 			return;
 		}
+		const retryState = executorCompactionRetry;
 		if (
 			retry &&
-			executorCompactionRetry?.runId === run.id &&
-			executorCompactionRetry.count >= 1
+			retryState !== undefined &&
+			sameRunIdentity(retryState, run) &&
+			retryState.count >= 1
 		) {
-			fail("executor-compaction-failed", false, ctx);
+			fail("executor-compaction-failed", false, ctx, runIdentity);
 			return;
 		}
-		const request = { runId: run.id, retry } as const;
+		const request = { ...runIdentity, retry } as const;
 		if (retry) {
 			executorCompactionRetry = {
-				runId: run.id,
+				...runIdentity,
 				count:
-					(executorCompactionRetry?.runId === run.id ? executorCompactionRetry.count : 0) + 1,
+					(retryState !== undefined && sameRunIdentity(retryState, run)
+						? retryState.count
+						: 0) + 1,
 			};
 		}
 		pendingExecutorCompaction = request;
 		committedExecutorCompaction = undefined;
 		const retryChecklist = (): void => {
 			void sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true).catch(() => {
-				if (coordinator.run?.id === request.runId) {
-					fail("executor-compaction-failed", false, ctx);
+				if (sameRunIdentity(request, coordinator.run)) {
+					fail("executor-compaction-failed", false, ctx, request);
 				}
 			});
 		};
@@ -1306,7 +1532,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					const current = coordinator.run;
 					if (
 						!current ||
-						current.id !== request.runId ||
+						!sameRunIdentity(request, current) ||
 						(current.phase !== "handoff-pending" &&
 							current.phase !== "active" &&
 							current.phase !== "completed")
@@ -1326,7 +1552,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 						const current = coordinator.run;
 						if (
 							!current ||
-							current.id !== request.runId ||
+							!sameRunIdentity(request, current) ||
 							(current.phase !== "handoff-pending" &&
 								current.phase !== "active" &&
 								current.phase !== "completed")
@@ -1343,9 +1569,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					}
 					pendingExecutorCompaction = undefined;
 					executorContextPressure = undefined;
-					if (coordinator.run?.id !== request.runId) return;
+					if (!sameRunIdentity(request, coordinator.run)) return;
 					ctx.ui.notify(`Prewalk executor compaction failed: ${error.message}.`, "error");
-					fail("executor-compaction-failed", false, ctx);
+					fail("executor-compaction-failed", false, ctx, request);
 				},
 			});
 		} catch (error) {
@@ -1357,7 +1583,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				`Prewalk executor compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
 				"error",
 			);
-			fail("executor-compaction-failed", false, ctx);
+			fail("executor-compaction-failed", false, ctx, request);
 		}
 	};
 
@@ -1370,8 +1596,19 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		triggerTurn = false,
 		configOverride?: PrewalkConfig,
+		expectedRun?: RunIdentity | null,
 	): Promise<"armed" | "executor-unavailable" | "failed"> => {
+		let armedRunIdentity: RunIdentity | undefined;
 		try {
+			const expectedCurrent = coordinator.run;
+			if (
+				expectedRun !== undefined &&
+				(expectedRun === null
+					? expectedCurrent !== undefined
+					: !sameRunIdentity(expectedRun, expectedCurrent))
+			) {
+				return "failed";
+			}
 			const config = configOverride ?? (await readConfig());
 			const compactionState = nativeResponsesCompactionState();
 			if (compactionState === "invalid") throw new Error("configuration-invalid");
@@ -1386,6 +1623,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				reasoning: ctx.thinkingLevel ?? "off",
 			};
 			const resolution = await resolveExecutor(planner, config, ctx);
+			const beforeArm = coordinator.run;
+			if (
+				expectedRun !== undefined &&
+				(expectedRun === null
+					? beforeArm !== undefined
+					: !sameRunIdentity(expectedRun, beforeArm))
+			) {
+				return "failed";
+			}
 			if (!resolution.ok) {
 				// Prewalk is an optimization, not a prerequisite. An unusable executor
 				// leaves the session on its planner rather than failing the run, which
@@ -1407,6 +1653,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				effectiveConfig,
 			);
 			const armedRun = coordinator.run;
+			armedRunIdentity = identityOf(armedRun);
 			if (armedRun && prewalkToolSlate) {
 				pi.appendEntry(PREWALK_TOOL_SLATE_TYPE, {
 					schemaVersion: 1,
@@ -1415,12 +1662,34 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				});
 			}
 			refreshExecutorCompactionPolicy(ctx);
-			ensureOverlay(ctx);
+			ensureModelRuntime(ctx);
 			if (armedRun) {
 				await openAnalyticsJournal(armedRun, ctx).catch(() => {
 					analyticsState = undefined;
 					ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
 				});
+			}
+			if (
+				!armedRun ||
+				!sameRunIdentity(armedRunIdentity, coordinator.run) ||
+				(armedRun.phase !== "armed" &&
+					armedRun.phase !== "planning" &&
+					armedRun.phase !== "ready")
+			) {
+				if (armedRun && sameRunIdentity(armedRunIdentity, coordinator.run)) {
+					const state =
+						analyticsState?.journal.runId === armedRun.id &&
+						analyticsState.journal.epoch === armedRun.epoch
+							? analyticsState
+							: undefined;
+					restoreModelLease(armedRunIdentity);
+					await finalizeAnalytics(
+						armedRun.phase === "failed" ? "failed" : "cancelled",
+						state,
+						armedRun,
+					).catch(() => undefined);
+				}
+				return "failed";
 			}
 			mutations.resetForRun();
 			audit("armed", ctx);
@@ -1429,6 +1698,22 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			}
 			return "armed";
 		} catch (error) {
+			const currentRun = coordinator.run;
+			if (
+				expectedRun !== undefined &&
+				(expectedRun === null
+					? currentRun !== undefined
+					: !sameRunIdentity(expectedRun, currentRun))
+			) {
+				return "failed";
+			}
+			if (
+				armedRunIdentity !== undefined &&
+				(!sameRunIdentity(armedRunIdentity, currentRun) ||
+					currentRun?.phase === "cancelled" ||
+					currentRun?.phase === "failed")
+			)
+				return "failed";
 			const reason =
 				error instanceof Error &&
 				[
@@ -1872,8 +2157,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				}
 				pendingAdmission = false;
 				if (coordinator.run) {
+					const cancelledRun = identityOf(coordinator.run);
 					await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
-					deactivatePrewalkTools();
+					if (sameRunIdentity(cancelledRun, coordinator.run)) {
+						deactivatePrewalkTools();
+						coordinator.reset();
+					}
 				}
 				ctx.ui.notify("Prewalk automatic mode disabled for this session.", "info");
 				return;
@@ -1928,6 +2217,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		refreshExecutorCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
+		messageRunKeys.clear();
+		toolRunIds.clear();
+		hostSettlementRuns.length = 0;
+		hostCompactionRuns.length = 0;
+		pendingHostRuns.length = 0;
+		agentEndRuns.length = 0;
+		suppressUnownedCompaction = false;
+		activeHostRun = undefined;
 		delegation = undefined;
 		delegationInvocations.length = 0;
 		removeTerminalInputListener?.();
@@ -2008,15 +2305,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 						// same situation as arming without one: drop back to the planner
 						// with an explanation instead of resurrecting the run as failed.
 						coordinator.reset();
-						overlay?.restore();
-						overlay = undefined;
+						restoreModelLease();
 						mutations.resetForRun();
 						deactivatePrewalkTools();
 						ctx.ui.notify(unavailableExecutorNotice(restoredResolution.rejected), "error");
 						updateStatus(ctx);
 						return;
 					}
-					ensureOverlay(ctx);
+					ensureModelRuntime(ctx);
 					if (restored.phase !== "failed") {
 						await restoreAnalyticsJournal(restored, ctx).catch(() => {
 							analyticsState = undefined;
@@ -2062,7 +2358,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				return { action: "handled" };
 			}
 			if (coordinator.run) {
+				const cancelledRun = identityOf(coordinator.run);
 				await cancel(isPlannerSelected(ctx.model, coordinator.run.planner), ctx);
+				if (!sameRunIdentity(cancelledRun, coordinator.run)) return { action: "handled" };
 				lastOutcome = "completed";
 				deactivatePrewalkTools();
 				coordinator.reset();
@@ -2085,6 +2383,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (_event) => {
+		rememberAgentContext();
 		if (!pendingAdmission || coordinator.run || evaluation) return;
 		pendingAdmission = false;
 		const assessment = beginEvaluation();
@@ -2106,6 +2405,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		pendingAdmission = false;
 		evaluation = undefined;
 		if (event.reason !== "reload") autoEnabled = false;
+		restoreModelLease();
 		if (event.reason !== "reload") {
 			const run = coordinator.run;
 			const outcome: RunOutcome =
@@ -2129,25 +2429,56 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		removeTerminalInputListener?.();
 		removeTerminalInputListener = undefined;
-		overlay?.restore();
-		overlay = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		lastStatus = undefined;
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
-		if (!verifyOverlayOwnership(ctx)) return;
+		const ownership = beginAgentStream();
+		if (!belongsToCurrentRun(ownership)) return;
+		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshExecutorCompactionPolicy(ctx);
 		primaryAgentStream = true;
 	});
 
-	pi.on("agent_end", () => {
+	pi.on("agent_end", (event) => {
+		const ownership = event.messages.reduce<HostEventOwnership>(
+			(current, message) => (current.known ? current : messageOwnership(message)),
+			{ known: false },
+		);
+		if (ownership.known) discardAgentEndRun(ownership.marker);
+		const resolvedOwnership = ownership.known
+			? ownership
+			: agentEndRuns.length > 0
+				? { known: true, marker: agentEndRuns.shift() }
+				: { known: false };
+		if (!resolvedOwnership.known) return;
+		if (resolvedOwnership.marker !== undefined) hostSettlementRuns.push(resolvedOwnership.marker);
+		if (!belongsToCurrentRun(resolvedOwnership)) return;
 		primaryAgentStream = false;
 	});
 
+	pi.on("message_start", (event) => {
+		const ownership = eventOwnership(event.message);
+		rememberMessageRun(
+			event.message,
+			ownership.known && ownership.marker !== undefined ? ownership.marker : currentHostRun(),
+		);
+	});
+
 	pi.on("message_end", async (event) => {
+		const ownership = eventOwnership(event.message);
 		const run = coordinator.run;
-		if (!analyticsState || !run || event.message.role !== "assistant") return;
+		if (
+			!belongsToCurrentRun(ownership, run) ||
+			!analyticsState ||
+			!run ||
+			event.message.role !== "assistant" ||
+			event.message.stopReason === "aborted"
+		)
+			return;
+		const state = analyticsState;
+		if (state.journal.runId !== run.id || state.journal.epoch !== run.epoch) return;
 		const role = usageRoleFor(run, event.message.provider, event.message.model);
 		await recordAnalyticsUsage(
 			"assistant",
@@ -2156,17 +2487,33 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			event.message.model,
 			role,
 			event.message.usage,
+			state,
+			run,
 		);
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		const ownership = settleAgentStream();
+		if (discardHostCompactionRun(ownership.marker)) suppressUnownedCompaction = true;
+		const settledRun = coordinator.run;
+		if (!belongsToCurrentRun(ownership, settledRun)) return;
 		primaryAgentStream = false;
+		const settledIdentity = identityOf(settledRun);
 		if (evaluation) {
 			const current = evaluation;
 			if (current.decision === "continue" && !current.invalid) {
 				activatePlanningTools(current.toolSlate);
 				evaluation = undefined;
-				await startRun("automatic", ctx, true);
+				const startResult = await startRun("automatic", ctx, true, undefined, null);
+				if (startResult !== "armed") return;
+				if (settledIdentity !== undefined && !sameRunIdentity(settledIdentity, coordinator.run))
+					return;
+				if (
+					coordinator.run?.phase === "cancelled" ||
+					coordinator.run?.phase === "failed" ||
+					!coordinator.run
+				)
+					return;
 				const action = coordinator.onTurnEnd({ todoSucceeded: false });
 				if (action.type === "send-planning")
 					await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, true);
@@ -2181,14 +2528,24 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		const run = coordinator.run;
 		if (!run) return;
-		if (hostCompactionForExecutor?.runId === run.id) {
+		const runIdentity = identityOf(run);
+		if (run.phase === "cancelled") {
+			primaryAgentStream = false;
+			return;
+		}
+		const state =
+			analyticsState?.journal.runId === run.id && analyticsState.journal.epoch === run.epoch
+				? analyticsState
+				: undefined;
+		if (sameRunIdentity(hostCompactionForExecutor, run)) {
 			hostCompactionForExecutor = undefined;
 			executorContextPressure = undefined;
 			updateStatus(ctx);
 			return;
 		}
-		if (executorContextPressure?.runId === run.id) {
-			requestExecutorCompaction(ctx, executorContextPressure.retry);
+		const pressure = executorContextPressure;
+		if (pressure !== undefined && sameRunIdentity(pressure, run)) {
+			requestExecutorCompaction(ctx, pressure.retry);
 			updateStatus(ctx);
 			return;
 		}
@@ -2199,10 +2556,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
-		if (pendingExecutorFailureRunId === run.id) {
-			pendingExecutorFailureRunId = undefined;
-			fail("executor-stream-failed", run.effectiveRoute === "executor", ctx);
-			await finalizeAnalytics("failed");
+		if (sameRunIdentity(pendingExecutorFailureRun, run)) {
+			pendingExecutorFailureRun = undefined;
+			fail("executor-stream-failed", run.effectiveRoute === "executor", ctx, runIdentity);
+			if (!sameRunIdentity(runIdentity, coordinator.run)) return;
+			await finalizeAnalytics("failed", state, run).catch(() => {
+				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+			});
+			if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 		}
 		if (
 			run.effectiveRoute === "executor" &&
@@ -2214,12 +2575,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const action = coordinator.requestContinuation(hasActionableTodo(todoPhases));
 		if (action.type === "send-continuation") {
 			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
+			if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 			return;
 		}
 		const failedRun = run.phase === "failed";
-		await finalizeAnalytics(failedRun ? "failed" : "succeeded");
-		overlay?.restore();
-		overlay = undefined;
+		restoreModelLease(runIdentity);
+		await finalizeAnalytics(failedRun ? "failed" : "succeeded", state, run).catch(() => {
+			ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+		});
+		if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 		coordinator.reset();
 		lastOutcome = failedRun ? "failed" : "completed";
 		mutations.resetForRun();
@@ -2228,6 +2592,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", (event) => {
+		const ownership = toolOwnership(event.toolCallId);
+		rememberToolRun(
+			event.toolCallId,
+			ownership.known && ownership.marker !== undefined ? ownership.marker : currentHostRun(),
+		);
+		if (!belongsToCurrentRun(toolOwnership(event.toolCallId))) return;
 		if (evaluation && !ASSESSMENT_READ_ONLY_TOOLS.has(event.toolName)) {
 			evaluation.invalid = true;
 			return { block: true, reason: "Prewalk assessment only allows read-only inspection." };
@@ -2235,6 +2605,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_update", (event) => {
+		const ownership = toolOwnership(event.toolCallId);
+		if (!belongsToCurrentRun(ownership)) return;
 		if (evaluation) {
 			evaluationMutations.recordExecutionUpdate(event);
 			return;
@@ -2244,6 +2616,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", async (event, ctx) => {
+		const existingOwnership = toolOwnership(event.toolCallId);
+		rememberToolRun(
+			event.toolCallId,
+			existingOwnership.known && existingOwnership.marker !== undefined
+				? existingOwnership.marker
+				: currentHostRun(),
+		);
+		const ownership = toolOwnership(event.toolCallId);
+		if (!belongsToCurrentRun(ownership)) return;
 		if (
 			evaluation &&
 			(event.toolName === PREWALK_TODO_TOOL_NAME || event.toolName === "subagent")
@@ -2255,6 +2636,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (parentSessionId) {
 			try {
 				const analyticsGeneration = await analyticsStore.currentGeneration();
+				if (!belongsToCurrentRun(ownership, coordinator.run)) return;
 				delegationInvocations.push({
 					toolCallId: event.toolCallId,
 					rootSessionId: parentSessionId,
@@ -2267,6 +2649,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				// Analytics must never affect subagent execution.
 			}
 		}
+		if (!belongsToCurrentRun(ownership)) return;
 		delegation = {
 			agent: delegatedAgent(event.args),
 			state: "running",
@@ -2275,6 +2658,17 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		const ownership = toolOwnership(event.toolCallId);
+		if (!belongsToCurrentRun(ownership)) return;
+		const run = coordinator.run;
+		const runIdentity = identityOf(run);
+		const state =
+			analyticsState &&
+			run &&
+			analyticsState.journal.runId === run.id &&
+			analyticsState.journal.epoch === run.epoch
+				? analyticsState
+				: undefined;
 		if (evaluation) {
 			evaluationMutations.recordResult({
 				toolCallId: event.toolCallId,
@@ -2284,8 +2678,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				details: event.details,
 			});
 		}
-		if (event.usage && analyticsState) {
-			const run = coordinator.run;
+		if (event.usage && state && run) {
 			const selected = ctx.model;
 			const provider = selected?.provider ?? run?.planner.provider;
 			const model = selected?.id ?? run?.planner.model;
@@ -2297,6 +2690,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					model,
 					"auxiliary",
 					event.usage,
+					state,
+					run,
 				);
 			}
 		}
@@ -2307,6 +2702,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (invocation) {
 				await recordDelegationProjection(invocation, event.details, event.isError);
 			}
+			if (!belongsToCurrentRun(ownership)) return;
 			delegation = delegationFromResult(
 				event.details,
 				event.isError,
@@ -2314,6 +2710,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 			updateStatus(ctx);
 		}
+		if (!belongsToCurrentRun(ownership) || !sameRunIdentity(runIdentity, coordinator.run)) return;
 		if (!acceptsMutationEvidence(coordinator.run)) return;
 		mutations.recordResult({
 			toolCallId: event.toolCallId,
@@ -2325,6 +2722,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		const ownership = eventOwnership(event.message);
+		if (!belongsToCurrentRun(ownership)) return;
+		if (event.message.role === "assistant" && event.message.stopReason === "aborted") return;
 		if (evaluation) {
 			const evidence = evaluationMutations.finishTurn(event.message, {
 				todoActive: false,
@@ -2333,10 +2733,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (evidence.mutation) evaluation.invalid = true;
 			return;
 		}
-		if (!verifyOverlayOwnership(ctx)) return;
+		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshExecutorCompactionPolicy(ctx);
 		const run = coordinator.run;
 		if (!run) return;
+		const runIdentity = identityOf(run);
 		if (acceptsMutationEvidence(run)) {
 			const evidence = mutations.finishTurn(event.message, {
 				todoActive: run.todoActive,
@@ -2349,17 +2750,20 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (!wasContinuePending && coordinator.run?.continuePending) audit("progress", ctx);
 			if (action.type === "send-planning") {
 				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx);
+				if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 			} else if (action.type === "send-continuation") {
 				await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx);
+				if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 			} else if (action.type === "handoff") {
 				audit("handoff-triggered", ctx);
 				await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx);
+				if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 				mutations.resetForRun();
 			}
 		}
 		const currentRun = coordinator.run;
-		if (currentRun?.id === run.id) {
-			if (executorContextPressure?.runId === run.id) {
+		if (sameRunIdentity(identityOf(run), currentRun)) {
+			if (sameRunIdentity(executorContextPressure, run)) {
 				// Pi's own compaction check runs after this extension's turn_end
 				// handlers. Defer the executor request until agent_settled so the
 				// host cannot start two compactions for the same turn.
@@ -2385,13 +2789,14 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					) {
 						executorContextPressure = {
 							runId: run.id,
+							epoch: run.epoch,
 							retry: event.message.stopReason !== "stop",
 						};
 					}
 				}
 			}
 		}
-		updateStatus(ctx);
+		if (sameRunIdentity(identityOf(run), coordinator.run)) updateStatus(ctx);
 	});
 
 	pi.on("context", (event) => ({
@@ -2401,12 +2806,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	}));
 
 	pi.on("session_before_compact", (event) => {
+		suppressUnownedCompaction = false;
+		const marker = currentHostRun();
+		if (marker !== null) hostCompactionRuns.push(marker);
 		const run = coordinator.run;
 		const compactedMessages = [
 			...event.preparation.messagesToSummarize,
 			...event.preparation.turnPrefixMessages,
 		];
-		compactionChecklistRunId =
+		compactionChecklistRun =
 			!pendingExecutorCompaction &&
 			run?.effectiveRoute === "executor" &&
 			compactedMessages.some(
@@ -2415,7 +2823,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE &&
 					runIdFromMessage(message) === run.id,
 			)
-				? run.id
+				? identityOf(run)
 				: undefined;
 		event.preparation.messagesToSummarize = event.preparation.messagesToSummarize.filter(
 			(message) => !isEphemeralPrewalkPrompt(message),
@@ -2426,23 +2834,40 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_compact", async (event, ctx) => {
+		const compactionOwnership =
+			hostCompactionRuns.length > 0
+				? { known: true, marker: hostCompactionRuns.shift() }
+				: suppressUnownedCompaction
+					? undefined
+					: { known: false };
+		if (compactionOwnership === undefined) return;
+		if (!belongsToCurrentRun(compactionOwnership)) return;
 		const run = coordinator.run;
+		const state =
+			analyticsState &&
+			run &&
+			analyticsState.journal.runId === run.id &&
+			analyticsState.journal.epoch === run.epoch
+				? analyticsState
+				: undefined;
+		const runIdentity = identityOf(run);
 		const pressure = executorContextPressure;
-		if (pendingExecutorCompaction?.runId === run?.id) {
+		if (sameRunIdentity(pendingExecutorCompaction, run)) {
 			committedExecutorCompaction = pendingExecutorCompaction;
-		} else if (run && pressure && pressure.runId === run.id) {
+		} else if (run && pressure !== undefined && sameRunIdentity(pressure, run)) {
 			// Pi's own planner-sized compaction runs after turn_end. Treat its
 			// persisted entry as satisfying the pending executor pressure instead
 			// of starting a second compaction from agent_settled.
 			hostCompactionForExecutor = pressure;
 			executorContextPressure = undefined;
-			if (pressure.retry && compactionChecklistRunId !== run.id) {
+			if (pressure.retry && !sameRunIdentity(compactionChecklistRun, run)) {
 				await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true);
+				if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 			}
 		}
 		if (
 			run &&
-			compactionChecklistRunId === run.id &&
+			sameRunIdentity(compactionChecklistRun, run) &&
 			run.effectiveRoute === "executor" &&
 			(run.phase === "active" || run.phase === "completed")
 		) {
@@ -2456,8 +2881,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				{ deliverAs: "nextTurn" },
 			);
 		}
-		compactionChecklistRunId = undefined;
-		if (!event.compactionEntry.usage || !analyticsState) return;
+		compactionChecklistRun = undefined;
+		if (!event.compactionEntry.usage || !state || !run) return;
 		const selected = ctx.model;
 		const provider = selected?.provider ?? run?.planner.provider;
 		const model = selected?.id ?? run?.planner.model;
@@ -2470,6 +2895,8 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 					model,
 					"compaction",
 					event.compactionEntry.usage,
+					state,
+					run,
 				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -2493,7 +2920,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		}
 		const run = coordinator.run;
 		if (!run || run.phase === "cancelled") return;
+		const runIdentity = identityOf(run);
 		await cancel(isPlannerSelected(event.model, run.planner), ctx);
+		if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 		coordinator.reset();
 		deactivatePrewalkTools();
 		lastOutcome = undefined;

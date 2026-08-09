@@ -84,6 +84,16 @@ function successfulStream(selected: Model<Api>) {
 	return stream;
 }
 
+function doneBeforeStartStream(selected: Model<Api>) {
+	const stream = createAssistantMessageEventStream();
+	const message = assistant(selected);
+	queueMicrotask(() => {
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end();
+	});
+	return stream;
+}
+
 function overflowStream(selected: Model<Api>) {
 	const stream = createAssistantMessageEventStream();
 	const message = {
@@ -163,7 +173,7 @@ function setup() {
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
 		onExecutorContextPressure: vi.fn(),
-		onProviderDrift: vi.fn(),
+		onProviderDrift: vi.fn((_runId: string) => undefined),
 	};
 	const registry = {
 		find: (provider: string, id: string) => {
@@ -179,6 +189,7 @@ function setup() {
 				ok: true;
 				apiKey: string;
 				headers: Record<string, string>;
+				baseUrl?: string;
 				env: Record<string, string>;
 			}> => ({
 				ok: true,
@@ -192,9 +203,7 @@ function setup() {
 		pi,
 		registry,
 		{ ...DEFAULT_PLANNER, reasoning: "high" },
-		{
-			executor: { ...DEFAULT_EXECUTOR },
-		},
+		{ ...DEFAULT_EXECUTOR },
 		state,
 	);
 	const context: Context = { messages: [] };
@@ -225,6 +234,7 @@ function setup() {
 		setDelegate: (value: NonNullable<ProviderConfig["streamSimple"]>) => {
 			delegateImpl = value;
 		},
+		getApiKeyAndHeaders: registry.getApiKeyAndHeaders,
 		failAuthorization: () => {
 			registry.getApiKeyAndHeaders.mockRejectedValueOnce(new Error("authorization revoked"));
 		},
@@ -285,7 +295,7 @@ function setupCrossProvider() {
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
 		onExecutorContextPressure: vi.fn(),
-		onProviderDrift: vi.fn(),
+		onProviderDrift: vi.fn((_runId: string) => undefined),
 	};
 	const registry = {
 		find: (provider: string, id: string): Model<Api> | undefined => {
@@ -299,14 +309,17 @@ function setupCrossProvider() {
 			return undefined;
 		},
 		getApiKeyAndHeaders: vi.fn(
-			async (): Promise<{
+			async (
+				target: Model<Api>,
+			): Promise<{
 				ok: true;
 				apiKey: string;
 				headers: Record<string, string>;
+				baseUrl?: string;
 				env: Record<string, string>;
 			}> => ({
 				ok: true,
-				apiKey: "anthropic-token",
+				apiKey: target.provider === PLANNER_PROVIDER ? "planner-token" : "anthropic-token",
 				headers: { "x-anthropic": "true" },
 				env: {},
 			}),
@@ -316,7 +329,7 @@ function setupCrossProvider() {
 		pi,
 		registry,
 		{ ...DEFAULT_PLANNER, reasoning: "high" },
-		{ executor: { provider: "anthropic", model: executor.id, reasoning: "low" } },
+		{ provider: "anthropic", model: executor.id, reasoning: "low" },
 		state,
 	);
 	const context: Context = { messages: [] };
@@ -330,11 +343,15 @@ function setupCrossProvider() {
 		overlay,
 		context,
 		plannerConfig: () => plannerConfig,
+		getApiKeyAndHeaders: registry.getApiKeyAndHeaders,
 		setRoute: (value: boolean) => {
 			route = value;
 		},
 		setPrimary: (value: boolean) => {
 			primary = value;
+		},
+		replacePlannerProvider: (streamSimple: NonNullable<ProviderConfig["streamSimple"]>) => {
+			plannerConfig = { api: planner.api, streamSimple };
 		},
 		/** Another extension swaps the executor provider's transport mid-run. */
 		replaceExecutorProvider: (streamSimple: NonNullable<ProviderConfig["streamSimple"]>) => {
@@ -542,6 +559,25 @@ describe("provider overlay", () => {
 		expect(fixture.config()).toBe(replacement);
 	});
 
+	it("preserves a same-stream provider reconfiguration during restore", () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		const installed = fixture.config();
+		const rebased: ProviderConfig = {
+			...installed,
+			api: "rebased-api",
+			headers: { "x-rebased": "true" },
+		};
+		fixture.setConfig(rebased);
+		fixture.overlay.restore();
+
+		expect(fixture.config()).toMatchObject({
+			api: "rebased-api",
+			headers: { "x-rebased": "true" },
+			streamSimple: fixture.delegate,
+		});
+	});
+
 	it("terminalizes a synchronous delegated Luna failure", async () => {
 		const fixture = setup();
 		fixture.setDelegate(() => {
@@ -635,6 +671,99 @@ describe("provider overlay", () => {
 		expect(fixture.state.onExecutorStreamSucceeded).toHaveBeenCalledOnce();
 	});
 
+	it("does not forward a planner-resolved API key across providers", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context, { apiKey: "planner-token" })
+			.result();
+
+		expect(fixture.executorDelegateOptions.at(-1)).toMatchObject({
+			apiKey: "anthropic-token",
+		});
+	});
+
+	it("rechecks provider ownership after planner-key provenance resolution", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.getApiKeyAndHeaders.mockImplementation(async (target) => {
+			if (target.provider === PLANNER_PROVIDER) {
+				fixture.replacePlannerProvider((selected) => successfulStream(selected));
+			}
+			return {
+				ok: true,
+				apiKey: target.provider === PLANNER_PROVIDER ? "planner-token" : "anthropic-token",
+				headers: {},
+				env: {},
+			};
+		});
+
+		const result = await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context, { apiKey: "planner-token" })
+			.result();
+
+		expect(result?.stopReason).toBe("error");
+		expect(fixture.state.onProviderDrift).toHaveBeenCalledWith("run-1");
+		expect(fixture.executorDelegateModels).toEqual([]);
+	});
+
+	it("preserves a distinct request API key across providers", async () => {
+		const fixture = setupCrossProvider();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		await fixture
+			.plannerConfig()
+			?.streamSimple?.(fixture.planner, fixture.context, { apiKey: "request-token" })
+			.result();
+
+		expect(fixture.executorDelegateOptions.at(-1)).toMatchObject({
+			apiKey: "request-token",
+		});
+	});
+
+	it("preserves request auth overrides and applies an auth-derived base URL", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.getApiKeyAndHeaders.mockResolvedValueOnce({
+			ok: true,
+			apiKey: "executor-token",
+			headers: { "x-executor": "true", "X-Shared": "auth" },
+			env: { PREWALK_EXECUTOR: "true", SHARED: "auth" },
+			baseUrl: "https://auth.example.test/v1",
+		});
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context, {
+				apiKey: "request-token",
+				headers: { "x-shared": "request", "x-request": "true" },
+				env: { SHARED: "request", REQUEST: "true" },
+			})
+			.result();
+
+		expect(fixture.delegatedModels.at(-1)).toMatchObject({
+			id: fixture.executor.id,
+			baseUrl: "https://auth.example.test/v1",
+		});
+		expect(fixture.delegatedOptions.at(-1)).toMatchObject({
+			apiKey: "request-token",
+			headers: { "x-executor": "true", "x-shared": "request", "x-request": "true" },
+			env: { PREWALK_EXECUTOR: "true", SHARED: "request", REQUEST: "true" },
+		});
+		expect(result?.stopReason).toBe("stop");
+	});
+
 	it("still routes a pre-handoff planner request through the planner transport when the executor is cross-provider", async () => {
 		const fixture = setupCrossProvider();
 		fixture.overlay.install();
@@ -720,7 +849,7 @@ describe("provider overlay", () => {
 		expect(() =>
 			fixture.plannerConfig()?.streamSimple?.(fixture.planner, fixture.context),
 		).toThrow("Prewalk executor model is no longer registered.");
-		expect(fixture.state.onProviderDrift).toHaveBeenCalledOnce();
+		expect(fixture.state.onProviderDrift).toHaveBeenCalledWith("run-1");
 		expect(fixture.executorDelegateModels).toEqual([]);
 	});
 
@@ -749,5 +878,72 @@ describe("provider overlay", () => {
 
 		expect(result?.stopReason).toBe("error");
 		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
+	});
+
+	it("does not activate the executor until its stream emits start", async () => {
+		const fixture = setup();
+		fixture.setDelegate(
+			() =>
+				({
+					[Symbol.asyncIterator]: () => ({
+						next: async () => {
+							throw new Error("failed before start");
+						},
+					}),
+				}) as unknown as AssistantMessageEventStream,
+		);
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(result?.stopReason).toBe("error");
+		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
+	});
+
+	it("does not report success for a terminal event before start", async () => {
+		const fixture = setup();
+		fixture.setDelegate((selected) => doneBeforeStartStream(selected));
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(result?.stopReason).toBe("error");
+		expect(fixture.state.onExecutorStreamSucceeded).not.toHaveBeenCalled();
+		expect(fixture.state.onExecutorStreamFailed).toHaveBeenCalledWith("run-1");
+	});
+
+	it("rechecks provider ownership after asynchronous authorization", async () => {
+		const fixture = setup();
+		const replacement: ProviderConfig = {
+			api: fixture.planner.api,
+			streamSimple: (selected) => successfulStream(selected as Model<Api>),
+		};
+		fixture.overlay.install();
+		fixture.setRoute(true);
+		fixture.setPrimary(true);
+		fixture.getApiKeyAndHeaders.mockImplementationOnce(async () => {
+			fixture.setConfig(replacement);
+			return { ok: true, apiKey: "executor-token", headers: {}, env: {} };
+		});
+
+		const result = await fixture
+			.config()
+			?.streamSimple?.(fixture.planner, fixture.context)
+			.result();
+
+		expect(result?.stopReason).toBe("error");
+		expect(fixture.state.onProviderDrift).toHaveBeenCalledWith("run-1");
+		expect(fixture.delegatedModels).toEqual([]);
 	});
 });

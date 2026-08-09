@@ -1,0 +1,162 @@
+import type { ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type { ExecutorConfig, PlannerProfile } from "./core.js";
+import {
+	createProviderOverlay,
+	type ProviderOverlay,
+	removeExactUserPrompt,
+} from "./provider-overlay.js";
+
+export interface TemporaryModelPlan {
+	readonly runId: string;
+	readonly planner: PlannerProfile;
+	readonly executor: Pick<ExecutorConfig, "provider" | "model" | "reasoning">;
+	readonly hiddenPlanPrompt: string;
+}
+
+/**
+ * Semantic events from the temporary model driver. The driver deliberately
+ * does not own Prewalk's phases, audit records, or checklist messages; it only
+ * reports what the host/runtime actually observed.
+ */
+export interface TemporaryModelCallbacks {
+	isCurrent(): boolean;
+	shouldRouteToExecutor(): boolean;
+	isPrimaryAgentStream(): boolean;
+	getExecutorCompactionReserveTokens?(): number | undefined;
+	onExecutorStreamStarted(): void | Promise<void>;
+	onExecutorStreamSucceeded(): void | Promise<void>;
+	onExecutorStreamFailed(): void | Promise<void>;
+	onExecutorContextPressure(retry: boolean): void | Promise<void>;
+	onProviderDrift(): void;
+}
+
+export interface TemporaryModelLease {
+	readonly runId: string;
+	/** Idempotently invalidates the lease and restores the planner transport. */
+	restore(): void;
+	/** True only while this lease still owns the temporary model route. */
+	ownsRoute(): boolean;
+}
+
+export interface TemporaryModelRuntime {
+	/**
+	 * Mounts one run-scoped route immediately. A runtime accepts only one live
+	 * lease; callers must restore it before mounting a replacement run.
+	 */
+	mount(plan: TemporaryModelPlan, callbacks: TemporaryModelCallbacks): TemporaryModelLease;
+}
+
+type RuntimeRegistry = Pick<
+	ModelRegistry,
+	"find" | "getApiKeyAndHeaders" | "getRegisteredProviderConfig"
+>;
+
+type RuntimePi = {
+	registerProvider(name: string, config: ProviderConfig): void;
+	unregisterProvider(name: string): void;
+};
+
+class StockPiTemporaryModelRuntime implements TemporaryModelRuntime {
+	private activeLease: StockPiTemporaryModelLease | undefined;
+
+	constructor(
+		private readonly pi: RuntimePi,
+		private readonly modelRegistry: RuntimeRegistry,
+	) {}
+
+	mount(plan: TemporaryModelPlan, callbacks: TemporaryModelCallbacks): TemporaryModelLease {
+		if (this.activeLease) {
+			throw new Error("Prewalk temporary model runtime is already mounted.");
+		}
+
+		let lease: StockPiTemporaryModelLease;
+		const overlay = createProviderOverlay(
+			this.pi,
+			this.modelRegistry,
+			plan.planner,
+			plan.executor,
+			{
+				shouldRouteToExecutor: () =>
+					lease.isActive() && callbacks.isCurrent() && callbacks.shouldRouteToExecutor(),
+				isPrimaryAgentStream: () =>
+					lease.isActive() && callbacks.isCurrent() && callbacks.isPrimaryAgentStream(),
+				currentRunId: () =>
+					lease.isActive() && callbacks.isCurrent() ? plan.runId : undefined,
+				getExecutorCompactionReserveTokens: () =>
+					callbacks.getExecutorCompactionReserveTokens?.(),
+				prepareExecutorContext: (context) =>
+					removeExactUserPrompt(context, plan.hiddenPlanPrompt),
+				onExecutorStreamStarted: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						return callbacks.onExecutorStreamStarted();
+					}
+				},
+				onExecutorStreamSucceeded: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						return callbacks.onExecutorStreamSucceeded();
+					}
+				},
+				onExecutorStreamFailed: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						return callbacks.onExecutorStreamFailed();
+					}
+				},
+				onExecutorContextPressure: (runId, retry) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						return callbacks.onExecutorContextPressure(retry);
+					}
+				},
+				onProviderDrift: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						callbacks.onProviderDrift();
+					}
+				},
+			},
+		);
+		lease = new StockPiTemporaryModelLease(this, plan.runId, overlay);
+		this.activeLease = lease;
+		try {
+			overlay.install();
+		} catch (error) {
+			lease.restore();
+			throw error;
+		}
+		return lease;
+	}
+
+	release(lease: StockPiTemporaryModelLease): void {
+		if (this.activeLease === lease) this.activeLease = undefined;
+	}
+}
+
+class StockPiTemporaryModelLease implements TemporaryModelLease {
+	private active = true;
+
+	constructor(
+		private readonly runtime: StockPiTemporaryModelRuntime,
+		readonly runId: string,
+		private readonly overlay: ProviderOverlay,
+	) {}
+
+	isActive(): boolean {
+		return this.active;
+	}
+
+	restore(): void {
+		if (!this.active) return;
+		this.active = false;
+		this.runtime.release(this);
+		this.overlay.restore();
+	}
+
+	ownsRoute(): boolean {
+		return this.active && this.overlay.ownsRegistration();
+	}
+}
+
+export function createTemporaryModelRuntime(
+	pi: RuntimePi,
+	modelRegistry: RuntimeRegistry,
+): TemporaryModelRuntime {
+	return new StockPiTemporaryModelRuntime(pi, modelRegistry);
+}

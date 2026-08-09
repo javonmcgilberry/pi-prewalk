@@ -56,6 +56,9 @@ planner is whichever model Pi has selected, and the executor may sit on a
 different provider and Pi API. Pi normalizes replayed history for whichever
 model receives a request, so a cross-provider pair such as Anthropic Opus to
 Google Gemini Flash routes through each model's own provider stream.
+Cross-provider executor requests use the executor provider's resolved
+credentials; a planner-resolved API key is never forwarded, while a distinct
+request-level override remains available.
 
 Prewalk keeps `prewalk_todo` available for the full session. Calls outside an
 active Prewalk run fail without changing the checklist. During a run, the
@@ -97,9 +100,10 @@ Pi's own compaction already handled the turn, Prewalk reuses that result instead
 of starting a second compaction. When automatic compaction is disabled, Prewalk
 fails closed rather than issuing an oversized request. A completed over-window
 response is compacted without duplicating its answer; if the executor is still
-oversized after that retry, Prewalk fails safely instead of looping. The behavior
-matrix records the remaining limits of this public-API implementation:
-`docs/research/2026-08-07-omp-behavior-matrix.md`.
+oversized after that retry, Prewalk fails safely instead of looping. The repository-only
+behavior matrix records the remaining limits of this public-API implementation at
+`docs/research/2026-08-07-omp-behavior-matrix.md`; historical research is omitted from
+the packed install.
 
 ## Why Prewalk is not plan mode
 
@@ -270,6 +274,13 @@ instead of looping. The estimate is not a tokenizer, so provider-specific
 serialization can still differ. Prompt-cache reads also do not necessarily
 survive a model/provider switch; the executor receives the history, but its
 provider may charge those input tokens as a cache miss.
+
+The temporary model compatibility layer is isolated in `src/model-runtime.ts`.
+Prewalk owns the durable handoff state and checklist policy; the stock-Pi
+runtime owns the provider overlay and its run-scoped lease. A disposed lease
+cannot report provider drift or stream results into a replacement run. This
+keeps a future Pi-native session-local model switch replaceable without moving
+Prewalk's mutation, todo, audit, or recovery semantics into the adapter.
 
 ### Experimental child-local Prewalk
 

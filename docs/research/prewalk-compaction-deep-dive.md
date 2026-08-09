@@ -141,39 +141,44 @@ needed to keep the extension safe.
 
 ## Temporary model-abstraction design
 
-The investigation did not find enough shared model-resolution logic to justify
-introducing a new `src/model-context.ts` now. `src/executor-chain.ts` already
-resolves the configured executor and fallback candidates. The provider overlay
-then resolves the live registered model at dispatch time, which is necessary
-to notice provider replacement. Adding a second resolver would create two
-sources of truth without fixing the compaction race.
+The first abstraction proposal was intentionally challenged before coding. A
+large `TemporaryModelRuntime` that also owned Prewalk phases, audit records,
+checklist replay, model resolution, and compaction would be a god module, not a
+deep module. `src/executor-chain.ts` remains the one source of truth for
+executor selection, and the extension remains the owner of durable run
+semantics.
 
-If a future Pi release exposes a stable session target or effective-model
-abstraction, the shared value could look like this:
+The implemented seam is narrower: `src/model-runtime.ts` exposes a
+run-scoped `TemporaryModelRuntime` with `mount()` and a
+`TemporaryModelLease.restore()`/`ownsRoute()` contract. Its stock-Pi
+adapter hides provider registration, exact planning-prompt removal,
+request-time executor/auth resolution, executor stream evidence, context
+preflight, and provider ownership. Semantic callbacks report only observed
+executor start/success/failure, context pressure, and provider drift. A lease
+captures its run identity and invalidates callbacks before restoring the
+provider, so a delayed stream or stale overlay from run N cannot fail run N+1.
 
-```ts
-type PrewalkModelContext = {
-  planner: Model<any>;
-  executor: Model<any>;
-  selectedModel: Model<any>;
-  compaction: {
-    enabled: boolean;
-    reserveTokens: number;
-  };
-};
-```
+Compaction scheduling deliberately stays outside this seam. It coordinates
+Pi's session events (`turn_end`, `agent_settled`, `session_compact`) and the
+Prewalk checklist, so it is session/run policy rather than temporary model
+transport. Keeping it in the extension prevents the runtime from becoming a
+second coordinator and preserves the existing retry/deduplication tests.
 
-The provider overlay and lifecycle code could consume that context rather than
-each reading part of the runtime state. The resolver would still need to keep
-planner selection, executor registration, provider identity, and effective
-reasoning distinct. Until Pi provides that seam, the current narrow callback
-(`getExecutorCompactionReserveTokens`) is easier to inspect and less likely to
-drift from Pi's settings manager.
+This is a replaceable seam, not a claim that a native backend exists today. If
+Pi exposes a trustworthy nonpersistent session-local model switch, a future
+adapter can implement the same mount/lease contract. It must prove target
+execution rather than treating a successful setter as executor activation,
+preserve the planner and saved settings, reject stale ownership changes, and
+pass the same routing/restore contract tests. No `runtime.kind` branch or
+speculative native implementation belongs in Prewalk before that host seam is
+real.
 
 ## Verification map
 
 Tests cover the public boundaries separately:
 
+- `test/model-runtime.test.ts` checks the run-scoped lease contract, exact
+  provider restoration, and stale callback isolation.
 - `test/executor-context.test.ts` checks the default and custom reserve math.
 - `test/provider-overlay.test.ts` checks that the effective reserve reaches
   executor preflight.

@@ -2289,9 +2289,10 @@ describe("Prewalk extension harness", () => {
 		delayed.push({ type: "start", partial: message });
 		delayed.push({ type: "done", reason: "stop", message });
 		delayed.end();
-		await pending;
+		const result = await pending;
 
 		expect(harness.statuses.at(-1)).toBe("prewalk: [5.6 Sol · low] / Luna · low (cancelled)");
+		expect(result?.stopReason).toBe("aborted");
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "cancelled",
 			phase: "cancelled",
@@ -2300,6 +2301,344 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 		expect(harness.notifications.at(-1)).toContain(": cancelled;");
 		expect(harness.notifications.at(-1)).toContain("Not compared");
+	});
+
+	it("ignores provider drift reported by a disposed run", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		const staleStream = harness.providerConfig()?.streamSimple;
+		expect(staleStream).toBeTypeOf("function");
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+
+		expect(() => staleStream?.(harness.planner, { messages: [] })).toThrow(
+			"Prewalk provider overlay ownership changed during the session.",
+		);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "plan-injected",
+			runId: replacementRunId,
+			phase: "planning",
+		});
+		expect(harness.notifications.at(-1)).not.toBe("Prewalk failed: provider-drift.");
+	});
+
+	it("restores the provider lease when cancellation analytics finalization fails", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		const promoteReceipt = vi
+			.spyOn(AnalyticsStore.prototype, "promoteReceipt")
+			.mockRejectedValue(new Error("analytics unavailable"));
+		try {
+			await harness.commands.get("prewalk")?.("cancel", harness.context);
+		} finally {
+			promoteReceipt.mockRestore();
+		}
+
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+	});
+
+	it("ignores settlement that races cancellation finalization", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		let releasePromotion!: () => void;
+		let promotionStarted!: () => void;
+		const promotionReady = new Promise<void>((resolve) => {
+			promotionStarted = resolve;
+		});
+		const promotionGate = new Promise<void>((resolve) => {
+			releasePromotion = resolve;
+		});
+		const promoteReceipt = vi
+			.spyOn(AnalyticsStore.prototype, "promoteReceipt")
+			.mockImplementation(async (receipt) => {
+				promotionStarted();
+				await promotionGate;
+				return receipt;
+			});
+		try {
+			const cancelling = harness.commands.get("prewalk")?.("cancel", harness.context);
+			await promotionReady;
+			await harness.emit("agent_settled", { type: "agent_settled" });
+			expect(harness.entries.at(-1)?.data).toMatchObject({
+				event: "cancelled",
+				phase: "cancelled",
+			});
+			releasePromotion();
+			await cancelling;
+		} finally {
+			promoteReceipt.mockRestore();
+			releasePromotion?.();
+		}
+	});
+
+	it("does not let a stale settled handler reset a replacement run", async () => {
+		const harness = createHarness();
+		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		let releasePromotion!: () => void;
+		let promotionStarted!: () => void;
+		const promotionReady = new Promise<void>((resolve) => {
+			promotionStarted = resolve;
+		});
+		const promotionGate = new Promise<void>((resolve) => {
+			releasePromotion = resolve;
+		});
+		const promoteReceipt = vi
+			.spyOn(AnalyticsStore.prototype, "promoteReceipt")
+			.mockImplementation(async (receipt) => {
+				promotionStarted();
+				await promotionGate;
+				return receipt;
+			});
+		try {
+			const settled = harness.emit("agent_settled", { type: "agent_settled" });
+			await promotionReady;
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+			releasePromotion();
+			await settled;
+		} finally {
+			promoteReceipt.mockRestore();
+			releasePromotion?.();
+		}
+
+		await harness.commands.get("prewalk")?.("status", harness.context);
+		expect(harness.notifications.at(-1)).toContain("planning");
+	});
+
+	it("ignores queued host events from a cancelled run after replacement", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "stale",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const staleMessage = assistant(harness.executor);
+		await harness.emit("message_start", {
+			type: "message_start",
+			message: staleMessage,
+		});
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "stale-subagent",
+			toolName: "edit",
+			args: {},
+		});
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "replacement",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("agent_end", { type: "agent_end", messages: [] });
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: staleMessage,
+		});
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "stale-subagent",
+			toolName: "subagent",
+			args: { agent: "worker" },
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "stale-subagent",
+			toolName: "subagent",
+			args: { agent: "worker" },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "stale-subagent",
+			toolName: "subagent",
+			input: { agent: "worker" },
+			content: [],
+			isError: false,
+			details: { results: [] },
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 99,
+			message: staleMessage,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.commands.get("prewalk")?.("status", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain(`run=${replacementRunId}`);
+		expect(harness.notifications.at(-1)).not.toContain("delegation=worker");
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+	});
+
+	it("ignores a stale compaction event after replacement", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		const oldRunId = (harness.entries[0]?.data as { runId: string }).runId;
+		const writes: Array<{ runId: string; usage: Array<{ role: string }> }> = [];
+		const writeJournal = vi
+			.spyOn(AnalyticsStore.prototype, "writeJournal")
+			.mockImplementation(async (journal) => {
+				writes.push(structuredClone(journal));
+			});
+		try {
+			await harness.emit("session_before_compact", {
+				type: "session_before_compact",
+				preparation: {
+					messagesToSummarize: [
+						{
+							role: "custom",
+							customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+							content: "checklist",
+							details: { runId: oldRunId },
+						},
+					],
+					turnPrefixMessages: [],
+				},
+			});
+			await harness.commands.get("prewalk")?.("cancel", harness.context);
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+			await harness.emit("session_compact", {
+				type: "session_compact",
+				compactionEntry: {
+					type: "compaction",
+					id: "stale-compaction",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			});
+
+			expect(
+				writes.some(
+					(journal) =>
+						journal.runId === replacementRunId &&
+						journal.usage.some(({ role }) => role === "compaction"),
+				),
+			).toBe(false);
+			await harness.emit("session_before_compact", {
+				type: "session_before_compact",
+				preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			});
+			await harness.emit("session_compact", {
+				type: "session_compact",
+				compactionEntry: {
+					type: "compaction",
+					id: "replacement-compaction",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			});
+			expect(
+				writes.some(
+					(journal) =>
+						journal.runId === replacementRunId &&
+						journal.usage.some(({ role }) => role === "compaction"),
+				),
+			).toBe(true);
+		} finally {
+			writeJournal.mockRestore();
+		}
+	});
+
+	it("ignores an empty stale agent end after replacement", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "stale",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "replacement",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-new",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-new",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "todo-new",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					{ type: "toolCall", id: "edit-new", name: "edit", arguments: {} },
+				],
+			},
+			toolResults: [],
+		});
+		await harness.emit("agent_end", { type: "agent_end", messages: [] });
+
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		expect(harness.delegated.at(-1)?.id).toBe(harness.executor.id);
 	});
 
 	it("detects provider replacement before the next Agent-loop request", async () => {

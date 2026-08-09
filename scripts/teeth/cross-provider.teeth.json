@@ -40,7 +40,7 @@
     {
       "name": "executor threshold compaction is skipped after a turn",
       "file": "extensions/prewalk.ts",
-      "find": "\t\t\t\t\t\texecutorContextPressure = {\n\t\t\t\t\t\t\trunId: run.id,\n\t\t\t\t\t\t\tretry: event.message.stopReason !== \"stop\",\n\t\t\t\t\t\t};",
+      "find": "\t\t\t\t\t\texecutorContextPressure = {\n\t\t\t\t\t\t\trunId: run.id,\n\t\t\t\t\t\t\tepoch: run.epoch,\n\t\t\t\t\t\t\tretry: event.message.stopReason !== \"stop\",\n\t\t\t\t\t\t};",
       "replace": ""
     },
     {
@@ -52,8 +52,8 @@
     {
       "name": "a settled executor failure is reported as a successful run",
       "file": "extensions/prewalk.ts",
-      "find": "\t\tconst failedRun = run.phase === \"failed\";\n\t\tawait finalizeAnalytics(failedRun ? \"failed\" : \"succeeded\");",
-      "replace": "\t\tconst failedRun = false;\n\t\tawait finalizeAnalytics(failedRun ? \"failed\" : \"succeeded\");"
+      "find": "\t\tconst failedRun = run.phase === \"failed\";",
+      "replace": "\t\tconst failedRun = false;"
     },
     {
       "name": "agent settlement resets a handoff while executor compaction is pending",
@@ -64,8 +64,8 @@
     {
       "name": "a retryable executor failure immediately tears down the route",
       "file": "extensions/prewalk.ts",
-      "find": "\t\t\tpendingExecutorFailureRunId = runId;",
-      "replace": "\t\t\tfail(\"executor-stream-failed\", coordinator.run?.effectiveRoute === \"executor\", ctx);"
+      "find": "\t\t\t\t\tpendingExecutorFailureRun = runIdentity;",
+      "replace": "\t\t\t\t\tfail(\"executor-stream-failed\", coordinator.run?.effectiveRoute === \"executor\", ctx, runIdentity);"
     },
     {
       "name": "a completed executor response always retries the checklist",
@@ -76,7 +76,7 @@
     {
       "name": "an executor compaction retry can loop forever",
       "file": "extensions/prewalk.ts",
-      "find": "\t\tif (\n\t\t\tretry &&\n\t\t\texecutorCompactionRetry?.runId === run.id &&\n\t\t\texecutorCompactionRetry.count >= 1\n\t\t) {",
+      "find": "\t\tif (\n\t\t\tretry &&\n\t\t\tretryState !== undefined &&\n\t\t\tsameRunIdentity(retryState, run) &&\n\t\t\tretryState.count >= 1\n\t\t) {",
       "replace": "\t\tif (false) {"
     },
     {
