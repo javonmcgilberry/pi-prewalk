@@ -1,4 +1,9 @@
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	clampThinkingLevel,
+	type Model,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { ExecutorConfig } from "./core.js";
 
 /**
@@ -30,6 +35,20 @@ export type ExecutorChainResolution =
 			skipped: RejectedExecutor[];
 	  }
 	| { ok: false; rejected: RejectedExecutor[] };
+
+/** Returns whether a target model/effort would be a no-op from the planner. */
+export function isSameModelAtEffectiveReasoning(
+	planner: Model<Api>,
+	plannerReasoning: ModelThinkingLevel,
+	target: Model<Api>,
+	targetReasoning: ModelThinkingLevel,
+): boolean {
+	return (
+		target.provider === planner.provider &&
+		target.id === planner.id &&
+		clampThinkingLevel(target, targetReasoning) === clampThinkingLevel(target, plannerReasoning)
+	);
+}
 
 /**
  * Picks the first usable executor from an ordered chain.
@@ -76,14 +95,12 @@ async function evaluate(
 	const executor = probe.find(candidate.provider, candidate.model);
 	if (!executor) return { viable: false, reason: "not-registered" };
 	if (executor.maxTokens <= 0) return { viable: false, reason: "output-capacity-unavailable" };
-	// Handing off to the running model at the same effort is a no-op that still
-	// costs a planning nudge and a checklist. A different effort is a real
-	// downgrade and stays allowed.
-	if (
-		executor.provider === planner.provider &&
-		executor.id === planner.id &&
-		candidate.reasoning === plannerReasoning
-	) {
+	// Handing off to the running model at the same effective effort is a no-op
+	// that still costs a planning nudge and a checklist. Pi clamps unsupported
+	// levels before sending them, so compare the effective labels rather than
+	// raw config values. A different effective effort is a real downgrade and
+	// stays allowed.
+	if (isSameModelAtEffectiveReasoning(planner, plannerReasoning, executor, candidate.reasoning)) {
 		return { viable: false, reason: "same-as-planner" };
 	}
 	// A credential probe can reject outright, such as during a token refresh.

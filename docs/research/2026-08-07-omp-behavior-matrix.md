@@ -27,13 +27,13 @@ window floor, and features that exist on only one side. Scenario-level claims
 belong in the fixture, where they are machine-checked. Add rows here only for
 behavior a scenario cannot express.
 
-Two fixture rationales predate cross-provider support and now read as stale:
-"treats a target effort the model clamps back to the active effort as a no-op"
-and "switches when a same-model target clears auto mode even though efforts both
-resolve to undefined". Both are `excluded` on the grounds that "phase one" has no
-same-model target or provider-agnostic effort routing. Refreshing them requires
-re-reading those scenarios at the pinned revision, so they are left alone here
-rather than edited from inference.
+The pinned fixture's model-clamping scenario is now `pi-adapted`: the executor
+resolver compares the configured target with the planner after Pi clamps both
+levels to the target model, and the configure wizard and experimental child
+guard use the same helper. The remaining auto-mode scenario stays `excluded`:
+Stock Pi exposes the current concrete thinking level to extensions but not the
+configured auto-versus-fixed selector, so Prewalk cannot reproduce that
+distinction through its public API.
 
 ## The one difference everything else follows from
 
@@ -74,8 +74,8 @@ Several rows below are consequences of that, not preferences.
 | 13 | Executor context window must be >= planner's | No such rule | **No startup floor; request-time executor guard** | Same outcome with safety guard | `src/executor-chain.ts`; `src/executor-context.ts`; `test/extension.test.ts` |
 | 14 | Auto-compaction protects the executor | Yes, sized against the switched-to model | **Executor reserve watchdog supplements planner-sized Pi compaction** | Same outcome with public-API limit | OMP `agent-session.js:1517`; `src/provider-overlay.ts`; `extensions/prewalk.ts` |
 | 14b | Context-overflow *recovery* covers the executor | Yes | **Preflight and failed detectable overflow compact and retry; completed over-window responses compact without replay; unknown native overflow remains outside Pi's `sameModel` path** | Partial parity | OMP `agent-session.js:1522`; `src/provider-overlay.ts`; `test/provider-overlay.test.ts` |
-| 15 | Same model + same effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `same-as-planner` |
-| 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares reasoning before rejecting |
+| 15 | Same model + same effective effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `isSameModelAtEffectiveReasoning` |
+| 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares model-clamped reasoning before rejecting |
 | 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | **Stays unarmed with a notice, session continues** | Same | `main.ts:1007-1019` (issue #6064); `unavailableExecutorNotice` |
 | 18 | Subagent/child prewalk | Yes, per-agent frontmatter and settings | Behind `experimentalChild`, default off | **Chosen** | `docs/task-agent-discovery.md:39`; `src/core.ts` |
 | 19 | Plan-yolo | Yes, separate feature | Not implemented | **Chosen** | `session/prewalk.ts:238` |

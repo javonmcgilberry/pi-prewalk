@@ -81,13 +81,13 @@
     },
     {
       "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
-      "classification": "excluded",
-      "rationale": "Phase one fixes Luna reasoning to low and does not expose effort-only targets."
+      "classification": "pi-adapted",
+      "local": "test/executor-chain.test.ts"
     },
     {
       "upstream": "switches when a same-model target clears auto mode even though efforts both resolve to undefined",
       "classification": "excluded",
-      "rationale": "Phase one has no same-model target or provider-agnostic effort routing."
+      "rationale": "Stock Pi exposes the current concrete thinking level to extensions but not the configured auto-versus-fixed selector, so Prewalk cannot reproduce this auto-mode distinction through its public API."
     },
     {
       "upstream": "leaves prewalk unarmed instead of crashing when the target has no configured auth",

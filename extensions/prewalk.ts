@@ -66,6 +66,7 @@ import { inferDefaultExecutorChain } from "../src/default-executors.js";
 import {
 	type ExecutorChainResolution,
 	type ExecutorRejection,
+	isSameModelAtEffectiveReasoning,
 	type RejectedExecutor,
 	resolveExecutorChain,
 } from "../src/executor-chain.js";
@@ -1426,10 +1427,16 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
+		const targetModel = ctx.modelRegistry.find(target.executor.provider, target.executor.model);
 		if (
-			ctx.model?.provider === target.executor.provider &&
-			ctx.model.id === target.executor.model &&
-			(ctx.thinkingLevel ?? "off") === target.executor.reasoning
+			ctx.model &&
+			targetModel &&
+			isSameModelAtEffectiveReasoning(
+				ctx.model,
+				ctx.thinkingLevel ?? "off",
+				targetModel,
+				target.executor.reasoning,
+			)
 		) {
 			childDiagnostic = "equal-target";
 			updateStatus(ctx);
@@ -1467,10 +1474,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		// planner's own provider is offered first because it is the least surprising
 		// pairing, not because the others are unsupported.
 		const executorCandidates = available
-			// The planner's own model stays on the list: routing it at a lower effort
-			// is a real downgrade, and only the exact same effort is a no-op. The
-			// reasoning step below is what rejects that pairing. A smaller executor is
-			// protected by the request-time context watchdog in the provider overlay.
+			// The planner's own model stays on the list: routing it at a lower effective
+			// effort is a real downgrade, and only the same effective effort is a no-op.
+			// The reasoning step below applies the model's clamping before rejecting that
+			// pairing. A smaller executor is protected by the request-time context
+			// watchdog in the provider overlay.
 			.filter((model) => model.maxTokens > 0)
 			.sort((left, right) => {
 				const leftHome = left.provider === planner.provider ? 0 : 1;
@@ -1513,12 +1521,15 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		// Mirrors the resolver's same-as-planner rule, so the wizard cannot save a
 		// pairing that would immediately be rejected at arm time.
 		if (
-			executor.provider === planner.provider &&
-			executor.id === planner.id &&
-			reasoningChoice === (ctx.thinkingLevel ?? "off")
+			isSameModelAtEffectiveReasoning(
+				planner,
+				ctx.thinkingLevel ?? "off",
+				executor,
+				reasoningChoice,
+			)
 		) {
 			ctx.ui.notify(
-				"That is the model already running at the same reasoning level, so there is nothing to hand off to. Pick a different model or a lower reasoning level.",
+				"That is the model already running at the same effective reasoning level, so there is nothing to hand off to. Pick a different model or a lower reasoning level.",
 				"error",
 			);
 			return;

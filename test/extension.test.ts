@@ -112,6 +112,8 @@ function createHarness(
 		executorContextWindow?: number;
 		/** Model ids the registry pretends not to know, e.g. an executor gone missing. */
 		unresolvableModelIds?: string[];
+		/** Model ids for which the registry reports no configured credentials. */
+		unauthorizedModelIds?: string[];
 	} = {},
 ) {
 	const handlers = new Map<string, Handler[]>();
@@ -243,7 +245,10 @@ function createHarness(
 			if (id === executor.id) return executor;
 			return options.availableModels?.find((entry) => entry.id === id);
 		},
-		getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
+		getApiKeyAndHeaders: vi.fn(async (target: Model<"openai-codex-responses">) => ({
+			ok: !options.unauthorizedModelIds?.includes(target.id),
+			apiKey: "token",
+		})),
 		getRegisteredProviderConfig: vi.fn(() => providerConfig),
 	};
 	const context = {
@@ -1581,6 +1586,20 @@ describe("Prewalk extension harness", () => {
 		expect(harness.context.ui.confirm).not.toHaveBeenCalled();
 	});
 
+	it("refuses to configure a same-model effort that clamps to the running level", async () => {
+		const harness = createHarness();
+		(harness.context as unknown as { thinkingLevel: string }).thinkingLevel = "high";
+		prewalkExtension(harness.pi);
+		vi.mocked(harness.context.ui.select)
+			.mockResolvedValueOnce(`openai-codex/${PLANNER_MODEL_ID}`)
+			.mockResolvedValueOnce("xhigh");
+
+		await harness.commands.get("prewalk")?.("configure", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("nothing to hand off to");
+		expect(harness.context.ui.confirm).not.toHaveBeenCalled();
+	});
+
 	it("configures an executor without starting Prewalk work", async () => {
 		await writeChildConfig(
 			{
@@ -1832,6 +1851,17 @@ describe("Prewalk extension harness", () => {
 		// Oh My Pi shipped the harsh version of this and had to soften it in issue
 		// #6064: an unusable hand-off target must not take the session down with it.
 		const harness = createHarness({ unresolvableModelIds: [EXECUTOR_MODEL_ID] });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("no executor is available");
+		expect(harness.messages).toEqual([]);
+	});
+
+	it("leaves Prewalk unarmed with a notice when the executor has no configured auth", async () => {
+		const harness = createHarness({ unauthorizedModelIds: [EXECUTOR_MODEL_ID] });
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -2108,6 +2138,24 @@ describe("Prewalk extension harness", () => {
 		await unavailable.emit("session_start", { type: "session_start", reason: "startup" });
 		expect(unavailable.messages).toEqual([]);
 		expect(unavailable.notifications.at(-1)).toContain("no executor is available");
+	});
+
+	it("reports a clamped same-model child target as equal-target", async () => {
+		identifyChild();
+		await writeChildConfig({
+			worker: {
+				mode: "implementation",
+				executor: { provider: "openai-codex", model: PLANNER_MODEL_ID, reasoning: "xhigh" },
+			},
+		});
+		const equal = createHarness();
+		(equal.context as unknown as { thinkingLevel: string }).thinkingLevel = "high";
+		prewalkExtension(equal.pi);
+		await equal.emit("session_start", { type: "session_start", reason: "startup" });
+		await equal.commands.get("prewalk")?.("status", equal.context);
+
+		expect(equal.messages).toEqual([]);
+		expect(equal.notifications.at(-1)).toContain("equal-target");
 	});
 
 	it("hands an opted-in child to a lower-effort same-model executor only after proven mutation", async () => {

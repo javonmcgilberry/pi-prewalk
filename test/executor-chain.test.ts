@@ -114,6 +114,26 @@ describe("executor chain resolution", () => {
 		expect(result.ok).toBe(true);
 	});
 
+	it("rejects a same-model target that clamps back to the planner effort", async () => {
+		// Pi clamps xhigh to high for this model because it has no xhigh mapping.
+		// Comparing the raw labels would arm a no-op handoff and inject both nudges.
+		const result = await resolveExecutorChain(
+			planner,
+			"high",
+			[{ provider: "openai-codex", model: "gpt-5.6-sol", reasoning: "xhigh" }],
+			probe([planner]),
+		);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.rejected).toEqual([
+			{
+				candidate: { provider: "openai-codex", model: "gpt-5.6-sol", reasoning: "xhigh" },
+				reason: "same-as-planner",
+			},
+		]);
+	});
+
 	it("keeps going when a credential probe rejects outright", async () => {
 		// A token refresh can make the probe throw rather than answer false. That is
 		// one candidate's problem, not the chain's.

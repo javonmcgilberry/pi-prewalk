@@ -43,7 +43,7 @@ describe("canonical OMP parity matrix", () => {
 		expect(new Set(matrix.scenarios.map((scenario) => scenario.upstream)).size).toBe(19);
 		expect(
 			matrix.scenarios.filter((scenario) => scenario.classification === "excluded"),
-		).toHaveLength(5);
+		).toHaveLength(4);
 
 		for (const scenario of matrix.scenarios) {
 			if (scenario.classification === "excluded") {

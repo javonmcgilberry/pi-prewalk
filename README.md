@@ -77,9 +77,10 @@ inference; a non-empty array is used exactly as written.
 ```
 
 Prewalk takes the first candidate that is registered, authorized, has output
-capacity, and is not the model already running at the same reasoning level.
-When none qualifies it stays unarmed and names each candidate it passed over,
-leaving the session on its planner instead of failing the run.
+capacity, and is not the model already running at the same effective reasoning
+level after Pi clamps the requested level to that model's supported levels. When
+none qualifies it stays unarmed and names each candidate it passed over, leaving
+the session on its planner instead of failing the run.
 
 A handoff to a different model always replays history without that model's own
 reasoning signatures, because Pi keeps signed reasoning only for an exact model
