@@ -1703,6 +1703,77 @@ describe("Prewalk extension harness", () => {
 		expect(firstPage?.[1].at(-1)).toBe("Next page →");
 	});
 
+	it("ignores unknown mutation-like results without consuming the later valid trigger", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-1",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "external-1",
+			toolName: "external_editor",
+			input: { action: "apply" },
+			content: [],
+			isError: false,
+			details: { status: "committed", changed: true },
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "todo-1",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					{
+						type: "toolCall",
+						id: "external-1",
+						name: "external_editor",
+						arguments: {},
+					},
+				],
+			},
+			toolResults: [],
+		});
+		expect(
+			harness.messages.some((message) => message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE),
+		).toBe(false);
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "edit-1", name: "edit", arguments: {} }],
+			},
+			toolResults: [],
+		});
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
+	});
+
 	it("starts a manual run, then routes Luna after the first mutation", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);

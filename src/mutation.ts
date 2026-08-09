@@ -46,12 +46,13 @@ export interface MutationTurnEvidence {
 }
 
 /**
- * Optional integrations translate their terminal tool result into the same
- * positive mutation evidence used by stock Pi. Returning undefined is a
- * fail-closed decision.
+ * A source-owned integration explicitly claims one otherwise unknown tool and
+ * classifies its terminal result. The buffer keeps event identity and
+ * provenance authoritative; returning undefined is a fail-closed decision.
  */
 export interface MutationEvidenceAdapter {
-	candidateFor(result: MutationToolResult): MutationCandidate | undefined;
+	readonly toolName: string;
+	kindFor(result: Readonly<MutationToolResult>): MutationKind | undefined;
 }
 
 interface CodeModeTrace {
@@ -268,9 +269,12 @@ export class MutationTurnBuffer {
 	private readonly cells = new Map<string, CodeModeCell>();
 	private readonly directSessions = new Set<number>();
 	private readonly codeModeSessions = new Set<number>();
+	private readonly adapters: readonly MutationEvidenceAdapter[];
 	private triggerChosen = false;
 
-	constructor(private readonly adapters: readonly MutationEvidenceAdapter[] = []) {}
+	constructor(adapters: readonly MutationEvidenceAdapter[] = []) {
+		this.adapters = [...adapters];
+	}
 
 	resetForRun(): void {
 		this.results.clear();
@@ -345,10 +349,6 @@ export class MutationTurnBuffer {
 
 	private candidateFor(result: MutationToolResult): MutationCandidate | undefined {
 		if (result.isError) return undefined;
-		for (const adapter of this.adapters) {
-			const candidate = adapter.candidateFor(result);
-			if (candidate) return candidate;
-		}
 		if (result.toolName === "edit" || result.toolName === "write") {
 			return {
 				toolCallId: result.toolCallId,
@@ -403,14 +403,27 @@ export class MutationTurnBuffer {
 					}
 				: undefined;
 		}
-		if (result.toolName !== "exec" && result.toolName !== "wait") return undefined;
-		const details = codeModeDetails(result.details);
-		const cellId = details && typeof details.cellId === "string" ? details.cellId : undefined;
-		const cell = cellId ? this.cells.get(cellId) : undefined;
-		if (!cellId || !cell || cell.status !== "result" || cell.scriptError) return undefined;
-		for (const trace of cell.traces.values()) {
-			const traceCandidate = this.codeModeTraceCandidate(result, cellId, trace);
-			if (traceCandidate) return traceCandidate;
+		if (result.toolName === "exec" || result.toolName === "wait") {
+			const details = codeModeDetails(result.details);
+			const cellId = details && typeof details.cellId === "string" ? details.cellId : undefined;
+			const cell = cellId ? this.cells.get(cellId) : undefined;
+			if (!cellId || !cell || cell.status !== "result" || cell.scriptError) return undefined;
+			for (const trace of cell.traces.values()) {
+				const traceCandidate = this.codeModeTraceCandidate(result, cellId, trace);
+				if (traceCandidate) return traceCandidate;
+			}
+			return undefined;
+		}
+		for (const adapter of this.adapters) {
+			if (adapter.toolName !== result.toolName) continue;
+			const kind = adapter.kindFor(result);
+			if (!kind) continue;
+			return {
+				toolCallId: result.toolCallId,
+				toolName: result.toolName,
+				kind,
+				source: "adapter",
+			};
 		}
 		return undefined;
 	}

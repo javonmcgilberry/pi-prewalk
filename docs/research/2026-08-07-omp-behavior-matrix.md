@@ -42,10 +42,11 @@ OMP owns its harness, so its handoff is a real session model switch:
 (`session/prewalk.ts:138`, `session/model-controls.ts:255`). The session becomes
 the executor, and every model-aware subsystem follows automatically.
 
-An extension cannot do that. Stock Pi's public `setModel` writes the user's
-saved default (`agent-session.js:1197` calls `setDefaultModelAndProvider` at
-`:1205`), so using it would change the model for every future session. Checked
-again at 0.84.1: `ExtensionAPI` still declares no session-only model setter. The
+A stock Pi extension cannot perform a session-local model switch through the
+public `ExtensionAPI`. Its `setModel` writes the user's saved default
+(`agent-session.js:1197` calls `setDefaultModelAndProvider` at `:1205`), so
+using it would change the model for every future session. Checked again at
+0.84.1: `ExtensionAPI` still declares no session-only model setter. The
 limitation is recorded in
 `docs/research/prewalk-extension-only-feasibility.md`.
 
@@ -61,7 +62,7 @@ Several rows below are consequences of that, not preferences.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Handoff mechanism | Real session model switch, ephemeral | Run-scoped temporary-model lease over a provider `streamSimple` overlay; selected model never changes | **Forced** | OMP `session/prewalk.ts:138`; here `src/model-runtime.ts` |
 | 2 | Persists a new default model | No, `ephemeral: true` | No, nothing is written | Same outcome | `session/model-controls.ts:255`; overlay writes no settings |
-| 3 | Handoff trigger | First `edit`/`write` tool result after the todo gate | Same | Same | `session/prewalk.ts:22,101`; `src/core.ts` `onTurnEnd` |
+| 3 | Handoff trigger | First `edit`/`write` tool result after the todo gate | First positively proven mutation after the gate; OMP's `edit`/`write` path is unchanged, while exact patch surfaces and source-owned adapters can supply equivalent evidence | Same core behavior, chosen extension seam | `session/prewalk.ts:22,101`; `src/mutation.ts`; `src/core.ts` `onTurnEnd` |
 | 4 | Todo gate before handoff | Yes | Yes | Same | `session/prewalk.ts:83,100`; `src/core.ts` |
 | 5 | Hidden deep-plan nudge | Injected once | Injected once | Same | `session/prewalk.ts:107`; `PREWALK_PLAN_MESSAGE_TYPE` |
 | 6 | Continuation nudge | Yes | Yes | Same | `session/prewalk.ts:88`; `requestContinuation` |

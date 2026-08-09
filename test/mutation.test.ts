@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	type MutationEvidenceAdapter,
 	type MutationToolResult,
@@ -44,24 +44,18 @@ function finish(
 }
 
 describe("direct mutation results", () => {
-	it("accepts only positive evidence from an optional adapter", () => {
+	it("accepts only positive evidence from an optional adapter with canonical identity", () => {
 		const adapter: MutationEvidenceAdapter = {
-			candidateFor: (candidate) =>
-				candidate.toolName === "integration_patch" && candidate.details === "committed"
-					? {
-							toolCallId: candidate.toolCallId,
-							toolName: candidate.toolName,
-							kind: "apply_patch",
-							source: "adapter",
-						}
-					: undefined,
+			toolName: "integration_patch",
+			kindFor: (candidate) => (candidate.details === "committed" ? "apply_patch" : undefined),
 		};
 		const accepted = new MutationTurnBuffer([adapter]);
 		accepted.recordResult(result("committed", "integration_patch", { details: "committed" }));
-		expect(
-			finish(accepted, [{ id: "committed", name: "integration_patch" }]).mutation,
-		).toMatchObject({
+		expect(finish(accepted, [{ id: "committed", name: "integration_patch" }]).mutation).toEqual({
+			toolCallId: "committed",
 			toolName: "integration_patch",
+			kind: "apply_patch",
+			source: "adapter",
 		});
 
 		const rejected = new MutationTurnBuffer([adapter]);
@@ -69,6 +63,56 @@ describe("direct mutation results", () => {
 		expect(
 			finish(rejected, [{ id: "unknown", name: "integration_patch" }]).mutation,
 		).toBeUndefined();
+	});
+
+	it("keeps known tool decisions authoritative over optional adapters", () => {
+		const kindFor = vi.fn<MutationEvidenceAdapter["kindFor"]>(() => "write");
+		const buffer = new MutationTurnBuffer([{ toolName: "apply_patch", kindFor }]);
+		buffer.recordResult(
+			result("patch", "apply_patch", {
+				details: { status: "partial_failure", result: { changedFiles: ["src/a.ts"] } },
+			}),
+		);
+
+		expect(finish(buffer, [{ id: "patch", name: "apply_patch" }]).mutation).toBeUndefined();
+		expect(kindFor).not.toHaveBeenCalled();
+	});
+
+	it("uses the first positive optional adapter deterministically", () => {
+		const skipped = vi.fn<MutationEvidenceAdapter["kindFor"]>(() => undefined);
+		const accepted = vi.fn<MutationEvidenceAdapter["kindFor"]>(() => "edit");
+		const later = vi.fn<MutationEvidenceAdapter["kindFor"]>(() => "write");
+		const buffer = new MutationTurnBuffer([
+			{ toolName: "custom_editor", kindFor: skipped },
+			{ toolName: "custom_editor", kindFor: accepted },
+			{ toolName: "custom_editor", kindFor: later },
+		]);
+		buffer.recordResult(result("custom", "custom_editor", { details: { changed: true } }));
+
+		expect(finish(buffer, [{ id: "custom", name: "custom_editor" }]).mutation).toEqual({
+			toolCallId: "custom",
+			toolName: "custom_editor",
+			kind: "edit",
+			source: "adapter",
+		});
+		expect(skipped).toHaveBeenCalledOnce();
+		expect(accepted).toHaveBeenCalledOnce();
+		expect(later).not.toHaveBeenCalled();
+	});
+
+	it("does not offer unrelated todo or read results to an adapter", () => {
+		const kindFor = vi.fn<MutationEvidenceAdapter["kindFor"]>(() => "edit");
+		const buffer = new MutationTurnBuffer([{ toolName: "external_editor", kindFor }]);
+		buffer.recordResult(result("todo", PREWALK_TODO_TOOL_NAME));
+		buffer.recordResult(result("read", "read", { details: { changed: true } }));
+
+		expect(
+			finish(buffer, [
+				{ id: "todo", name: PREWALK_TODO_TOOL_NAME },
+				{ id: "read", name: "read" },
+			]).mutation,
+		).toBeUndefined();
+		expect(kindFor).not.toHaveBeenCalled();
 	});
 
 	it.each(["edit", "write"])("accepts a successful %s result", (toolName) => {

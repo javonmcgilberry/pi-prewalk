@@ -224,6 +224,14 @@ Unknown tools do not count unless an optional integration translates their
 terminal result into the same positive mutation evidence. If the result is
 unclear, Prewalk stays with the planner.
 
+This is a small, source-owned hook. A `MutationEvidenceAdapter` names one
+top-level tool and supplies a pure function that may classify its successful
+terminal result as `edit`, `write`, or `apply_patch`. Prewalk keeps the host's
+real tool-call identity and checks its built-in tools first, so an adapter
+cannot override a failed known operation, inspect a different tool's result, or
+invent trigger provenance. No RepoPrompt-specific adapter ships with this
+package.
+
 The handoff happens after the full assistant turn. Parallel tool results cannot
 race it. Before the executor's first request, Prewalk removes planning-only
 instructions, keeps the executor checklist, and leaves the real transcript,
