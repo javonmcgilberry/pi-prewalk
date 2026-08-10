@@ -249,6 +249,43 @@ describe("PiHostEventCorrelation agent ordering", () => {
 		});
 	});
 
+	it("keeps interleaved agent streams in their exact FIFO ownership", () => {
+		const correlation = new PiHostEventCorrelation();
+		const messageA = message(15);
+		const messageB = message(16);
+		correlation.observe({ type: "before-agent" }, A);
+		correlation.observe({ type: "agent-start" }, A);
+		correlation.observe({ type: "before-agent" }, B);
+		correlation.observe({ type: "agent-start" }, B);
+		correlation.observe({ type: "message-start", message: messageA }, A);
+		correlation.observe({ type: "message-start", message: messageB }, B);
+
+		expectResult(correlation.observe({ type: "agent-end", messages: [messageA] }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "agent-message",
+			run: A,
+		});
+		expectResult(correlation.observe({ type: "agent-end", messages: [messageB] }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "agent-message",
+			run: B,
+		});
+		expectResult(correlation.observe({ type: "agent-settled" }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "settlement-order",
+			run: A,
+		});
+		expectResult(correlation.observe({ type: "agent-settled" }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "settlement-order",
+			run: B,
+		});
+	});
+
 	it("uses active ownership for agent-settled before falling back to current", () => {
 		const correlation = new PiHostEventCorrelation();
 		correlation.observe({ type: "agent-start" }, A);
@@ -1093,7 +1130,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 			"utf8",
 		);
 		const extensionSource = await readFile(
-			new URL("../extensions/prewalk.ts", import.meta.url),
+			new URL("../src/pi/register-events.ts", import.meta.url),
 			"utf8",
 		);
 		const moduleFile = ts.createSourceFile(
@@ -1139,9 +1176,9 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 			'import type { AgentMessage } from "@earendil-works/pi-agent-core";',
 		);
 		for (const forbidden of [
-			"./core.js",
+			"./orchestration/coordinator.js",
 			"PrewalkRun",
-			"PrewalkCoordinator",
+			"PrewalkApplication",
 			"MutationTurnBuffer",
 			"TemporaryModelRuntime",
 			"AnalyticsStore",
@@ -1214,6 +1251,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 				"tool-claim",
 				"tool",
 				"tool",
+				"tool",
 				"before-compaction",
 				"compaction",
 			].sort(),
@@ -1221,7 +1259,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 		expect(toolClaimIds).toEqual(["event.toolCallId", "event.toolCallId"]);
 		expect(resetCalls).toBe(1);
 		expect(discardCalls).toBe(2);
-		expect(extensionSource).toContain('from "../src/host-event-correlation.js"');
+		expect(extensionSource).toContain('from "../host-event-correlation.js"');
 		expect(extensionSource).not.toContain(".attribution");
 		expect(extensionSource).not.toContain("pendingAgentMarkersRemoved");
 		for (const retired of [

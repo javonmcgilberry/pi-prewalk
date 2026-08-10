@@ -63,7 +63,7 @@ interface CorrelationState {
 	readonly agentEndMarkers: HostRunMarker[];
 	readonly settlementMarkers: HostRunMarker[];
 	readonly compactionMarkers: HostRunMarker[];
-	activeAgentMarker: HostRunMarker | undefined;
+	readonly activeAgentMarkers: HostRunMarker[];
 	suppressCompactionCycle: boolean;
 }
 
@@ -78,7 +78,7 @@ function createState(): CorrelationState {
 		agentEndMarkers: [],
 		settlementMarkers: [],
 		compactionMarkers: [],
-		activeAgentMarker: undefined,
+		activeAgentMarkers: [],
 		suppressCompactionCycle: false,
 	};
 }
@@ -176,14 +176,28 @@ function toolFact(state: CorrelationState, toolCallId: string): KnownMarker | un
 	return marker === undefined ? undefined : { marker, evidence: "tool-id" };
 }
 
-function fallbackFact(state: CorrelationState): KnownMarker | undefined {
-	if (state.activeAgentMarker !== undefined) {
-		return { marker: state.activeAgentMarker, evidence: "active-agent" };
+function fallbackFact(
+	state: CorrelationState,
+	currentRun: HostRunIdentity | undefined,
+): KnownMarker | undefined {
+	const active =
+		currentRun === undefined
+			? state.activeAgentMarkers[0]
+			: (state.activeAgentMarkers.find(
+					(marker) => marker !== null && sameIdentity(marker, currentRun),
+				) ?? state.activeAgentMarkers[0]);
+	if (active !== undefined) {
+		return { marker: active, evidence: "active-agent" };
 	}
 	const settlement = state.settlementMarkers[0];
 	return settlement === undefined
 		? undefined
 		: { marker: settlement, evidence: "settlement-order" };
+}
+
+function removeFirstMarker(markers: HostRunMarker[], target: HostRunMarker): void {
+	const index = markers.findIndex((marker) => sameMarker(marker, target));
+	if (index >= 0) markers.splice(index, 1);
 }
 
 function discardFirstExactAgentEnd(state: CorrelationState, marker: HostRunMarker): void {
@@ -210,7 +224,7 @@ function observeAgentStart(
 	const pending = shiftMarker(state.pendingAgentMarkers, "pending-agent");
 	const marker = pending === undefined ? currentMarker(currentRun) : pending.marker;
 	state.agentEndMarkers.push(marker);
-	state.activeAgentMarker = marker;
+	state.activeAgentMarkers.push(marker);
 	return classify(marker, currentRun, pending === undefined ? "current-capture" : "pending-agent");
 }
 
@@ -235,6 +249,7 @@ function observeAgentEnd(
 			attribution: { kind: "unknown", fallback: "ignore-agent-end" },
 		};
 	}
+	removeFirstMarker(state.activeAgentMarkers, selected.marker);
 	state.settlementMarkers.push(selected.marker);
 	return classify(selected.marker, currentRun, selected.evidence);
 }
@@ -244,21 +259,20 @@ function observeAgentSettled(
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
 	const settlement = shiftMarker(state.settlementMarkers, "settlement-order");
+	const activeMarker = settlement === undefined ? state.activeAgentMarkers[0] : undefined;
 	const active =
-		settlement === undefined && state.activeAgentMarker !== undefined
-			? { marker: state.activeAgentMarker, evidence: "active-agent" as const }
-			: undefined;
+		activeMarker === undefined
+			? undefined
+			: { marker: activeMarker, evidence: "active-agent" as const };
 	const selected = settlement ??
 		active ?? {
 			marker: currentMarker(currentRun),
 			evidence: "current-capture" as const,
 		};
-	if (
-		state.activeAgentMarker !== undefined &&
-		sameMarker(state.activeAgentMarker, selected.marker)
-	) {
-		state.activeAgentMarker = undefined;
-	}
+	const activeIndex = state.activeAgentMarkers.findIndex((marker) =>
+		sameMarker(marker, selected.marker),
+	);
+	if (activeIndex >= 0) state.activeAgentMarkers.splice(activeIndex, 1);
 	if (selected.marker !== null) {
 		const removed = removeAllExact(state.compactionMarkers, selected.marker);
 		if (removed > 0) state.suppressCompactionCycle = true;
@@ -272,7 +286,7 @@ function observeMessageStart(
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
 	const selected = messageFact(state, message) ??
-		fallbackFact(state) ?? {
+		fallbackFact(state, currentRun) ?? {
 			marker: currentMarker(currentRun),
 			evidence: "current-capture" as const,
 		};
@@ -287,7 +301,7 @@ function observeMessage(
 	message: AgentMessage,
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
-	const selected = messageFact(state, message) ?? fallbackFact(state);
+	const selected = messageFact(state, message) ?? fallbackFact(state, currentRun);
 	return selected === undefined
 		? permissiveUnknown()
 		: classify(selected.marker, currentRun, selected.evidence);
@@ -299,7 +313,7 @@ function observeToolClaim(
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
 	const selected = toolFact(state, toolCallId) ??
-		fallbackFact(state) ?? {
+		fallbackFact(state, currentRun) ?? {
 			marker: currentMarker(currentRun),
 			evidence: "current-capture" as const,
 		};
@@ -313,7 +327,7 @@ function observeTool(
 	toolCallId: string,
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
-	const selected = toolFact(state, toolCallId) ?? fallbackFact(state);
+	const selected = toolFact(state, toolCallId) ?? fallbackFact(state, currentRun);
 	return selected === undefined
 		? permissiveUnknown()
 		: classify(selected.marker, currentRun, selected.evidence);
@@ -386,7 +400,7 @@ function resetState(state: CorrelationState): void {
 	state.agentEndMarkers.length = 0;
 	state.settlementMarkers.length = 0;
 	state.compactionMarkers.length = 0;
-	state.activeAgentMarker = undefined;
+	state.activeAgentMarkers.length = 0;
 	state.suppressCompactionCycle = false;
 }
 

@@ -1,5 +1,6 @@
 {
   "revision": "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7",
+  "promptSourceRevision": "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d",
   "promptAssets": {
     "prewalk-plan.md": {
       "source": "packages/coding-agent/src/prompts/system/prewalk-plan.md",
@@ -22,27 +23,27 @@
     {
       "upstream": "prewalks at the first edit/write after the todo gate opens; bash and todo don't trigger",
       "classification": "pi-adapted",
-      "local": "test/agent-loop.test.ts"
+      "local": "test/integration/agent-loop.test.ts"
     },
     {
       "upstream": "an edit before any todo call does not switch while a todo tool exists; the next edit after todo does",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "keeps the todo gate closed after a failed todo call",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "forces a continuation when the plan nudge gets a text-only reply, instead of silently ending the run",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "bounds a completed bash-only task to a single continuation instead of looping",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "does not switch on a read-only xd:// device dispatched through write (issue #7312)",
@@ -57,32 +58,32 @@
     {
       "upstream": "re-arms continuation after tool progress between prose turns",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "skips the todo gate when todo is registered but not active (subagent-style restricted slates)",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "armPrewalk (the /prewalk slash command) pre-arms the switch for the very next edit/write",
       "classification": "pi-adapted",
-      "local": "test/extension.test.ts"
+      "local": "test/integration/extension.test.ts"
     },
     {
       "upstream": "effort-only prewalk on the same model downgrades the thinking level instead of silently skipping",
       "classification": "pi-adapted",
-      "local": "test/extension.test.ts"
+      "local": "test/integration/extension.test.ts"
     },
     {
       "upstream": "emits a notice and skips the checklist when the prewalk target is a genuine no-op",
       "classification": "pi-adapted",
-      "local": "test/extension.test.ts"
+      "local": "test/integration/extension.test.ts"
     },
     {
       "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
       "classification": "pi-adapted",
-      "local": "test/executor-chain.test.ts"
+      "local": "test/executor/executor-chain.test.ts"
     },
     {
       "upstream": "switches when a same-model target clears auto mode even though efforts both resolve to undefined",
@@ -92,22 +93,22 @@
     {
       "upstream": "leaves prewalk unarmed instead of crashing when the target has no configured auth",
       "classification": "pi-adapted",
-      "local": "test/extension.test.ts"
+      "local": "test/integration/extension.test.ts"
     },
     {
       "upstream": "arms prewalk when the target resolves and has configured auth",
       "classification": "pi-adapted",
-      "local": "test/agent-loop.test.ts"
+      "local": "test/integration/agent-loop.test.ts"
     },
     {
       "upstream": "requires a fresh todo before a later explicit prewalk can hand off",
       "classification": "direct",
-      "local": "test/core.test.ts"
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "armPrewalk rejects a same-model same-effort no-op before injecting the plan nudge",
       "classification": "pi-adapted",
-      "local": "test/extension.test.ts"
+      "local": "test/integration/extension.test.ts"
     },
     {
       "upstream": "/prewalk reports success only when the requested arm remains active",
