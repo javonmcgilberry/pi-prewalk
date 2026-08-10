@@ -27,3 +27,27 @@ receipt.
 
 Observed spend is cost attributed by Pi to recorded usage. It is distinct from
 a counterfactual estimate.
+
+## Host run identity
+
+A host run identity is the immutable pair of a Prewalk run ID and its epoch.
+Both fields must match before an observation is exact for the current run.
+
+## Host observation
+
+A host observation is the neutral form of a public Pi agent, message, tool, or
+compaction event presented to the host-event correlation seam.
+
+## Unowned host observation
+
+An unowned host observation was captured when there was no current Prewalk run.
+It may apply only while no run is current.
+
+## Unknown host observation
+
+An unknown host observation has no retained ownership fact. Only ordinary
+message queries, ordinary tool queries, and an eligible unsuppressed unpaired
+terminal compaction may return `apply/unknown`. Unknown `agent-end` is
+ignored. Under valid input, `message-start`, `tool-claim`, `agent-start`, and
+`agent-settled` do not produce ordinary unknown. `apply/unknown` proves neither
+run ownership nor mutation and still has to pass the existing semantic checks.

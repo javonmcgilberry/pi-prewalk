@@ -34,6 +34,29 @@ communicates through registered commands, tools, events, session entries, and a
 temporary provider-registry overlay; it does not patch Pi's agent loop or
 change the selected planner model.
 
+### Run isolation for host events
+
+Pi's public events do not carry a stable Prewalk run identity. Prewalk therefore
+uses a small facts-only layer for agent, message, tool, and compaction events.
+Claim and capture events store an ownership fact. They use the current run ID
+and epoch, or an explicit-unowned marker when no earlier retained fact applies.
+Only ordinary message and tool queries, and an eligible unsuppressed unpaired
+terminal compaction, may be genuinely unknown and return `apply/unknown`.
+Unknown `agent-end` is ignored. Under valid input, `message-start`,
+`tool-claim`, `agent-start`, and `agent-settled` do not produce ordinary
+unknown. The layer tells the extension to `apply` or `ignore` the observation.
+The coordinator and the existing mutation, todo, analytics, and compaction code
+still make the actual decisions.
+
+For the permitted query and compaction cases, `apply/unknown` means no retained
+fact identifies the run. It proves neither current-run ownership nor a mutation,
+and the observation still has to pass the existing checks before it can change
+anything. One Prewalk run remains one trajectory inside one Pi session.
+Child runs keep their own local extension state, and this seam does not rewrite
+child launches or schedule work.
+`TemporaryModelRuntime` remains a replaceable provider-routing adapter rather
+than part of correlation policy.
+
 ## Status
 
 Prewalk is experimental. It uses Pi's current public extension APIs and does
