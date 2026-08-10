@@ -76,6 +76,7 @@ import {
 	needsExecutorCompaction,
 } from "../src/executor-context.js";
 import { isRecord } from "../src/guards.js";
+import { type HostRunIdentity, PiHostEventCorrelation } from "../src/host-event-correlation.js";
 import {
 	createTemporaryModelRuntime,
 	type TemporaryModelLease,
@@ -368,13 +369,17 @@ function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
 	return "not-started";
 }
 
-type RunIdentity = Readonly<{ runId: string; epoch: string }>;
-
-function identityOf(run: PrewalkRun | undefined): RunIdentity | undefined {
+function identityOf(run: PrewalkRun): HostRunIdentity;
+function identityOf(run: undefined): undefined;
+function identityOf(run: PrewalkRun | undefined): HostRunIdentity | undefined;
+function identityOf(run: PrewalkRun | undefined): HostRunIdentity | undefined {
 	return run ? { runId: run.id, epoch: run.epoch } : undefined;
 }
 
-function sameRunIdentity(identity: RunIdentity | undefined, run: PrewalkRun | undefined): boolean {
+function sameRunIdentity(
+	identity: HostRunIdentity | undefined,
+	run: PrewalkRun | undefined,
+): boolean {
 	return (
 		identity !== undefined &&
 		run !== undefined &&
@@ -383,8 +388,15 @@ function sameRunIdentity(identity: RunIdentity | undefined, run: PrewalkRun | un
 	);
 }
 
-function sameIdentityValue(left: RunIdentity, right: RunIdentity): boolean {
+function sameIdentityValue(left: HostRunIdentity, right: HostRunIdentity): boolean {
 	return left.runId === right.runId && left.epoch === right.epoch;
+}
+
+function sameCapturedRun(
+	identity: HostRunIdentity | undefined,
+	run: PrewalkRun | undefined,
+): boolean {
+	return identity === undefined ? run === undefined : sameRunIdentity(identity, run);
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -631,6 +643,7 @@ function latestPrewalkToolSlate(ctx: ExtensionContext, runId: string): string[] 
 
 export default function prewalkExtension(pi: ExtensionAPI): void {
 	const coordinator = new PrewalkCoordinator();
+	const hostCorrelation = new PiHostEventCorrelation();
 	const mutations = new MutationTurnBuffer();
 	const evaluationMutations = new MutationTurnBuffer();
 	const analyticsStore = new AnalyticsStore(getAgentDir());
@@ -649,32 +662,21 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	let evaluation: EvaluationState | undefined;
 	let modelRuntime: TemporaryModelRuntime | undefined;
 	let modelLease: TemporaryModelLease | undefined;
-	let modelLeaseRun: RunIdentity | undefined;
+	let modelLeaseRun: HostRunIdentity | undefined;
 	let primaryAgentStream = false;
-	type HostRunMarker = RunIdentity | null;
-	type HostEventOwnership = { known: boolean; marker?: HostRunMarker };
-	const messageRunIds = new WeakMap<object, HostRunMarker>();
-	const messageRunKeys = new Map<string, HostRunMarker>();
-	const toolRunIds = new Map<string, HostRunMarker>();
-	const hostSettlementRuns: HostRunMarker[] = [];
-	const hostCompactionRuns: HostRunMarker[] = [];
-	const pendingHostRuns: HostRunMarker[] = [];
-	const agentEndRuns: HostRunMarker[] = [];
-	let activeHostRun: HostRunMarker | undefined;
 	let todoPhases: TodoPhase[] = [];
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
-	let compactionChecklistRun: RunIdentity | undefined;
-	let suppressUnownedCompaction = false;
-	let executorContextPressure: (RunIdentity & { retry: boolean }) | undefined;
-	let hostCompactionForExecutor: (RunIdentity & { retry: boolean }) | undefined;
-	let pendingExecutorCompaction: (RunIdentity & { retry: boolean }) | undefined;
-	let committedExecutorCompaction: (RunIdentity & { retry: boolean }) | undefined;
-	let executorCompactionRetry: (RunIdentity & { count: number }) | undefined;
-	let pendingExecutorFailureRun: RunIdentity | undefined;
+	let compactionChecklistRun: HostRunIdentity | undefined;
+	let executorContextPressure: (HostRunIdentity & { retry: boolean }) | undefined;
+	let hostCompactionForExecutor: (HostRunIdentity & { retry: boolean }) | undefined;
+	let pendingExecutorCompaction: (HostRunIdentity & { retry: boolean }) | undefined;
+	let committedExecutorCompaction: (HostRunIdentity & { retry: boolean }) | undefined;
+	let executorCompactionRetry: (HostRunIdentity & { count: number }) | undefined;
+	let pendingExecutorFailureRun: HostRunIdentity | undefined;
 	let removeTerminalInputListener: (() => void) | undefined;
 	let executorCompactionPolicy = DEFAULT_EXECUTOR_COMPACTION_POLICY;
 	const refreshExecutorCompactionPolicy = (ctx: ExtensionContext): ExecutorCompactionPolicy => {
@@ -789,112 +791,6 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		executorCompactionRetry = undefined;
 		pendingExecutorFailureRun = undefined;
 		compactionChecklistRun = undefined;
-	};
-
-	const messageKey = (message: AgentMessage): string =>
-		`${message.role}:${String(message.timestamp)}`;
-	const rememberMessageRun = (message: AgentMessage, runId: HostRunMarker): void => {
-		messageRunIds.set(message, runId);
-		messageRunKeys.set(messageKey(message), runId);
-		if (messageRunKeys.size > 512) {
-			const oldest = messageRunKeys.keys().next().value;
-			if (typeof oldest === "string") messageRunKeys.delete(oldest);
-		}
-	};
-	const messageOwnership = (message: AgentMessage): HostEventOwnership => {
-		if (messageRunIds.has(message)) return { known: true, marker: messageRunIds.get(message) };
-		const key = messageKey(message);
-		if (messageRunKeys.has(key)) return { known: true, marker: messageRunKeys.get(key) };
-		return { known: false };
-	};
-	const currentHostRun = (): HostRunMarker => identityOf(coordinator.run) ?? null;
-	const activeHostRunMarker = (): HostEventOwnership =>
-		activeHostRun === undefined ? { known: false } : { known: true, marker: activeHostRun };
-	const fallbackEventOwnership = (): HostEventOwnership => {
-		const active = activeHostRunMarker();
-		if (active.known) return active;
-		const queued = hostSettlementRuns[0];
-		return queued === undefined ? { known: false } : { known: true, marker: queued };
-	};
-	const eventOwnership = (message: AgentMessage): HostEventOwnership => {
-		const ownership = messageOwnership(message);
-		return ownership.known ? ownership : fallbackEventOwnership();
-	};
-	const belongsToCurrentRun = (
-		ownership: HostEventOwnership,
-		run: PrewalkRun | undefined = coordinator.run,
-	): boolean => {
-		if (!ownership.known) return true;
-		const marker = ownership.marker;
-		if (marker === null) return run === undefined;
-		return marker !== undefined && sameRunIdentity(marker, run);
-	};
-	const rememberToolRun = (toolCallId: string, runId: HostRunMarker): void => {
-		toolRunIds.set(toolCallId, runId);
-		if (toolRunIds.size > 512) {
-			const oldest = toolRunIds.keys().next().value;
-			if (typeof oldest === "string") toolRunIds.delete(oldest);
-		}
-	};
-	const toolOwnership = (toolCallId: string): HostEventOwnership =>
-		toolRunIds.has(toolCallId)
-			? { known: true, marker: toolRunIds.get(toolCallId) }
-			: fallbackEventOwnership();
-	const rememberAgentContext = (): void => {
-		const marker = currentHostRun();
-		pendingHostRuns.push(marker);
-	};
-	const discardPendingHostRun = (identity: RunIdentity | undefined): void => {
-		if (identity === undefined) return;
-		for (let index = pendingHostRuns.length - 1; index >= 0; index -= 1) {
-			const marker = pendingHostRuns[index];
-			if (marker !== null && marker !== undefined && sameIdentityValue(marker, identity)) {
-				pendingHostRuns.splice(index, 1);
-			}
-		}
-	};
-	const discardHostCompactionRun = (marker: HostRunMarker | undefined): boolean => {
-		if (marker === null || marker === undefined) return false;
-		let discarded = false;
-		for (let index = hostCompactionRuns.length - 1; index >= 0; index -= 1) {
-			const queued = hostCompactionRuns[index];
-			if (queued !== null && queued !== undefined && sameIdentityValue(queued, marker)) {
-				hostCompactionRuns.splice(index, 1);
-				discarded = true;
-			}
-		}
-		return discarded;
-	};
-	const discardAgentEndRun = (marker: HostRunMarker | undefined): void => {
-		if (marker === null || marker === undefined) return;
-		const index = agentEndRuns.findIndex(
-			(queued) => queued !== null && queued !== undefined && sameIdentityValue(queued, marker),
-		);
-		if (index >= 0) agentEndRuns.splice(index, 1);
-	};
-	const beginAgentStream = (): HostEventOwnership => {
-		const pending = pendingHostRuns.shift();
-		const marker = pending !== undefined ? pending : currentHostRun();
-		agentEndRuns.push(marker);
-		activeHostRun = marker;
-		return { known: true, marker };
-	};
-	const settleAgentStream = (): HostEventOwnership => {
-		const marker =
-			hostSettlementRuns.length > 0
-				? hostSettlementRuns.shift()
-				: activeHostRun !== undefined
-					? activeHostRun
-					: currentHostRun();
-		if (
-			activeHostRun !== undefined &&
-			marker !== undefined &&
-			((activeHostRun === null && marker === null) ||
-				(activeHostRun !== null && marker !== null && sameIdentityValue(activeHostRun, marker)))
-		) {
-			activeHostRun = undefined;
-		}
-		return { known: true, marker };
 	};
 
 	const recordDelegationProjection = async (
@@ -1121,7 +1017,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		return promise;
 	};
 
-	const restoreModelLease = (run?: RunIdentity): void => {
+	const restoreModelLease = (run?: HostRunIdentity): void => {
 		if (
 			run !== undefined &&
 			(modelLeaseRun === undefined || !sameIdentityValue(modelLeaseRun, run))
@@ -1191,12 +1087,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		reasonCode: string,
 		holdExecutorRoute: boolean,
 		ctx: ExtensionContext,
-		expectedRun?: RunIdentity,
+		expectedRun?: HostRunIdentity,
 	): void => {
 		const failedRun = coordinator.run;
 		if (expectedRun !== undefined && !sameRunIdentity(expectedRun, failedRun)) return;
-		discardPendingHostRun(identityOf(failedRun));
-		if (discardHostCompactionRun(identityOf(failedRun))) suppressUnownedCompaction = true;
+		const failedIdentity = identityOf(failedRun);
+		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
 		const failedState =
 			analyticsState &&
 			failedRun &&
@@ -1243,8 +1139,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		const run = coordinator.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
-		discardPendingHostRun(runIdentity);
-		if (discardHostCompactionRun(runIdentity)) suppressUnownedCompaction = true;
+		hostCorrelation.discardPendingForRun(runIdentity);
 		const state =
 			analyticsState?.journal.runId === run.id && analyticsState.journal.epoch === run.epoch
 				? analyticsState
@@ -1294,7 +1189,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	const ensureModelRuntime = (ctx: ExtensionContext): TemporaryModelLease => {
 		const run = coordinator.run;
 		if (!run) throw new Error("Prewalk is inactive.");
-		const runIdentity: RunIdentity = { runId: run.id, epoch: run.epoch };
+		const runIdentity: HostRunIdentity = { runId: run.id, epoch: run.epoch };
 		if (
 			modelLease &&
 			modelLeaseRun !== undefined &&
@@ -1483,7 +1378,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		) {
 			return;
 		}
-		const runIdentity: RunIdentity = { runId: run.id, epoch: run.epoch };
+		const runIdentity: HostRunIdentity = { runId: run.id, epoch: run.epoch };
 		const policy = refreshExecutorCompactionPolicy(ctx);
 		if (!policy.enabled) {
 			executorContextPressure = undefined;
@@ -1596,9 +1491,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		triggerTurn = false,
 		configOverride?: PrewalkConfig,
-		expectedRun?: RunIdentity | null,
+		expectedRun?: HostRunIdentity | null,
 	): Promise<"armed" | "executor-unavailable" | "failed"> => {
-		let armedRunIdentity: RunIdentity | undefined;
+		let armedRunIdentity: HostRunIdentity | undefined;
 		try {
 			const expectedCurrent = coordinator.run;
 			if (
@@ -2217,14 +2112,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		refreshExecutorCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
-		messageRunKeys.clear();
-		toolRunIds.clear();
-		hostSettlementRuns.length = 0;
-		hostCompactionRuns.length = 0;
-		pendingHostRuns.length = 0;
-		agentEndRuns.length = 0;
-		suppressUnownedCompaction = false;
-		activeHostRun = undefined;
+		hostCorrelation.resetSession();
 		delegation = undefined;
 		delegationInvocations.length = 0;
 		removeTerminalInputListener?.();
@@ -2383,7 +2271,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (_event) => {
-		rememberAgentContext();
+		hostCorrelation.observe({ type: "before-agent" }, identityOf(coordinator.run));
 		if (!pendingAdmission || coordinator.run || evaluation) return;
 		pendingAdmission = false;
 		const assessment = beginEvaluation();
@@ -2434,43 +2322,40 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
-		const ownership = beginAgentStream();
-		if (!belongsToCurrentRun(ownership)) return;
+		const correlation = hostCorrelation.observe(
+			{ type: "agent-start" },
+			identityOf(coordinator.run),
+		);
+		if (correlation.decision === "ignore") return;
 		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshExecutorCompactionPolicy(ctx);
 		primaryAgentStream = true;
 	});
 
 	pi.on("agent_end", (event) => {
-		const ownership = event.messages.reduce<HostEventOwnership>(
-			(current, message) => (current.known ? current : messageOwnership(message)),
-			{ known: false },
+		const correlation = hostCorrelation.observe(
+			{ type: "agent-end", messages: event.messages },
+			identityOf(coordinator.run),
 		);
-		if (ownership.known) discardAgentEndRun(ownership.marker);
-		const resolvedOwnership = ownership.known
-			? ownership
-			: agentEndRuns.length > 0
-				? { known: true, marker: agentEndRuns.shift() }
-				: { known: false };
-		if (!resolvedOwnership.known) return;
-		if (resolvedOwnership.marker !== undefined) hostSettlementRuns.push(resolvedOwnership.marker);
-		if (!belongsToCurrentRun(resolvedOwnership)) return;
+		if (correlation.decision === "ignore") return;
 		primaryAgentStream = false;
 	});
 
 	pi.on("message_start", (event) => {
-		const ownership = eventOwnership(event.message);
-		rememberMessageRun(
-			event.message,
-			ownership.known && ownership.marker !== undefined ? ownership.marker : currentHostRun(),
+		hostCorrelation.observe(
+			{ type: "message-start", message: event.message },
+			identityOf(coordinator.run),
 		);
 	});
 
 	pi.on("message_end", async (event) => {
-		const ownership = eventOwnership(event.message);
 		const run = coordinator.run;
+		const correlation = hostCorrelation.observe(
+			{ type: "message", message: event.message },
+			identityOf(run),
+		);
 		if (
-			!belongsToCurrentRun(ownership, run) ||
+			correlation.decision === "ignore" ||
 			!analyticsState ||
 			!run ||
 			event.message.role !== "assistant" ||
@@ -2493,10 +2378,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		const ownership = settleAgentStream();
-		if (discardHostCompactionRun(ownership.marker)) suppressUnownedCompaction = true;
 		const settledRun = coordinator.run;
-		if (!belongsToCurrentRun(ownership, settledRun)) return;
+		const correlation = hostCorrelation.observe(
+			{ type: "agent-settled" },
+			identityOf(settledRun),
+		);
+		if (correlation.decision === "ignore") return;
 		primaryAgentStream = false;
 		const settledIdentity = identityOf(settledRun);
 		if (evaluation) {
@@ -2592,12 +2479,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", (event) => {
-		const ownership = toolOwnership(event.toolCallId);
-		rememberToolRun(
-			event.toolCallId,
-			ownership.known && ownership.marker !== undefined ? ownership.marker : currentHostRun(),
+		const correlation = hostCorrelation.observe(
+			{ type: "tool-claim", toolCallId: event.toolCallId },
+			identityOf(coordinator.run),
 		);
-		if (!belongsToCurrentRun(toolOwnership(event.toolCallId))) return;
+		if (correlation.decision === "ignore") return;
 		if (evaluation && !ASSESSMENT_READ_ONLY_TOOLS.has(event.toolName)) {
 			evaluation.invalid = true;
 			return { block: true, reason: "Prewalk assessment only allows read-only inspection." };
@@ -2605,8 +2491,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_update", (event) => {
-		const ownership = toolOwnership(event.toolCallId);
-		if (!belongsToCurrentRun(ownership)) return;
+		const correlation = hostCorrelation.observe(
+			{ type: "tool", toolCallId: event.toolCallId },
+			identityOf(coordinator.run),
+		);
+		if (correlation.decision === "ignore") return;
 		if (evaluation) {
 			evaluationMutations.recordExecutionUpdate(event);
 			return;
@@ -2616,15 +2505,12 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", async (event, ctx) => {
-		const existingOwnership = toolOwnership(event.toolCallId);
-		rememberToolRun(
-			event.toolCallId,
-			existingOwnership.known && existingOwnership.marker !== undefined
-				? existingOwnership.marker
-				: currentHostRun(),
+		const correlatedRun = identityOf(coordinator.run);
+		const correlation = hostCorrelation.observe(
+			{ type: "tool-claim", toolCallId: event.toolCallId },
+			correlatedRun,
 		);
-		const ownership = toolOwnership(event.toolCallId);
-		if (!belongsToCurrentRun(ownership)) return;
+		if (correlation.decision === "ignore") return;
 		if (
 			evaluation &&
 			(event.toolName === PREWALK_TODO_TOOL_NAME || event.toolName === "subagent")
@@ -2636,7 +2522,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 		if (parentSessionId) {
 			try {
 				const analyticsGeneration = await analyticsStore.currentGeneration();
-				if (!belongsToCurrentRun(ownership, coordinator.run)) return;
+				if (!sameCapturedRun(correlatedRun, coordinator.run)) return;
 				delegationInvocations.push({
 					toolCallId: event.toolCallId,
 					rootSessionId: parentSessionId,
@@ -2649,7 +2535,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 				// Analytics must never affect subagent execution.
 			}
 		}
-		if (!belongsToCurrentRun(ownership)) return;
+		if (!sameCapturedRun(correlatedRun, coordinator.run)) return;
 		delegation = {
 			agent: delegatedAgent(event.args),
 			state: "running",
@@ -2658,10 +2544,13 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		const ownership = toolOwnership(event.toolCallId);
-		if (!belongsToCurrentRun(ownership)) return;
 		const run = coordinator.run;
 		const runIdentity = identityOf(run);
+		const correlation = hostCorrelation.observe(
+			{ type: "tool", toolCallId: event.toolCallId },
+			runIdentity,
+		);
+		if (correlation.decision === "ignore") return;
 		const state =
 			analyticsState &&
 			run &&
@@ -2702,7 +2591,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			if (invocation) {
 				await recordDelegationProjection(invocation, event.details, event.isError);
 			}
-			if (!belongsToCurrentRun(ownership)) return;
+			if (!sameCapturedRun(runIdentity, coordinator.run)) return;
 			delegation = delegationFromResult(
 				event.details,
 				event.isError,
@@ -2710,7 +2599,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 			);
 			updateStatus(ctx);
 		}
-		if (!belongsToCurrentRun(ownership) || !sameRunIdentity(runIdentity, coordinator.run)) return;
+		if (!sameRunIdentity(runIdentity, coordinator.run)) return;
 		if (!acceptsMutationEvidence(coordinator.run)) return;
 		mutations.recordResult({
 			toolCallId: event.toolCallId,
@@ -2722,8 +2611,11 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		const ownership = eventOwnership(event.message);
-		if (!belongsToCurrentRun(ownership)) return;
+		const correlation = hostCorrelation.observe(
+			{ type: "message", message: event.message },
+			identityOf(coordinator.run),
+		);
+		if (correlation.decision === "ignore") return;
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") return;
 		if (evaluation) {
 			const evidence = evaluationMutations.finishTurn(event.message, {
@@ -2806,9 +2698,7 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	}));
 
 	pi.on("session_before_compact", (event) => {
-		suppressUnownedCompaction = false;
-		const marker = currentHostRun();
-		if (marker !== null) hostCompactionRuns.push(marker);
+		hostCorrelation.observe({ type: "before-compaction" }, identityOf(coordinator.run));
 		const run = coordinator.run;
 		const compactedMessages = [
 			...event.preparation.messagesToSummarize,
@@ -2834,15 +2724,9 @@ export default function prewalkExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_compact", async (event, ctx) => {
-		const compactionOwnership =
-			hostCompactionRuns.length > 0
-				? { known: true, marker: hostCompactionRuns.shift() }
-				: suppressUnownedCompaction
-					? undefined
-					: { known: false };
-		if (compactionOwnership === undefined) return;
-		if (!belongsToCurrentRun(compactionOwnership)) return;
 		const run = coordinator.run;
+		const correlation = hostCorrelation.observe({ type: "compaction" }, identityOf(run));
+		if (correlation.decision === "ignore") return;
 		const state =
 			analyticsState &&
 			run &&

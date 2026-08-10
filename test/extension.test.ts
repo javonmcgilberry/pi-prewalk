@@ -391,6 +391,45 @@ async function reachHandoff(harness: ReturnType<typeof createHarness>) {
 	});
 }
 
+function assistantWithToolCalls(
+	selected: Model<"openai-codex-responses">,
+	calls: Array<{ id: string; name: string }>,
+	timestamp: number,
+): AssistantMessage {
+	return {
+		...assistant(selected),
+		timestamp,
+		content: calls.map(({ id, name }) => ({
+			type: "toolCall" as const,
+			id,
+			name,
+			arguments: {},
+		})),
+	};
+}
+
+function checklistCount(harness: ReturnType<typeof createHarness>): number {
+	return harness.messages.filter(
+		(message) => message.customType === PREWALK_CHECKLIST_MESSAGE_TYPE,
+	).length;
+}
+
+async function emitSuccessfulToolResult(
+	harness: ReturnType<typeof createHarness>,
+	toolCallId: string,
+	toolName: string,
+): Promise<void> {
+	await harness.emit("tool_result", {
+		type: "tool_result",
+		toolCallId,
+		toolName,
+		input: toolName === PREWALK_TODO_TOOL_NAME ? { op: "init" } : {},
+		content: [],
+		isError: false,
+		details: toolName === PREWALK_TODO_TOOL_NAME ? { phases: [] } : {},
+	});
+}
+
 async function beginAutomaticAssessment(harness: ReturnType<typeof createHarness>, text: string) {
 	await harness.emit("session_start", { type: "session_start", reason: "startup" });
 	await harness.commands.get("prewalk")?.("auto", harness.context);
@@ -2488,6 +2527,528 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("planning");
 	});
 
+	it("captures active message and both tool-claim fallbacks before replacement", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "active-a",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+
+		const staleMessage = assistantWithToolCalls(
+			harness.executor,
+			[{ id: "active-message-edit", name: "edit" }],
+			11_001,
+		);
+		await harness.emit("message_start", { type: "message_start", message: staleMessage });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "active-tool-call",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "active-tool-start",
+			toolName: "edit",
+			args: {},
+		});
+
+		// Drain A's active fallback without discarding the captured object/key/IDs.
+		await harness.emit("agent_end", { type: "agent_end", messages: [] });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const before = checklistCount(harness);
+
+		// Repeated claims must preserve stored A instead of rebinding to B.
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "active-tool-call",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "active-tool-start",
+			toolName: "edit",
+			args: {},
+		});
+		await emitSuccessfulToolResult(harness, "active-tool-call", "edit");
+		await emitSuccessfulToolResult(harness, "active-tool-start", "edit");
+		await emitSuccessfulToolResult(harness, "active-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 101,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "active-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "active-tool-call", name: "edit" },
+					{ id: "active-tool-start", name: "edit" },
+				],
+				11_002,
+			),
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+
+		// Repeated message_start must preserve object A; otherwise the valid B
+		// result below would pair with the message and hand off B.
+		await harness.emit("message_start", { type: "message_start", message: staleMessage });
+		await emitSuccessfulToolResult(harness, "active-message-edit", "edit");
+		await emitSuccessfulToolResult(harness, "active-message-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 102,
+			message: {
+				...staleMessage,
+				content: [
+					{
+						type: "toolCall",
+						id: "active-message-todo",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					...staleMessage.content,
+				],
+			},
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+	});
+
+	it("captures oldest-settlement message and tool fallbacks before replacement", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "settlement-a",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const seed = { ...assistant(harness.executor), timestamp: 12_000 };
+		await harness.emit("message_start", { type: "message_start", message: seed });
+		await harness.emit("agent_end", { type: "agent_end", messages: [seed] });
+		await harness.emit("agent_end", { type: "agent_end", messages: [seed] });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		// Active is now clear while a second A settlement marker remains queued.
+		const staleMessage = assistantWithToolCalls(
+			harness.executor,
+			[{ id: "settlement-message-edit", name: "edit" }],
+			12_001,
+		);
+		await harness.emit("message_start", { type: "message_start", message: staleMessage });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "settlement-tool-call",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "settlement-tool-start",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const before = checklistCount(harness);
+		await emitSuccessfulToolResult(harness, "settlement-tool-call", "edit");
+		await emitSuccessfulToolResult(harness, "settlement-tool-start", "edit");
+		await emitSuccessfulToolResult(harness, "settlement-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 103,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "settlement-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "settlement-tool-call", name: "edit" },
+					{ id: "settlement-tool-start", name: "edit" },
+				],
+				12_002,
+			),
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+
+		await emitSuccessfulToolResult(harness, "settlement-message-edit", "edit");
+		await emitSuccessfulToolResult(harness, "settlement-message-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 104,
+			message: {
+				...staleMessage,
+				content: [
+					{
+						type: "toolCall",
+						id: "settlement-message-todo",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					...staleMessage.content,
+				],
+			},
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+	});
+
+	it("preserves explicit-unowned capture and direct-unowned agent-end ordering", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "unowned",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const unownedMessage = assistantWithToolCalls(
+			harness.planner,
+			[{ id: "unowned-message-edit", name: "edit" }],
+			13_001,
+		);
+		await harness.emit("message_start", { type: "message_start", message: unownedMessage });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "unowned-tool-call",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "unowned-tool-start",
+			toolName: "edit",
+			args: {},
+		});
+		await harness.emit("agent_end", { type: "agent_end", messages: [unownedMessage] });
+		await harness.emit("agent_end", { type: "agent_end", messages: [] });
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.commands.get("prewalk")?.("status", harness.context);
+		expect(harness.notifications.at(-1)).toContain(`run=${replacementRunId}`);
+		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+
+		const before = checklistCount(harness);
+		await emitSuccessfulToolResult(harness, "unowned-tool-call", "edit");
+		await emitSuccessfulToolResult(harness, "unowned-tool-start", "edit");
+		await emitSuccessfulToolResult(harness, "unowned-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 105,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "unowned-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "unowned-tool-call", name: "edit" },
+					{ id: "unowned-tool-start", name: "edit" },
+				],
+				13_002,
+			),
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+
+		await emitSuccessfulToolResult(harness, "unowned-message-edit", "edit");
+		await emitSuccessfulToolResult(harness, "unowned-message-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 106,
+			message: {
+				...unownedMessage,
+				content: [
+					{
+						type: "toolCall",
+						id: "unowned-message-todo",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					...unownedMessage.content,
+				],
+			},
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+	});
+
+	it("uses the first directly known agent-end message and skips earlier unknown messages", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "run-a",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const messageA = { ...assistant(harness.executor), timestamp: 14_001 };
+		await harness.emit("message_start", { type: "message_start", message: messageA });
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "run-b",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const messageB = { ...assistant(harness.planner), timestamp: 14_002 };
+		await harness.emit("message_start", { type: "message_start", message: messageB });
+
+		await harness.emit("agent_end", {
+			type: "agent_end",
+			messages: [{ ...assistant(harness.planner), timestamp: 14_000 }, messageA, messageB],
+		});
+
+		// Hand B off while its primary stream is still open. Selecting the
+		// required first-known A above queues stale A; selecting later B would
+		// instead close B's primary stream and queue B for settlement.
+		await emitSuccessfulToolResult(harness, "first-known-todo", PREWALK_TODO_TOOL_NAME);
+		await emitSuccessfulToolResult(harness, "first-known-edit", "edit");
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 114,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "first-known-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "first-known-edit", name: "edit" },
+				],
+				14_003,
+			),
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness.commands.get("prewalk")?.("status", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain(`run=${replacementRunId}`);
+		expect(harness.delegated.at(-1)?.id).toBe(harness.executor.id);
+	});
+
+	it("preserves live message-object ownership while session reset clears the key fallback", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const liveMessage = assistantWithToolCalls(
+			harness.planner,
+			[
+				{ id: "reset-todo", name: PREWALK_TODO_TOOL_NAME },
+				{ id: "reset-edit", name: "edit" },
+			],
+			15_001,
+		);
+		await harness.emit("message_start", { type: "message_start", message: liveMessage });
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const before = checklistCount(harness);
+		await emitSuccessfulToolResult(harness, "reset-edit", "edit");
+		await emitSuccessfulToolResult(harness, "reset-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 107,
+			message: liveMessage,
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before);
+
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 108,
+			message: { ...liveMessage },
+			toolResults: [],
+		});
+		expect(checklistCount(harness)).toBe(before + 1);
+	});
+
+	it("retains 512 message keys and evicts the oldest on the 513th distinct key", async () => {
+		const exercise = async (count: number, sessionId: string): Promise<number> => {
+			const harness = createHarness({ sessionId });
+			prewalkExtension(harness.pi);
+			await harness.emit("session_start", { type: "session_start", reason: "startup" });
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			for (let index = 0; index < count; index += 1) {
+				await harness.emit("message_start", {
+					type: "message_start",
+					message: { ...assistant(harness.planner), timestamp: 20_000 + index },
+				});
+			}
+			await harness.commands.get("prewalk")?.("cancel", harness.context);
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			const before = checklistCount(harness);
+			await emitSuccessfulToolResult(harness, `key-todo-${count}`, PREWALK_TODO_TOOL_NAME);
+			await emitSuccessfulToolResult(harness, `key-edit-${count}`, "edit");
+			await harness.emit("turn_end", {
+				type: "turn_end",
+				turnIndex: 200 + count,
+				message: assistantWithToolCalls(
+					harness.planner,
+					[
+						{ id: `key-todo-${count}`, name: PREWALK_TODO_TOOL_NAME },
+						{ id: `key-edit-${count}`, name: "edit" },
+					],
+					20_000,
+				),
+				toolResults: [],
+			});
+			return checklistCount(harness) - before;
+		};
+
+		await expect(exercise(512, "message-key-512")).resolves.toBe(0);
+		await expect(exercise(513, "message-key-513")).resolves.toBe(1);
+	});
+
+	it("retains 512 tool IDs and permits rebinding only after oldest-ID eviction", async () => {
+		const exercise = async (count: number, sessionId: string): Promise<number> => {
+			const harness = createHarness({ sessionId });
+			prewalkExtension(harness.pi);
+			await harness.emit("session_start", { type: "session_start", reason: "startup" });
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			for (let index = 0; index < count; index += 1) {
+				await harness.emit("tool_call", {
+					type: "tool_call",
+					toolCallId: `retained-tool-${index}`,
+					toolName: "edit",
+					args: {},
+				});
+			}
+			await harness.commands.get("prewalk")?.("cancel", harness.context);
+			await harness.commands.get("prewalk")?.("run", harness.context);
+			const before = checklistCount(harness);
+			await harness.emit("tool_call", {
+				type: "tool_call",
+				toolCallId: "retained-tool-0",
+				toolName: "edit",
+				args: {},
+			});
+			await emitSuccessfulToolResult(harness, "retained-tool-0", "edit");
+			await emitSuccessfulToolResult(harness, `tool-todo-${count}`, PREWALK_TODO_TOOL_NAME);
+			await harness.emit("turn_end", {
+				type: "turn_end",
+				turnIndex: 300 + count,
+				message: assistantWithToolCalls(
+					harness.planner,
+					[
+						{ id: `tool-todo-${count}`, name: PREWALK_TODO_TOOL_NAME },
+						{ id: "retained-tool-0", name: "edit" },
+					],
+					30_000 + count,
+				),
+				toolResults: [],
+			});
+			return checklistCount(harness) - before;
+		};
+
+		await expect(exercise(512, "tool-id-512")).resolves.toBe(0);
+		await expect(exercise(513, "tool-id-513")).resolves.toBe(1);
+	});
+
+	it("keeps more than 512 pending unowned agent markers in FIFO order", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		for (let index = 0; index < 513; index += 1) {
+			await harness.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: `unowned-${index}`,
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			});
+		}
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const runId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		for (let index = 0; index < 513; index += 1) {
+			await harness.emit("agent_start", { type: "agent_start" });
+		}
+
+		// Marker 513 must still be explicit-unowned. A hypothetical 512 cap
+		// would make the final start fall back to B, causing this exact tool
+		// evidence to hand B off instead of being rejected as unowned.
+		const before = checklistCount(harness);
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "pending-513-edit",
+			toolName: "edit",
+			args: {},
+		});
+		await emitSuccessfulToolResult(harness, "pending-513-edit", "edit");
+		await emitSuccessfulToolResult(harness, "pending-513-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 813,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "pending-513-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "pending-513-edit", name: "edit" },
+				],
+				81_300,
+			),
+			toolResults: [],
+		});
+
+		expect(checklistCount(harness)).toBe(before);
+		await harness.commands.get("prewalk")?.("status", harness.context);
+		expect(harness.notifications.at(-1)).toContain(`run=${runId}`);
+	});
+
+	it("does not persist a tool result query before a later replacement-run claim", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		// T is queried under A before either claim entry point has stored it.
+		await emitSuccessfulToolResult(harness, "query-before-claim", "edit");
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const before = checklistCount(harness);
+
+		// Because the A query stored nothing, this first claim must bind T to B.
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "query-before-claim",
+			toolName: "edit",
+			args: {},
+		});
+		await emitSuccessfulToolResult(harness, "query-before-claim", "edit");
+		await emitSuccessfulToolResult(harness, "query-before-claim-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 901,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "query-before-claim-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "query-before-claim", name: "edit" },
+				],
+				90_100,
+			),
+			toolResults: [],
+		});
+
+		expect(checklistCount(harness)).toBe(before + 1);
+	});
+
 	it("ignores queued host events from a cancelled run after replacement", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
@@ -2561,7 +3122,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
 	});
 
-	it("ignores a stale compaction event after replacement", async () => {
+	it("keeps a disowned compaction cycle suppressed across repeated terminals", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
@@ -2606,6 +3167,30 @@ describe("Prewalk extension harness", () => {
 				},
 			});
 
+			expect(
+				writes.some(
+					(journal) =>
+						journal.runId === replacementRunId &&
+						journal.usage.some(({ role }) => role === "compaction"),
+				),
+			).toBe(false);
+			// Suppression is cycle-scoped, not one-shot: a second orphan terminal
+			// before the next before-compaction must still not credit replacement B.
+			await harness.emit("session_compact", {
+				type: "session_compact",
+				compactionEntry: {
+					type: "compaction",
+					id: "stale-compaction-repeat",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			});
 			expect(
 				writes.some(
 					(journal) =>
