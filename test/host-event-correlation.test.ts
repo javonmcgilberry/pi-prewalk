@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
 	type HostCorrelation,
@@ -265,12 +266,14 @@ describe("PiHostEventCorrelation agent ordering", () => {
 		});
 	});
 
-	it("uses the first directly known message and removes only its first exact marker", () => {
+	it("uses the first directly known message and removes only one exact marker", () => {
 		const correlation = new PiHostEventCorrelation();
 		const messageA = message(20);
 		const messageB = message(21);
-		correlation.observe({ type: "before-agent" }, A);
-		correlation.observe({ type: "agent-start" }, A);
+		for (let index = 0; index < 2; index += 1) {
+			correlation.observe({ type: "before-agent" }, A);
+			correlation.observe({ type: "agent-start" }, A);
+		}
 		correlation.observe({ type: "message-start", message: messageA }, A);
 		correlation.observe({ type: "before-agent" }, B);
 		correlation.observe({ type: "agent-start" }, B);
@@ -289,11 +292,37 @@ describe("PiHostEventCorrelation agent ordering", () => {
 			},
 		);
 		expectResult(correlation.observe({ type: "agent-end", messages: [] }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "agent-order",
+			run: A,
+		});
+		expectResult(correlation.observe({ type: "agent-end", messages: [] }, B), {
 			decision: "apply",
 			kind: "exact",
 			evidence: "agent-order",
 			run: B,
 		});
+		for (let index = 0; index < 2; index += 1) {
+			expectResult(correlation.observe({ type: "agent-settled" }, B), {
+				decision: "ignore",
+				kind: "stale",
+				evidence: "settlement-order",
+				run: A,
+			});
+		}
+		expectResult(correlation.observe({ type: "agent-settled" }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "settlement-order",
+			run: B,
+		});
+	});
+
+	it("does not clear replacement active ownership when stale settlement wins", () => {
+		const correlation = new PiHostEventCorrelation();
+		leaveOneSettlement(correlation, A);
+		correlation.observe({ type: "agent-start" }, B);
 		expectResult(correlation.observe({ type: "agent-settled" }, B), {
 			decision: "ignore",
 			kind: "stale",
@@ -303,7 +332,7 @@ describe("PiHostEventCorrelation agent ordering", () => {
 		expectResult(correlation.observe({ type: "agent-settled" }, B), {
 			decision: "apply",
 			kind: "exact",
-			evidence: "settlement-order",
+			evidence: "active-agent",
 			run: B,
 		});
 	});
@@ -376,6 +405,31 @@ describe("PiHostEventCorrelation message facts", () => {
 			run: A,
 		});
 		expectResult(correlation.observe({ type: "message", message: message(50) }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "message-key",
+			run: A,
+		});
+	});
+
+	it("includes message role in the compatibility key", () => {
+		const correlation = new PiHostEventCorrelation();
+		correlation.observe({ type: "message-start", message: message(55, "assistant") }, A);
+		expectResult(correlation.observe({ type: "message", message: message(55, "user") }, B), {
+			decision: "apply",
+			kind: "unknown",
+			fallback: "preserve-current",
+		});
+		expectResult(
+			correlation.observe({ type: "message-start", message: message(55, "user") }, B),
+			{
+				decision: "apply",
+				kind: "exact",
+				evidence: "current-capture",
+				run: B,
+			},
+		);
+		expectResult(correlation.observe({ type: "message", message: message(55, "assistant") }, B), {
 			decision: "ignore",
 			kind: "stale",
 			evidence: "message-key",
@@ -1033,7 +1087,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 		for (const observe of observations) expect(observe).not.toThrow();
 	});
 
-	it("contains no forbidden semantic owner and remains unused by the extension", async () => {
+	it("has the exact public seam, neutral dependency, and sole production adoption", async () => {
 		const moduleSource = await readFile(
 			new URL("../src/host-event-correlation.ts", import.meta.url),
 			"utf8",
@@ -1042,6 +1096,45 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 			new URL("../extensions/prewalk.ts", import.meta.url),
 			"utf8",
 		);
+		const moduleFile = ts.createSourceFile(
+			"host-event-correlation.ts",
+			moduleSource,
+			ts.ScriptTarget.Latest,
+			true,
+			ts.ScriptKind.TS,
+		);
+		const exportedStatements = moduleFile.statements.filter((statement) => {
+			const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
+			return modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+		});
+		expect(exportedStatements).toHaveLength(7);
+		const exportedNames = exportedStatements.flatMap((statement) => {
+			if (ts.isTypeAliasDeclaration(statement) || ts.isClassDeclaration(statement)) {
+				return statement.name ? [statement.name.text] : [];
+			}
+			return [];
+		});
+		expect(exportedNames).toEqual([
+			"HostRunIdentity",
+			"HostObservation",
+			"HostCorrelationEvidence",
+			"HostAttribution",
+			"HostCorrelation",
+			"PendingRunDiscard",
+			"PiHostEventCorrelation",
+		]);
+		const correlationClass = moduleFile.statements.find(
+			(statement): statement is ts.ClassDeclaration =>
+				ts.isClassDeclaration(statement) && statement.name?.text === "PiHostEventCorrelation",
+		);
+		expect(
+			correlationClass?.members.flatMap((member) =>
+				ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)
+					? [member.name.text]
+					: [],
+			),
+		).toEqual(["resetSession", "discardPendingForRun", "observe"]);
+
 		expect(moduleSource).toContain(
 			'import type { AgentMessage } from "@earendil-works/pi-agent-core";',
 		);
@@ -1059,6 +1152,107 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 		]) {
 			expect(moduleSource).not.toContain(forbidden);
 		}
-		expect(extensionSource).not.toContain("host-event-correlation");
+
+		const extensionFile = ts.createSourceFile(
+			"prewalk.ts",
+			extensionSource,
+			ts.ScriptTarget.Latest,
+			true,
+			ts.ScriptKind.TS,
+		);
+		const observationTypes: string[] = [];
+		const toolClaimIds: string[] = [];
+		let resetCalls = 0;
+		let discardCalls = 0;
+		const visit = (node: ts.Node): void => {
+			if (
+				ts.isCallExpression(node) &&
+				ts.isPropertyAccessExpression(node.expression) &&
+				ts.isIdentifier(node.expression.expression) &&
+				node.expression.expression.text === "hostCorrelation"
+			) {
+				const method = node.expression.name.text;
+				if (method === "resetSession") resetCalls += 1;
+				if (method === "discardPendingForRun") discardCalls += 1;
+				if (method === "observe") {
+					const observation = node.arguments[0];
+					if (!observation || !ts.isObjectLiteralExpression(observation)) {
+						throw new Error("host correlation observation must be an object literal");
+					}
+					const typeProperty = observation.properties.find(
+						(property): property is ts.PropertyAssignment =>
+							ts.isPropertyAssignment(property) &&
+							property.name.getText(extensionFile) === "type",
+					);
+					if (!typeProperty || !ts.isStringLiteral(typeProperty.initializer)) {
+						throw new Error("host correlation observation type must be a string literal");
+					}
+					observationTypes.push(typeProperty.initializer.text);
+					if (typeProperty.initializer.text === "tool-claim") {
+						const idProperty = observation.properties.find(
+							(property): property is ts.PropertyAssignment =>
+								ts.isPropertyAssignment(property) &&
+								property.name.getText(extensionFile) === "toolCallId",
+						);
+						toolClaimIds.push(idProperty?.initializer.getText(extensionFile) ?? "missing");
+					}
+				}
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(extensionFile);
+		expect(observationTypes.sort()).toEqual(
+			[
+				"before-agent",
+				"agent-start",
+				"agent-end",
+				"agent-settled",
+				"message-start",
+				"message",
+				"message",
+				"tool-claim",
+				"tool-claim",
+				"tool",
+				"tool",
+				"before-compaction",
+				"compaction",
+			].sort(),
+		);
+		expect(toolClaimIds).toEqual(["event.toolCallId", "event.toolCallId"]);
+		expect(resetCalls).toBe(1);
+		expect(discardCalls).toBe(2);
+		expect(extensionSource).toContain('from "../src/host-event-correlation.js"');
+		expect(extensionSource).not.toContain(".attribution");
+		expect(extensionSource).not.toContain("pendingAgentMarkersRemoved");
+		for (const retired of [
+			"HostRunMarker",
+			"HostEventOwnership",
+			"messageRunIds",
+			"messageRunKeys",
+			"toolRunIds",
+			"hostSettlementRuns",
+			"hostCompactionRuns",
+			"pendingHostRuns",
+			"agentEndRuns",
+			"activeHostRun",
+			"suppressUnownedCompaction",
+			"messageKey",
+			"rememberMessageRun",
+			"messageOwnership",
+			"activeHostRunMarker",
+			"fallbackEventOwnership",
+			"eventOwnership",
+			"belongsToCurrentRun",
+			"rememberToolRun",
+			"toolOwnership",
+			"rememberAgentContext",
+			"discardPendingHostRun",
+			"discardHostCompactionRun",
+			"discardAgentEndRun",
+			"beginAgentStream",
+			"settleAgentStream",
+		]) {
+			expect(extensionSource).not.toContain(retired);
+		}
 	});
 });
