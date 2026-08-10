@@ -6,7 +6,7 @@ Two bugs in this repository were shipped and survived under a full green suite.
 Neither was subtle in hindsight, and both had the same cause: a test that could
 not fail.
 
-**The `api` bug.** `src/provider-overlay.ts` registered its overlay as
+**The `api` bug.** `src/executor/provider-overlay.ts` registered its overlay as
 `{ ...previous, streamSimple }`. Pi rejects a `streamSimple` registration that
 carries no `api`, and only a provider that another extension had already
 configured contributed one. Prewalk could therefore arm on `openai-codex` and
@@ -72,11 +72,11 @@ Unit tests with hand-built fakes prove resolution logic. They do not prove the
 extension works, because the fake is shaped by the same assumptions as the code.
 Three layers are load-bearing here:
 
-- `test/executor-chain.test.ts` — pure resolution rules
-- `test/executor-context.test.ts` and executor-focused extension tests — the
+- `test/executor/executor-chain.test.ts` — pure resolution rules
+- `test/executor/executor-context.test.ts` and executor-focused extension tests — the
   request-time context watchdog and compaction retry boundary
 - `scripts/smoke-rpc-cross-provider.mjs` — a real Pi process arms a real run
-- `test/agent-loop.test.ts` — a real agent loop reaches the hand-off and the
+- `test/integration/agent-loop.test.ts` — a real agent loop reaches the hand-off and the
   executor's own provider receives the request
 
 The `api` bug passed the first layer and failed the second.

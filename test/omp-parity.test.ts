@@ -9,28 +9,34 @@ interface Scenario {
 }
 
 interface Matrix {
+	/** The OMP revision that owns the scenario behavior matrix. */
 	revision: string;
+	/** Prompt byte provenance is pinned independently from scenario behavior. */
+	promptSourceRevision: string;
 	promptAssets: Record<string, { source: string; sha256: string }>;
 	sourceSuites: string[];
 	scenarios: Scenario[];
 }
 
-const revision = "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7";
+const behaviorRevision = "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7";
+const promptSourceRevision = "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d";
 const promptHashes = new Map([
 	["prewalk-plan.md", "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"],
 	["prewalk-checklist.md", "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"],
 	["prewalk-continue.md", "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0"],
 ]);
 
-describe("canonical OMP parity matrix", () => {
-	it("pins and classifies every current coordinator and degradation scenario", async () => {
+describe("pinned OMP behavior parity matrix", () => {
+	it("keeps scenario behavior and copied prompt provenance as separate authorities", async () => {
 		const raw = await readFile(
 			new URL("./fixtures/omp-prewalk-parity.json", import.meta.url),
 			"utf8",
 		);
 		const matrix = JSON.parse(raw) as Matrix;
 
-		expect(matrix.revision).toBe(revision);
+		expect(matrix.revision).toBe(behaviorRevision);
+		expect(matrix.promptSourceRevision).toBe(promptSourceRevision);
+		expect(matrix.promptSourceRevision).not.toBe(matrix.revision);
 		expect(Object.keys(matrix.promptAssets)).toEqual([...promptHashes.keys()]);
 		for (const [name, hash] of promptHashes) {
 			expect(matrix.promptAssets[name]).toEqual({

@@ -24,8 +24,12 @@ hide a second model behind a fake router model.
   `extensions/`; the manifest names the file explicitly, so the directory is an
   integration boundary rather than a collection of independently loaded
   extensions.
-- `src/` contains the coordinator, provider overlay, analytics, mutation, and
-  status implementation used by that entrypoint.
+- `src/pi/` contains the stock-Pi adapter and composition modules. `src/orchestration/`
+  owns the one-run lifecycle, `src/turn/` owns todo and mutation proof, and
+  `src/executor/` owns routing, leases, and context pressure.
+- `src/session/` owns audit and reload recovery. `src/analytics/` owns durable
+  journals, receipts, accounting, reports, dashboards, and child evidence.
+  `src/config/` owns the config file and wizard; `src/ui/` owns status text.
 - `prompts/` contains the attributed Prewalk prompts.
 - `benchmark/extensions/` contains Pi-loadable extensions used only by the
   opt-in benchmark harness. They are never auto-loaded in normal sessions.
@@ -49,8 +53,9 @@ terminal compaction, may be genuinely unknown and return `apply/unknown`.
 Unknown `agent-end` is ignored. Under valid input, `message-start`,
 `tool-claim`, `agent-start`, and `agent-settled` do not produce ordinary
 unknown. The layer tells the extension to `apply` or `ignore` the observation.
-The coordinator and the existing mutation, todo, analytics, and compaction code
-still make the actual decisions.
+The orchestration, turn-proof, analytics, and compaction modules still make the
+actual decisions. The Pi adapter only translates host events and supplies host
+capabilities.
 
 For the permitted query and compaction cases, `apply/unknown` means no retained
 fact identifies the run. It proves neither current-run ownership nor a mutation,
@@ -312,9 +317,10 @@ serialization can still differ. Prompt-cache reads also do not necessarily
 survive a model/provider switch; the executor receives the history, but its
 provider may charge those input tokens as a cache miss.
 
-The temporary model compatibility layer is isolated in `src/model-runtime.ts`.
-Prewalk owns the durable handoff state and checklist policy; the stock-Pi
-runtime owns the provider overlay and its run-scoped lease. A disposed lease
+The temporary model compatibility layer is isolated in
+`src/executor/temporary-runtime.ts`. Prewalk owns the durable handoff state and
+checklist policy; the stock-Pi runtime owns the provider overlay and its
+run-scoped lease. A disposed lease
 cannot report provider drift or stream results into a replacement run. This
 keeps a future Pi-native session-local model switch replaceable without moving
 Prewalk's mutation, todo, audit, or recovery semantics into the adapter.
@@ -473,8 +479,8 @@ of treating it as proof that the payload was inspected.
 
 Start with [`Prewalk in plain English`](docs/prewalk-vs-omp.md) for the who,
 what, why, and one-run walkthrough. [`docs/README.md`](docs/README.md) then
-lists the main README, analytics guide, current host-event architecture, and
-optional benchmark. The source-level OMP matrix and older plans remain separate
+lists the main README, repository structure, analytics guide, current
+host-event architecture, and optional benchmark. The source-level OMP matrix and older plans remain separate
 engineering records, not setup instructions or promises about current behavior.
 
 ## Attribution
@@ -485,6 +491,7 @@ byte-for-byte from Oh My Pi revision
 `packages/coding-agent/src/prompts/system/prewalk-{plan,continue,checklist}.md`
 under the MIT license. At runtime, the planning prompt maps OMP's canonical
 `todo` identifier to the stock-Pi adaptation's namespaced `prewalk_todo` tool.
-The coordinator remains a stock-Pi public-API adaptation.
-See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+The coordinator adapts the stock-Pi public API. The machine-checked parity
+fixture uses a separate revision for its scenario behavior. That revision is not
+the source revision for the copied prompt bytes.
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

@@ -20,7 +20,7 @@ Keep dependencies one-way:
 - `extensions/prewalk.ts` converts `PrewalkRun` into `HostRunIdentity` and sends
   neutral `HostObservation` values.
 - `src/host-event-correlation.ts` may depend on host message types, but it must
-  not import `src/core.ts` or semantic owners.
+  not import `src/orchestration/coordinator.ts` or semantic owners.
 - The public class surface stays narrow: `resetSession()`,
   `discardPendingForRun()`, and `observe()`.
 
@@ -62,7 +62,7 @@ Write the characterization before changing behavior. Run the focused suites
 first:
 
 ```sh
-npm test -- test/host-event-correlation.test.ts test/extension.test.ts
+npm test -- test/host-event-correlation.test.ts test/integration/extension.test.ts
 npm run typecheck
 npm run lint
 npm run check:links

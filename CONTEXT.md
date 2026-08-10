@@ -51,3 +51,11 @@ terminal compaction may return `apply/unknown`. Unknown `agent-end` is
 ignored. Under valid input, `message-start`, `tool-claim`, `agent-start`, and
 `agent-settled` do not produce ordinary unknown. `apply/unknown` proves neither
 run ownership nor mutation and still has to pass the existing semantic checks.
+
+## Module boundaries
+
+The Pi package entrypoint is `extensions/prewalk.ts`. It calls the adapter
+composition at `src/pi/create-prewalk-extension.ts`; lifecycle, turn proof,
+routing, recovery, analytics, configuration, and status policy live under
+`src/`. The active analytics journal and receipt lifecycle are owned by
+`src/analytics/run-accounting.ts`, not by the Pi adapter.

@@ -63,7 +63,7 @@ The correlation seam owns:
 - tool-call ownership that does not rebind while its ID fact remains in the
   bounded map;
 - FIFO facts for pending agents, agent ends, settlement, and compaction;
-- the active agent marker;
+- FIFO active agent markers. Remove one when its agent ends or settles;
 - bounded insertion-order retention for keyed message and tool facts;
 - exact pending discard for a failed or cancelled run;
 - factual suppression of a compaction terminal after its marker was discarded;
@@ -239,8 +239,9 @@ is outside this module.
 - Same-instance reset keeps live WeakMap message facts.
 - Ordered host buffers are uncapped.
 - Correlation snapshots do not replace post-`await` guards or runtime leases.
-- Truly concurrent public agent loops may introduce host orderings not covered
-  by today's serialized event assumptions.
+- Interleaved public agent loops stay in FIFO active-stream order, and tests
+  cover that case. Pi still has no universal stream ID, so event order outside
+  the documented sequence remains ambiguous.
 - Unknown provider serialization and compaction shapes remain outside this
   factual seam.
 - There is no dedicated async integration test for an unknown `tool_result`
@@ -267,7 +268,7 @@ would reopen cross-run event leakage.
 Start with the focused factual and integration suites:
 
 ```sh
-npm test -- test/host-event-correlation.test.ts test/extension.test.ts
+npm test -- test/host-event-correlation.test.ts test/integration/extension.test.ts
 ```
 
 Then run the secret-free repository checks:
