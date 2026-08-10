@@ -10,8 +10,12 @@ Prewalk keeps routing primary turns to the executor until explicit release or
 terminal session cleanup. The selected planner remains underneath the overlay.
 
 This project reproduces Oh My Pi's observable Prewalk flow with stock Pi's
-public extension APIs. It does not patch Pi, import private Pi modules, call
-`setModel()`, or hide a second model behind a fake router model.
+public extension APIs. If you want the plain-language version first, read
+[`Prewalk in plain English`](docs/prewalk-vs-omp.md). It explains the two-model
+flow, the stock-Pi limits, and the places where OMP has more built-in support.
+
+Prewalk does not patch Pi, import private Pi modules, call `setModel()`, or
+hide a second model behind a fake router model.
 
 ## Repository layout
 
@@ -123,10 +127,12 @@ Pi's own compaction already handled the turn, Prewalk reuses that result instead
 of starting a second compaction. When automatic compaction is disabled, Prewalk
 fails closed rather than issuing an oversized request. A completed over-window
 response is compacted without duplicating its answer; if the executor is still
-oversized after that retry, Prewalk fails safely instead of looping. The repository-only
-behavior matrix records the remaining limits of this public-API implementation at
-`docs/research/2026-08-07-omp-behavior-matrix.md`; historical research is omitted from
-the packed install.
+oversized after that retry, Prewalk fails safely instead of looping. The
+[plain-language Prewalk and OMP guide](docs/prewalk-vs-omp.md) explains what
+this means in practice and which limits remain. The source-level [OMP behavior
+matrix](https://github.com/javonmcgilberry/pi-prewalk/blob/main/docs/research/2026-08-07-omp-behavior-matrix.md)
+is kept as an evidence appendix in the repository and omitted from packed
+installs.
 
 ## Why Prewalk is not plan mode
 
@@ -465,9 +471,11 @@ of treating it as proof that the payload was inspected.
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) separates current user documentation from
-historical plans and research. Plans explain how the project got here; they are
-not install instructions or promises about current behavior.
+Start with [`Prewalk in plain English`](docs/prewalk-vs-omp.md) for the who,
+what, why, and one-run walkthrough. [`docs/README.md`](docs/README.md) then
+lists the main README, analytics guide, current host-event architecture, and
+optional benchmark. The source-level OMP matrix and older plans remain separate
+engineering records, not setup instructions or promises about current behavior.
 
 ## Attribution
 

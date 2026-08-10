@@ -1,5 +1,12 @@
 # Host-event correlation
 
+If you are trying to understand Prewalk as a user, start with
+[`Prewalk in plain English`](../prewalk-vs-omp.md). This is the technical
+version for maintainers. It explains one narrow problem: how the extension
+decides whether a late Pi event belongs to this run, an older run, no run, or
+has no owner it can prove. It keeps the exact ordering and ownership rules that
+the plain guide summarizes.
+
 ## Context
 
 Prewalk builds one planner-to-executor trajectory inside a stock Pi session.
