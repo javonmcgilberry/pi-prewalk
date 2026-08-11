@@ -469,11 +469,21 @@ async function writeChildConfig(
 	>,
 	enabled = true,
 ): Promise<void> {
+	const childAgents = Object.fromEntries(
+		Object.entries(agents).map(([agent, target]) => {
+			if (!enabled || target.mode !== "implementation") return [agent, false];
+			const executor =
+				JSON.stringify(target.executor) === JSON.stringify(DEFAULT_EXECUTOR)
+					? true
+					: { executor: target.executor };
+			return [agent, executor];
+		}),
+	);
 	await writeFile(
 		path.join(agentDir, "prewalk.json"),
 		`${JSON.stringify({
 			executor: DEFAULT_EXECUTOR,
-			experimentalChild: { enabled, agents },
+			children: { agents: childAgents },
 		})}\n`,
 	);
 }
@@ -1432,11 +1442,95 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("/prewalk cancel, then /prewalk run");
 		expect(harness.notifications.at(-1)).toContain("/prewalk run");
 		expect(harness.notifications.at(-1)).toContain("/prewalk configure");
+		expect(harness.notifications.at(-1)).toContain("/prewalk children");
 		expect(harness.notifications.at(-1)).toContain("/reload");
 		expect(harness.notifications.at(-1)).toContain("prewalk.json");
 		expect(harness.notifications.at(-1)).toContain(
 			"derives the planner from Pi's selected model and reasoning",
 		);
+	});
+
+	it("opens the plain-language configure menu in TUI mode without saving on exit", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		const custom = vi.fn(async () => "cancelled" as const);
+		(harness.context as unknown as { mode: string }).mode = "tui";
+		(harness.context.ui as unknown as { custom: typeof custom }).custom = custom;
+
+		await harness.commands.get("prewalk")?.("configure", harness.context);
+
+		expect(custom).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toEqual({
+			executor: DEFAULT_EXECUTOR,
+		});
+		expect(harness.notifications.at(-1)).toBe("No changes saved.");
+	});
+
+	it("explains why configure cannot run without an interactive UI", async () => {
+		const harness = createHarness();
+		(harness.context as unknown as { hasUI: boolean }).hasUI = false;
+		prewalkExtension(harness.pi);
+
+		await harness.commands.get("prewalk")?.("configure", harness.context);
+
+		expect(harness.notifications.at(-1)).toContain("requires Pi's interactive UI");
+	});
+
+	it("supports plain-language child on, off, and custom-target commands", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.commands.get("prewalk")?.("children", harness.context);
+		expect(harness.notifications.at(-1)).toContain("worker: Off");
+
+		await harness.commands.get("prewalk")?.("children on worker", harness.context);
+		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
+			{
+				children: { agents: { worker: true } },
+			},
+		);
+
+		await harness.commands.get("prewalk")?.(
+			"children target reviewer anthropic/claude-haiku-4-5 medium",
+			harness.context,
+		);
+		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
+			{
+				children: {
+					agents: {
+						worker: true,
+						reviewer: {
+							executor: {
+								provider: "anthropic",
+								model: "claude-haiku-4-5",
+								reasoning: "medium",
+							},
+						},
+					},
+				},
+			},
+		);
+
+		await harness.commands.get("prewalk")?.("children off reviewer", harness.context);
+		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
+			{
+				children: { agents: { worker: true, reviewer: false } },
+			},
+		);
+	});
+
+	it("rejects child command mistakes without changing the saved file", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		const before = await readFile(path.join(agentDir, "prewalk.json"), "utf8");
+
+		await harness.commands.get("prewalk")?.(
+			"children target worker not-a-model",
+			harness.context,
+		);
+
+		expect(harness.notifications.at(-1)).toContain("provider/model");
+		expect(await readFile(path.join(agentDir, "prewalk.json"), "utf8")).toBe(before);
 	});
 
 	it("opens the interactive dashboard for a TUI stats request", async () => {
@@ -1856,12 +1950,7 @@ describe("Prewalk extension harness", () => {
 				recentReceiptCount: 10,
 				schemaVersion: 1,
 			},
-			experimentalChild: {
-				enabled: false,
-				agents: {
-					worker: { mode: "implementation", executor: DEFAULT_EXECUTOR },
-				},
-			},
+			children: { agents: { worker: false } },
 		});
 		expect(harness.messages).toEqual([]);
 		expect(harness.entries).toEqual([]);
@@ -2315,7 +2404,7 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it.each([
-		[false, "worker", "experimental-disabled"],
+		[false, "worker", "child-disabled"],
 		[true, "reviewer", "agent-not-opted-in"],
 	])(
 		"keeps unconfigured child sessions on their resolved model",
@@ -2341,9 +2430,64 @@ describe("Prewalk extension harness", () => {
 		},
 	);
 
+	it("does not change an unconfigured child's supplied tool slate", async () => {
+		identifyChild("reviewer");
+		await writeChildConfig({ worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } });
+		const harness = createHarness({ activeTools: ["read", "edit"] });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(harness.activeTools()).toEqual(["read", "edit"]);
+		expect(harness.activeToolUpdates).toEqual([]);
+		expect(harness.messages).toEqual([]);
+	});
+
+	it("allows an opted-in child without prewalk_todo to hand off after verified mutation", async () => {
+		identifyChild();
+		await writeChildConfig({ worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } });
+		const harness = createHarness({ activeTools: ["read", "edit"] });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.activeTools()).toEqual(["read", "edit"]);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "assistant", content: [] },
+			toolResults: [],
+		});
+		expect(harness.messages.at(0)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "child-edit",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "child-edit", name: "edit", arguments: {} }],
+			},
+			toolResults: [],
+		});
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "handoff-triggered",
+			todoActive: false,
+		});
+		expect(harness.activeTools()).toEqual(["read", "edit"]);
+	});
+
 	it.each([
-		["read-only", ["read", "grep"], "read-only"],
-		["plan", ["read", "grep", "edit"], "plan-mode"],
+		["read-only", ["read", "grep"], "child-disabled"],
+		["plan", ["read", "grep", "edit"], "child-disabled"],
 		["implementation", ["read", "grep"], "read-only"],
 	] as const)("does not arm in %s child conditions", async (mode, activeTools, reason) => {
 		identifyChild();

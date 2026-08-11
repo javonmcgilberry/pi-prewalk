@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
 	type Api,
@@ -42,6 +43,10 @@ function model(id: string): Model<"openai-codex-responses"> {
 		contextWindow: 200_000,
 		maxTokens: 128_000,
 	};
+}
+
+function fixtureModel(id: string): Model<"openai-codex-responses"> {
+	return { ...model(id), provider: "fixture", baseUrl: "https://fixture.invalid" };
 }
 
 function usage(cost: number, input = 10, output = 5): Usage {
@@ -159,8 +164,37 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	delete process.env.PI_CODING_AGENT_DIR;
+	delete process.env.PI_PREWALK_CHILD_TRACE;
+	delete process.env.PI_PREWALK_CHILD_WORKDIR;
+	delete process.env.PI_SUBAGENT_PI_BINARY;
+	delete process.env.PI_SUBAGENT_CHILD;
+	delete process.env.PI_SUBAGENT_CHILD_AGENT;
+	delete process.env.PI_SUBAGENT_RUN_ID;
+	restoreInheritedSubagentEnvironment?.();
+	restoreInheritedSubagentEnvironment = undefined;
 	await rm(root, { recursive: true, force: true });
 });
+
+const installedSubagentEntryCandidates = [
+	process.env.PI_SUBAGENTS_ENTRY,
+	path.join(homedir(), ".pi", "agent", "npm", "node_modules", "pi-subagents", "index.ts"),
+].filter((entry): entry is string => Boolean(entry));
+const installedSubagentEntry = installedSubagentEntryCandidates.find(existsSync);
+const stockPiCli = path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+let restoreInheritedSubagentEnvironment: (() => void) | undefined;
+
+function isolateTopLevelSubagentEnvironment(): () => void {
+	const inherited = Object.entries(process.env).filter(([key]) => key.startsWith("PI_SUBAGENT_"));
+	for (const [key] of inherited) delete process.env[key];
+	return () => {
+		for (const key of Object.keys(process.env)) {
+			if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+		}
+		for (const [key, value] of inherited) {
+			if (value !== undefined) process.env[key] = value;
+		}
+	};
+}
 
 describe("stock Pi Agent-loop integration", () => {
 	it("keeps one stock-Pi route and receipt active through manual compaction and shutdown", async () => {
@@ -726,4 +760,155 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(providerCalls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
 		session.dispose();
 	});
+
+	it.skipIf(!installedSubagentEntry || !existsSync(stockPiCli))(
+		"runs an opted-in child through stock Pi and unmodified pi-subagents",
+		async () => {
+			const subagentEntry = installedSubagentEntry;
+			if (!subagentEntry) return;
+			restoreInheritedSubagentEnvironment = isolateTopLevelSubagentEnvironment();
+			const planner = fixtureModel("planner");
+			const tracePath = path.join(root, "child-trace.jsonl");
+			const providerFixture = path.resolve("test/fixtures/stock-pi-child-provider.mjs");
+			const prewalkFixture = path.resolve("extensions/prewalk.ts");
+			process.env.PI_PREWALK_CHILD_TRACE = tracePath;
+			process.env.PI_PREWALK_CHILD_WORKDIR = workDir;
+			process.env.PI_SUBAGENT_PI_BINARY = stockPiCli;
+
+			await mkdir(path.join(workDir, ".pi", "agents"), { recursive: true });
+			await writeFile(
+				path.join(agentDir, "prewalk.json"),
+				`${JSON.stringify({
+					executor: { provider: "fixture", model: "executor", reasoning: "low" },
+					children: { agents: { worker: true, reviewer: false } },
+				})}\n`,
+			);
+			const childExtensions = `${providerFixture},${prewalkFixture}`;
+			await writeFile(
+				path.join(workDir, ".pi", "agents", "worker.md"),
+				[
+					"---",
+					"name: worker",
+					"description: Deterministic integration worker",
+					"model: fixture/planner",
+					"thinking: low",
+					"defaultContext: fresh",
+					"inheritProjectContext: false",
+					"inheritSkills: false",
+					"tools: read, edit, subagent",
+					`subagentOnlyExtensions: ${childExtensions}`,
+					"---",
+					"",
+					"Use the supplied tools and finish the task.",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				path.join(workDir, ".pi", "agents", "reviewer.md"),
+				[
+					"---",
+					"name: reviewer",
+					"description: Deterministic integration reviewer",
+					"model: fixture/planner",
+					"thinking: low",
+					"defaultContext: fresh",
+					"inheritProjectContext: false",
+					"inheritSkills: false",
+					"tools: read, edit",
+					`subagentOnlyExtensions: ${childExtensions}`,
+					"---",
+					"",
+					"Use the supplied tools and finish the task.",
+					"",
+				].join("\n"),
+			);
+			await writeFile(path.join(workDir, "worker.txt"), "before\n");
+			await writeFile(path.join(workDir, "nested.txt"), "before\n");
+
+			const settings = SettingsManager.create(workDir, agentDir);
+			const loader = new DefaultResourceLoader({
+				cwd: workDir,
+				agentDir,
+				settingsManager: settings,
+				additionalExtensionPaths: [subagentEntry, providerFixture],
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				extensionFactories: [{ name: "prewalk", factory: prewalkExtension }],
+			});
+			await loader.reload();
+			expect(loader.getExtensions().errors).toEqual([]);
+			expect(loader.getExtensions().extensions).toHaveLength(3);
+
+			const runtime = await ModelRuntime.create({
+				authPath: path.join(agentDir, "auth.json"),
+				modelsPath: null,
+			});
+			const parentSessionManager = SessionManager.inMemory(workDir);
+			const { session } = await createAgentSession({
+				cwd: workDir,
+				agentDir,
+				modelRuntime: runtime,
+				model: planner,
+				thinkingLevel: "low",
+				resourceLoader: loader,
+				settingsManager: settings,
+				sessionManager: parentSessionManager,
+				sessionStartEvent: { type: "session_start", reason: "startup" },
+			});
+			await session.bindExtensions({});
+
+			try {
+				await session.prompt("Delegate the worker change.");
+				await session.waitForIdle();
+			} finally {
+				session.dispose();
+			}
+
+			const trace = (await readFile(tracePath, "utf8"))
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line) as Record<string, unknown>);
+			const providerRecords = trace.filter((record) => record.type === "provider");
+			const childRecords = trace.filter(
+				(record) => record.type === "before-agent-start" && record.agent !== "parent",
+			);
+			const workerProviders = providerRecords.filter((record) => record.agent === "worker");
+			const reviewerProviders = providerRecords.filter((record) => record.agent === "reviewer");
+			const workerTools = childRecords.find((record) => record.agent === "worker")?.tools;
+			const reviewerTools = childRecords.find((record) => record.agent === "reviewer")?.tools;
+
+			expect(
+				await readFile(path.join(workDir, "worker.txt"), "utf8"),
+				JSON.stringify({ trace, entries: parentSessionManager.getEntries() }, null, 2),
+			).toBe("worker\n");
+			expect(
+				await readFile(path.join(workDir, "nested.txt"), "utf8"),
+				JSON.stringify(trace, null, 2),
+			).toBe("nested\n");
+			expect(workerProviders.map((record) => record.model)).toContain("executor");
+			expect(workerProviders[0]?.model).toBe("planner");
+			expect(reviewerProviders.every((record) => record.model === "planner")).toBe(true);
+			expect(workerTools).toEqual(expect.arrayContaining(["read", "edit", "subagent"]));
+			expect(workerTools).not.toContain("prewalk_todo");
+			expect(reviewerTools).toEqual(expect.arrayContaining(["read", "edit"]));
+			expect(reviewerTools).not.toContain("prewalk_todo");
+			expect(
+				new Set(
+					providerRecords
+						.filter((record) => record.agent === "worker" || record.agent === "reviewer")
+						.map((record) => record.runId),
+				).size,
+			).toBe(2);
+			expect(
+				trace.filter(
+					(record) => record.type === "session-shutdown" && record.agent !== "parent",
+				),
+			).toHaveLength(2);
+		},
+		30_000,
+	);
 });

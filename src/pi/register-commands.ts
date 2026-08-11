@@ -8,7 +8,15 @@ import {
 	renderTaskTreeReport,
 } from "../analytics/report.js";
 import type { PrewalkAnalytics } from "../analytics/run-accounting.js";
-import { configPath } from "../config/prewalk-config.js";
+import {
+	childAgentNames,
+	childPolicyFor,
+	childPolicyLabel,
+	DEFAULT_CHILD_AGENT,
+	withChildPolicy,
+} from "../config/child-policy.js";
+import { configPath, readPrewalkConfig, writePrewalkConfig } from "../config/prewalk-config.js";
+import { isReasoningLevel, type PrewalkConfig } from "../orchestration/coordinator.js";
 import type { PrewalkApplication } from "../orchestration/prewalk-application.js";
 import type { TurnGate } from "../turn/turn-gate.js";
 import type { DelegationStatus } from "../ui/status.js";
@@ -21,6 +29,7 @@ const PREWALK_COMMANDS = [
 	"auto",
 	"cancel",
 	"configure",
+	"children",
 	"todos",
 	"help",
 	"--help",
@@ -43,7 +52,11 @@ function helpText(): string {
 		"/prewalk auto    Enable conservative automatic admission for this session.",
 		"/prewalk cancel  Disable automatic admission and stop the current Prewalk run.",
 		"/prewalk release Restore the planner after a successful executor handoff.",
-		"/prewalk configure  Choose the executor and control analytics collection and catalog fallback.",
+		"/prewalk configure  Open the simple settings menu; changes wait until you save.",
+		"/prewalk children  Show which child agents may use Prewalk.",
+		"/prewalk children on [agent]  Turn on a child (default agent: worker).",
+		"/prewalk children off [agent]  Turn off a child without changing the parent.",
+		"/prewalk children target <agent> <provider/model> [effort]  Give one child its own executor.",
 		"/prewalk todos  Show the current Prewalk implementation checklist.",
 		"",
 		"Reset the current run: /prewalk cancel, then /prewalk run.",
@@ -60,6 +73,107 @@ function helpText(): string {
 		"Subagents run independent Prewalk lifecycles. A strict child without prewalk_todo still switches after its first successful code change.",
 		"Parent status reports an observed child outcome, but child code changes never switch the parent.",
 	].join("\n");
+}
+
+function childSettingsText(config: PrewalkConfig): string {
+	const lines = [
+		"Child Prewalk settings",
+		"Each child is off unless it is listed as on. Child settings never change the parent.",
+		"An on child uses the main executor; a custom target uses the model named for that child.",
+		"",
+		...childAgentNames(config).map(
+			(agent) => `${agent}: ${childPolicyLabel(childPolicyFor(config, agent), config.executor)}`,
+		),
+		"",
+		`Main executor: ${config.executor.provider}/${config.executor.model} · ${config.executor.reasoning}`,
+		"Use /prewalk children help for commands, or /prewalk configure for the full menu.",
+	];
+	return lines.join("\n");
+}
+
+async function showChildren(argumentsText: string, ctx: ExtensionContext): Promise<void> {
+	const input = argumentsText.trim();
+	if (input === "help") {
+		ctx.ui.notify(
+			[
+				"Child Prewalk commands",
+				"/prewalk children  Show the current child settings.",
+				"/prewalk children on [agent]  Enable one child; omitted agent means worker.",
+				"/prewalk children off [agent]  Disable one child; omitted agent means worker.",
+				"/prewalk children target <agent> <provider/model> [effort]  Use a custom executor.",
+				"",
+				"Child Prewalk is off by default. Review and planning children stay off unless you turn them on.",
+			].join("\n"),
+			"info",
+		);
+		return;
+	}
+	let config: PrewalkConfig;
+	try {
+		config = await readPrewalkConfig();
+	} catch {
+		ctx.ui.notify(
+			"Child settings are unavailable because prewalk.json is missing or invalid.",
+			"error",
+		);
+		return;
+	}
+	if (!input) {
+		ctx.ui.notify(childSettingsText(config), "info");
+		return;
+	}
+	const parts = input.split(/\s+/);
+	const action = parts[0]?.toLowerCase();
+	const agent = parts[1] || DEFAULT_CHILD_AGENT;
+	if (action === "on" || action === "off") {
+		if (parts.length > 2) {
+			ctx.ui.notify(
+				"Usage: /prewalk children on [agent] or /prewalk children off [agent].",
+				"error",
+			);
+			return;
+		}
+		await writePrewalkConfig(withChildPolicy(config, agent, action === "on"));
+		ctx.ui.notify(
+			`${agent} child Prewalk ${action === "on" ? "enabled" : "disabled"}. Reload Pi before a new child starts.`,
+			"info",
+		);
+		return;
+	}
+	if (action === "target") {
+		const modelReference = parts[2];
+		const reasoning = parts[3] ?? "low";
+		if (!modelReference || parts.length > 4 || !isReasoningLevel(reasoning)) {
+			ctx.ui.notify(
+				"Usage: /prewalk children target <agent> <provider/model> [minimal|low|medium|high|xhigh|max].",
+				"error",
+			);
+			return;
+		}
+		const slash = modelReference.indexOf("/");
+		if (slash <= 0 || slash === modelReference.length - 1) {
+			ctx.ui.notify(
+				"The target must look like provider/model, for example openai-codex/gpt-5.6-luna.",
+				"error",
+			);
+			return;
+		}
+		const executor = {
+			provider: modelReference.slice(0, slash),
+			model: modelReference.slice(slash + 1),
+			reasoning,
+		};
+		await writePrewalkConfig(withChildPolicy(config, agent, { executor }));
+		ctx.ui.notify(
+			`${agent} now uses ${modelReference} at ${reasoning} effort. Reload Pi before a new child starts.`,
+			"info",
+		);
+		return;
+	}
+	ctx.ui.notify(
+		"Usage: /prewalk children [on|off [agent]|target <agent> <provider/model> [effort]|help].",
+		"error",
+	);
 }
 
 export interface PrewalkCommandRegistration {
@@ -235,7 +349,7 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 			if (command === "status") {
 				const child = deps.childDiagnostic();
 				if (child && !deps.application.run) {
-					ctx.ui.notify(`Experimental child Prewalk: ${child}.`, "info");
+					ctx.ui.notify(`Child Prewalk: ${child}.`, "info");
 					return;
 				}
 				ctx.ui.notify(
@@ -300,12 +414,16 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 				await deps.onConfigure(ctx);
 				return;
 			}
+			if (command === "children" || command.startsWith("children ")) {
+				await showChildren(command.slice("children".length), ctx);
+				return;
+			}
 			if (command === "todos") {
 				ctx.ui.notify(deps.turnGate.viewTodo().text, "info");
 				return;
 			}
 			ctx.ui.notify(
-				"Usage: /prewalk [status|stats|run|auto|cancel|release|configure|todos|help|--help]",
+				"Usage: /prewalk [status|stats|run|auto|cancel|release|configure|children|todos|help|--help]",
 				"error",
 			);
 		},

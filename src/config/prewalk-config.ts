@@ -14,6 +14,8 @@ import {
 import { isSameModelAtEffectiveReasoning } from "../executor/selection.js";
 import { isRecord } from "../guards.js";
 import type {
+	ChildPrewalkConfig,
+	ChildPrewalkPolicy,
 	ExecutorConfig,
 	ExperimentalChildConfig,
 	ExperimentalChildTarget,
@@ -21,8 +23,8 @@ import type {
 	PrewalkConfig,
 } from "../orchestration/coordinator.js";
 import { DEFAULT_EXECUTOR } from "../orchestration/coordinator.js";
-
-const CONFIG_PAGE_SIZE = 8;
+import { showPrewalkConfigureMenu } from "./prewalk-dashboard.js";
+import { selectPaged } from "./ui.js";
 
 export function configPath(): string {
 	return path.join(getAgentDir(), "prewalk.json");
@@ -57,42 +59,18 @@ export async function writePrewalkConfig(config: PrewalkConfig): Promise<void> {
 	await renameFile(temporary, target);
 }
 
-export async function selectPaged(
-	ctx: ExtensionContext,
-	title: string,
-	choices: string[],
-): Promise<string | undefined> {
-	if (choices.length <= CONFIG_PAGE_SIZE) return ctx.ui.select(title, choices);
-	const pageCount = Math.ceil(choices.length / CONFIG_PAGE_SIZE);
-	let page = 0;
-	while (true) {
-		const start = page * CONFIG_PAGE_SIZE;
-		const visible = choices.slice(start, start + CONFIG_PAGE_SIZE);
-		const previous = "← Previous page";
-		const next = "Next page →";
-		const options = [
-			...visible,
-			...(page > 0 ? [previous] : []),
-			...(page < pageCount - 1 ? [next] : []),
-		];
-		const selected = await ctx.ui.select(`${title} (${page + 1}/${pageCount})`, options);
-		if (!selected) return undefined;
-		if (selected === previous) {
-			page -= 1;
-			continue;
-		}
-		if (selected === next) {
-			page += 1;
-			continue;
-		}
-		return selected;
-	}
-}
-
 export type ParsedPrewalkConfig = PrewalkConfig & { analytics: AnalyticsConfig };
 
-const CONFIG_KEYS = new Set(["executor", "executorFallbacks", "analytics", "experimentalChild"]);
+const CONFIG_KEYS = new Set([
+	"executor",
+	"executorFallbacks",
+	"analytics",
+	"children",
+	"experimentalChild",
+]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
+const CHILDREN_KEYS = new Set(["agents"]);
+const CHILD_POLICY_KEYS = new Set(["executor"]);
 const EXPERIMENTAL_CHILD_KEYS = new Set(["enabled", "agents"]);
 const EXPERIMENTAL_CHILD_TARGET_KEYS = new Set(["mode", "executor"]);
 const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -114,13 +92,22 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 		value.analytics === undefined
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
 			: parseAnalyticsConfig(value.analytics);
+	if (value.children !== undefined && value.experimentalChild !== undefined) {
+		throw new Error("Prewalk config cannot define both children and experimentalChild.");
+	}
+	let children: ChildPrewalkConfig | undefined;
+	if (value.children !== undefined) {
+		children = parseChildrenConfig(value.children);
+	} else if (value.experimentalChild !== undefined) {
+		children = normalizeExperimentalChildConfig(
+			parseExperimentalChildConfig(value.experimentalChild),
+		);
+	}
 	return {
 		executor,
 		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
 		analytics,
-		...(value.experimentalChild === undefined
-			? {}
-			: { experimentalChild: parseExperimentalChildConfig(value.experimentalChild) }),
+		...(children === undefined ? {} : { children }),
 	};
 }
 
@@ -138,6 +125,40 @@ function parseExecutorFallbacks(value: unknown): ExecutorConfig[] | undefined {
 		throw new Error("Prewalk config executorFallbacks must be an array.");
 	}
 	return value.map((entry, index) => parseExecutorConfig(entry, `executorFallbacks[${index}]`));
+}
+
+function parseChildrenConfig(value: unknown): ChildPrewalkConfig {
+	if (!isRecord(value)) throw new Error("Prewalk config children must be a JSON object.");
+	const unknownKeys = Object.keys(value).filter((key) => !CHILDREN_KEYS.has(key));
+	if (unknownKeys.length > 0) {
+		throw new Error(`Unknown Prewalk config children field: ${unknownKeys.join(", ")}.`);
+	}
+	if (!isRecord(value.agents)) {
+		throw new Error("Prewalk config children.agents must be an object.");
+	}
+	const agents: Record<string, ChildPrewalkPolicy> = {};
+	for (const [agent, policy] of Object.entries(value.agents)) {
+		if (!agent.trim()) throw new Error("Prewalk child agent names must be non-empty.");
+		if (typeof policy === "boolean") {
+			agents[agent] = policy;
+			continue;
+		}
+		if (!isRecord(policy)) {
+			throw new Error(
+				`Prewalk config children.agents.${agent} must be true, false, or a custom executor object.`,
+			);
+		}
+		const unknownKeys = Object.keys(policy).filter((key) => !CHILD_POLICY_KEYS.has(key));
+		if (unknownKeys.length > 0) {
+			throw new Error(
+				`Unknown Prewalk config children.agents.${agent} field: ${unknownKeys.join(", ")}.`,
+			);
+		}
+		agents[agent] = {
+			executor: parseExecutorConfig(policy.executor, `children.agents.${agent}.executor`),
+		};
+	}
+	return { agents };
 }
 
 function parseExperimentalChildConfig(value: unknown): ExperimentalChildConfig {
@@ -182,6 +203,15 @@ function parseExperimentalChildConfig(value: unknown): ExperimentalChildConfig {
 	return { enabled: value.enabled, agents };
 }
 
+function normalizeExperimentalChildConfig(value: ExperimentalChildConfig): ChildPrewalkConfig {
+	const agents: Record<string, ChildPrewalkPolicy> = {};
+	for (const [agent, target] of Object.entries(value.agents)) {
+		agents[agent] =
+			value.enabled && target.mode === "implementation" ? { executor: target.executor } : false;
+	}
+	return { agents };
+}
+
 function parseModelConfig(value: unknown, name: string, keys: ReadonlySet<string>): ModelConfig {
 	if (!isRecord(value)) throw new Error(`Prewalk config ${name} must be a JSON object.`);
 	const unknownKeys = Object.keys(value).filter((key) => !keys.has(key));
@@ -206,6 +236,32 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	const planner = ctx.model;
 	if (!planner) {
 		ctx.ui.notify("Select a planner model in Pi before configuring Prewalk.", "error");
+		return;
+	}
+	let savedConfig: PrewalkConfig | undefined;
+	try {
+		savedConfig = await readPrewalkConfig();
+	} catch {
+		// A missing or broken file gets a safe default draft in the interactive
+		// screen, so the user can repair settings without editing JSON by hand.
+	}
+	if (ctx.mode === "tui") {
+		const result = await showPrewalkConfigureMenu({
+			ctx,
+			initial: savedConfig ?? {
+				executor: { ...DEFAULT_EXECUTOR },
+				analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
+			},
+			models: ctx.modelRegistry.getAvailable(),
+			planner,
+			onSave: writePrewalkConfig,
+		});
+		ctx.ui.notify(
+			result === "saved"
+				? "Prewalk settings saved. Reload Pi before starting a new run."
+				: "No changes saved.",
+			"info",
+		);
 		return;
 	}
 	// Any authorized model can execute, including one on another provider. The
@@ -237,12 +293,6 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	if (!executor) {
 		ctx.ui.notify("The selected executor is no longer available.", "error");
 		return;
-	}
-	let savedConfig: PrewalkConfig | undefined;
-	try {
-		savedConfig = await readPrewalkConfig();
-	} catch {
-		// A broken or missing config should not prevent the repair wizard.
 	}
 	const savedReasoning =
 		savedConfig?.executor.provider === executor.provider &&
@@ -300,9 +350,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		...(savedConfig?.executorFallbacks === undefined
 			? {}
 			: { executorFallbacks: savedConfig.executorFallbacks }),
-		...(savedConfig?.experimentalChild === undefined
-			? {}
-			: { experimentalChild: savedConfig.experimentalChild }),
+		...(savedConfig?.children === undefined ? {} : { children: savedConfig.children }),
 	};
 	const confirmed = await ctx.ui.confirm(
 		"Save Prewalk configuration?",

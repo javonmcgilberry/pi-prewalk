@@ -73,7 +73,62 @@ describe("provider-neutral configuration", () => {
 		).toThrow("recentReceiptCount must be greater than zero");
 	});
 
-	it("parses explicit disabled child targets and rejects ambiguous child configuration", () => {
+	it("keeps child Prewalk off by default and parses per-agent opt-ins", () => {
+		expect(parseConfig(config)).not.toHaveProperty("children");
+		expect(
+			parseConfig({
+				...config,
+				children: {
+					agents: {
+						worker: true,
+						reviewer: false,
+						"custom-implementer": {
+							executor: {
+								provider: "anthropic",
+								model: "claude-haiku-4-5",
+								reasoning: "low",
+							},
+						},
+					},
+				},
+			}),
+		).toMatchObject({
+			children: {
+				agents: {
+					worker: true,
+					reviewer: false,
+					"custom-implementer": {
+						executor: {
+							provider: "anthropic",
+							model: "claude-haiku-4-5",
+							reasoning: "low",
+						},
+					},
+				},
+			},
+		});
+	});
+
+	it("normalizes the legacy experimental child shape without inheriting disabled roles", () => {
+		expect(
+			parseConfig({
+				...config,
+				experimentalChild: {
+					enabled: true,
+					agents: {
+						worker: { mode: "implementation", executor: DEFAULT_EXECUTOR },
+						reviewer: { mode: "read-only", executor: DEFAULT_EXECUTOR },
+					},
+				},
+			}),
+		).toMatchObject({
+			children: {
+				agents: {
+					worker: { executor: DEFAULT_EXECUTOR },
+					reviewer: false,
+				},
+			},
+		});
 		expect(
 			parseConfig({
 				...config,
@@ -84,12 +139,37 @@ describe("provider-neutral configuration", () => {
 					},
 				},
 			}),
-		).toMatchObject({
-			experimentalChild: {
-				enabled: false,
-				agents: { worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } },
-			},
-		});
+		).toMatchObject({ children: { agents: { worker: false } } });
+	});
+
+	it("rejects ambiguous or malformed child policy", () => {
+		expect(() =>
+			parseConfig({
+				...config,
+				children: { agents: { worker: true } },
+				experimentalChild: { enabled: true, agents: {} },
+			}),
+		).toThrow("cannot define both children and experimentalChild");
+		expect(() =>
+			parseConfig({
+				...config,
+				children: { agents: { "": true } },
+			}),
+		).toThrow("child agent names must be non-empty");
+		expect(() =>
+			parseConfig({
+				...config,
+				children: { agents: { worker: "on" } },
+			}),
+		).toThrow("children.agents.worker must be true, false, or a custom executor object");
+		expect(() =>
+			parseConfig({
+				...config,
+				children: {
+					agents: { worker: { executor: DEFAULT_EXECUTOR, mode: "implementation" } },
+				},
+			}),
+		).toThrow("Unknown Prewalk config children.agents.worker field: mode");
 		expect(() =>
 			parseConfig({
 				...config,

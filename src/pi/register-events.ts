@@ -383,18 +383,30 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	const deactivatePrewalkTools = (): void => {
 		const baseline =
 			prewalkToolSlate ??
-			pi
-				.getActiveTools()
-				.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
+			pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		prewalkToolSlate = undefined;
-		pi.setActiveTools([...baseline, PREWALK_TODO_TOOL_NAME]);
+		const next = baseline.filter((name) => name !== PREWALK_TODO_TOOL_NAME);
+		if (
+			process.env.PI_SUBAGENT_CHILD !== "1" ||
+			baseline.includes(PREWALK_TODO_TOOL_NAME) ||
+			application.run?.todoActive
+		) {
+			next.push(PREWALK_TODO_TOOL_NAME);
+		}
+		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
 	const activatePlanningTools = (toolSlate = pi.getActiveTools()): void => {
-		const baseline = toolSlate.filter(
-			(name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME,
-		);
+		const baseline = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		prewalkToolSlate ??= baseline;
-		pi.setActiveTools([...baseline.filter((name) => name !== "todo"), PREWALK_TODO_TOOL_NAME]);
+		const todoWasActive =
+			baseline.includes(PREWALK_TODO_TOOL_NAME) || application.run?.todoActive === true;
+		const next = todoWasActive
+			? [
+					...baseline.filter((name) => name !== "todo" && name !== PREWALK_TODO_TOOL_NAME),
+					PREWALK_TODO_TOOL_NAME,
+				]
+			: [...baseline];
+		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
 	const beginEvaluation = (): EvaluationState => {
 		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
@@ -874,7 +886,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 	};
 
-	const startExperimentalChildRun = async (ctx: ExtensionContext): Promise<void> => {
+	const startChildPrewalkRun = async (ctx: ExtensionContext): Promise<void> => {
 		if (process.env.PI_SUBAGENT_CHILD !== "1") return;
 		const identity = childIdentity();
 		if (!identity) {
@@ -890,20 +902,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
-		const feature = config.experimentalChild;
-		if (!feature?.enabled) {
-			childDiagnostic = "experimental-disabled";
-			updateStatus(ctx);
-			return;
-		}
-		const target = feature.agents[identity.agent];
-		if (!target) {
-			childDiagnostic = "agent-not-opted-in";
-			updateStatus(ctx);
-			return;
-		}
-		if (target.mode !== "implementation") {
-			childDiagnostic = target.mode === "plan" ? "plan-mode" : "read-only";
+		const policy = config.children?.agents[identity.agent];
+		if (policy === undefined || policy === false) {
+			childDiagnostic = policy === false ? "child-disabled" : "agent-not-opted-in";
 			updateStatus(ctx);
 			return;
 		}
@@ -912,7 +913,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
-		const targetModel = ctx.modelRegistry.find(target.executor.provider, target.executor.model);
+		const targetExecutor = policy === true ? config.executor : policy.executor;
+		const targetModel = ctx.modelRegistry.find(targetExecutor.provider, targetExecutor.model);
 		if (
 			ctx.model &&
 			targetModel &&
@@ -920,7 +922,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				ctx.model,
 				ctx.thinkingLevel ?? "off",
 				targetModel,
-				target.executor.reasoning,
+				targetExecutor.reasoning,
 			)
 		) {
 			childDiagnostic = "equal-target";
@@ -933,7 +935,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		// a model nobody opted it into.
 		const outcome = await startRun("automatic", ctx, false, {
 			...config,
-			executor: target.executor,
+			executor: targetExecutor,
 			executorFallbacks: [],
 		});
 		if (outcome === "executor-unavailable") {
@@ -1021,7 +1023,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			);
 			return { consume: true };
 		});
-		deactivatePrewalkTools();
+		// Child sessions keep the exact tool slate supplied by pi-subagents until
+		// their own policy has positively opted them in. In particular, an
+		// unconfigured or read-only child must not gain prewalk_todo just because
+		// this extension was loaded.
+		if (process.env.PI_SUBAGENT_CHILD !== "1") deactivatePrewalkTools();
 		turnGate.restoreTodo(
 			ctx.sessionManager
 				.buildContextEntries()
@@ -1106,7 +1112,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					updateStatus(ctx);
 					return;
 				case "none":
-					await startExperimentalChildRun(ctx);
+					await startChildPrewalkRun(ctx);
 					return;
 			}
 		}
@@ -1123,7 +1129,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				"error",
 			);
 		});
-		await startExperimentalChildRun(ctx);
+		await startChildPrewalkRun(ctx);
 	});
 
 	pi.on("input", async (event, ctx) => {

@@ -29,8 +29,8 @@ behavior a scenario cannot express.
 
 The pinned fixture's model-clamping scenario is now `pi-adapted`: the executor
 resolver compares the configured target with the planner after Pi clamps both
-levels to the target model, and the configure wizard and experimental child
-guard use the same helper. The remaining auto-mode scenario stays `excluded`:
+levels to the target model, and the configure wizard and per-agent child guard
+use the same helper. The remaining auto-mode scenario stays `excluded`:
 Stock Pi exposes the current concrete thinking level to extensions but not the
 configured auto-versus-fixed selector, so Prewalk cannot reproduce that
 distinction through its public API.
@@ -79,7 +79,7 @@ Several rows below are consequences of that, not preferences.
 | 15 | Same model + same effective effort handoff | Graceful no-op with a notice | **Graceful no-op with a notice** | Same | `thinking.ts:169` `prewalkWouldBeNoop`; `src/executor-chain.ts` `isSameModelAtEffectiveReasoning` |
 | 16 | Effort-only downgrade, same model | Supported | Supported | Same | OMP fixed in #6659; `src/executor-chain.ts` compares model-clamped reasoning before rejecting |
 | 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | **Stays unarmed with a notice, session continues** | Same | `main.ts:1007-1019` (issue #6064); `unavailableExecutorNotice` |
-| 18 | Subagent/child prewalk | Yes, per-agent frontmatter and settings | Behind `experimentalChild`, default off | **Chosen** | `docs/task-agent-discovery.md:39`; `src/core.ts` |
+| 18 | Subagent/child prewalk | Yes, per-agent frontmatter and settings | Opt-in under `children.agents`, default off | **Chosen** | OMP `docs/task-agent-discovery.md:39`; Prewalk `src/config/prewalk-config.ts`, `src/pi/register-events.ts` |
 | 19 | Plan-yolo | Yes, separate feature | Not implemented | **Chosen** | `session/prewalk.ts:238` |
 | 20 | Status line annotation | Yes | Yes | Same | `src/status.ts` |
 | 21 | Manual release back to planner | Not present | `/prewalk release` | **Addition** | `extensions/prewalk.ts` `release` |

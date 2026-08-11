@@ -17,8 +17,9 @@
     "recentReceiptCount": 10,
     "schemaVersion": 1
   },
-  "experimentalChild": {
-    "enabled": false,
-    "agents": {}
+  "children": {
+    "agents": {
+      "worker": false
+    }
   }
 }

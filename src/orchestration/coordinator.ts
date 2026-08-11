@@ -28,6 +28,12 @@ export interface PrewalkConfig {
 	 */
 	executorFallbacks?: ExecutorConfig[];
 	analytics?: AnalyticsConfig;
+	/**
+	 * Child Prewalk is opt-in per agent. A boolean uses the main executor; an
+	 * object gives that agent its own executor without changing the parent.
+	 */
+	children?: ChildPrewalkConfig;
+	/** @deprecated Read-only compatibility for old session records. */
 	experimentalChild?: ExperimentalChildConfig;
 }
 
@@ -40,6 +46,12 @@ export interface ModelConfig {
 
 export interface ExecutorConfig extends ModelConfig {
 	reasoning: ThinkingLevel;
+}
+
+export type ChildPrewalkPolicy = boolean | { executor: ExecutorConfig };
+
+export interface ChildPrewalkConfig {
+	agents: Record<string, ChildPrewalkPolicy>;
 }
 
 export interface ExperimentalChildTarget {

@@ -178,14 +178,17 @@ important rows below in user-facing language.
 
 | # | Behavior | OMP | This extension | What it means in practice |
 | --- | --- | --- | --- | --- |
-| 18 | Child or subagent Prewalk | Supported through per-agent frontmatter and settings | Experimental and off by default; a child must load and configure it independently | A parent run does not silently rewrite child model settings. |
+| 18 | Child or subagent Prewalk | Supported through per-agent frontmatter and settings | Opt-in per agent under `children.agents`; off by default and independently loaded | A parent run does not silently rewrite child model settings. |
 | 19 | Plan-yolo mode | Separate feature | Not implemented | This extension focuses on the guarded handoff flow. |
 | 20 | Status line | Available | Available | Both show the active Prewalk state. |
 
-Child-local Prewalk remains experimental and off by default. An independently
-configured implementation child whose tool list has no active todo tool may hand
-off after positively proven mutation. The parent does not supply that child
-configuration or inherit its route policy.
+Child-local Prewalk remains off by default. An independently configured child is
+enabled with `children.agents.worker: true`, or with an object containing a
+custom executor. `false` keeps that agent on its own model and tool slate. An
+implementation child whose tool list has no active todo tool may hand off after
+positively proven mutation. The parent does not supply that child configuration
+or inherit its route policy. The older `experimentalChild` object is accepted
+and normalized, but new configuration uses the simpler per-agent shape.
 
 ### Extras and deliberate differences
 
@@ -196,7 +199,7 @@ configuration or inherit its route policy.
 | 23 | Provider ownership checks | Not needed by OMP's native switch | The overlay checks whether another extension replaced the provider route | Another extension cannot quietly replace the route underneath an active run. |
 | 24 | Native Responses compaction | Supported | Refused when explicitly enabled with Pi Codex Conversion's own response-compaction hook | This protects the planning-context filter from hook-order surprises. |
 | 25 | Model display names | Generic | Special cases `gpt-5.6-sol` and `luna` in notices/status | This is a display difference, not a routing capability. |
-| 26 | Executor configuration wizard | No matching OMP wizard | `/prewalk configure` can offer cross-provider executors, ranking the planner's provider first | Configuration is easier to inspect without editing JSON by hand. |
+| 26 | Executor configuration wizard | No matching OMP wizard | `/prewalk configure` offers an in-place, fuzzy-searchable model picker plus child and analytics settings | Configuration is easier to inspect without editing JSON by hand. |
 
 The matrix uses four kinds of difference: behavior that matches, behavior
 forced by stock Pi's public API, behavior chosen by this extension, and a
@@ -242,8 +245,8 @@ extension cannot safely recreate through public hooks.
   compaction, but an unknown provider-specific overflow can still fall outside
   that path.
 - Its child Prewalk settings and plan-yolo mode are built in. Prewalk's child
-  path is experimental, disabled by default, and requires independent child
-  configuration.
+  path is disabled by default, requires independent child configuration, and
+  exposes that policy through `/prewalk configure` and `/prewalk children`.
 - It can use private session machinery that a package on stock Pi must not
   assume will remain available.
 

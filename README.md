@@ -206,10 +206,17 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 }
 ```
 
-The config is strict. Unknown fields fail closed. `/prewalk configure` writes a
-valid config atomically and shows executor models with usable output capacity;
-the executor can have a smaller context window because the watchdog protects
-its requests. It never stores or changes the planner.
+The config is strict. Unknown fields fail closed. In an interactive terminal,
+`/prewalk configure` opens one in-place settings menu and keeps every change in a draft.
+Nothing is written until you review the draft and choose **Save changes**. Press
+`?` for help with child-agent and analytics settings.
+
+The model picker works like Pi's: start typing any part of a provider, model
+name, or model ID, move with the arrow keys, and press Enter to choose. Escape
+backs up one screen. From the overview, it closes an unchanged draft and asks
+before discarding a changed one. Printable letters are never exit shortcuts.
+In non-interactive modes, the command uses shorter step-by-step prompts. It
+never stores or changes the planner.
 
 ## Use it
 
@@ -218,7 +225,8 @@ its requests. It never stores or changes the planner.
 | `/prewalk run` | Start a manual run |
 | `/prewalk auto` | Enable conservative automatic admission for this session |
 | `/prewalk status` | Show the current planner, executor, gate, route, and failure |
-| `/prewalk configure` | Choose the executor and analytics settings |
+| `/prewalk configure` | Open the settings menu for the executor, child agents, and analytics |
+| `/prewalk children` | Show child-agent settings; use `on`, `off`, or `target` to change one |
 | `/prewalk cancel` | Cancel a pre-handoff run and disable automatic mode |
 | `/prewalk release` | Restore the selected planner after handoff without re-arming |
 | `/prewalk stats` | Show what you spent and what switching models saved |
@@ -325,22 +333,24 @@ cannot report provider drift or stream results into a replacement run. This
 keeps a future Pi-native session-local model switch replaceable without moving
 Prewalk's mutation, todo, audit, or recovery semantics into the adapter.
 
-### Experimental child-local Prewalk
+### Child-local Prewalk
 
 Child-local Prewalk is disabled by default and is not enabled by the portable
 setup. A child must load this extension explicitly through its upstream
-`extensions` or `subagentOnlyExtensions` configuration and must have a matching
-entry under `experimentalChild.agents`. Read-only, plan-mode, unconfigured,
-equal-target, and unavailable-target children stay on their independently
-resolved profile. Descendants do not inherit a parent target.
+`extensions` or `subagentOnlyExtensions` configuration. Each child agent is
+then opted in separately under `children.agents`; a boolean `true` uses the
+main executor, `false` leaves that child alone, and an object selects a custom
+executor. The default `worker` entry is off. Review and planning children stay
+off unless you explicitly turn them on, and descendants do not inherit a
+parent target.
 
 ```json
 {
-  "experimentalChild": {
-    "enabled": false,
+  "children": {
     "agents": {
-      "worker": {
-        "mode": "implementation",
+      "worker": true,
+      "reviewer": false,
+      "specialist": {
         "executor": {
           "provider": "openai-codex",
           "model": "gpt-5.6-luna",
@@ -352,8 +362,21 @@ resolved profile. Descendants do not inherit a parent target.
 }
 ```
 
-This path has no efficacy or savings claim. `/prewalk status` reports why a
-loaded child is disabled or unavailable.
+You can inspect or change this without editing JSON:
+
+```text
+/prewalk children
+/prewalk children on worker
+/prewalk children off reviewer
+/prewalk children target specialist openai-codex/gpt-5.6-luna low
+```
+
+The older `experimentalChild` shape is read and normalized for compatibility,
+but new settings use `children`. A child with no active `prewalk_todo` can
+still hand off after its first positively verified code change; loading the
+extension alone does not add tools to an unconfigured, read-only, or planning
+child. We have not measured whether this improves child runs. `/prewalk status`
+says why a loaded child is disabled or unavailable.
 
 ## Local analytics
 
