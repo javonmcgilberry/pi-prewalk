@@ -15,16 +15,18 @@ const config = {
 const planner = { ...DEFAULT_PLANNER, reasoning: "high" as const };
 
 describe("provider-neutral configuration", () => {
-	it("stores executor and analytics settings and rejects persisted activation", () => {
+	it("stores the persistent automatic opt-in with a safe off default", () => {
 		expect(parseConfig(config)).toEqual({
 			...config,
+			enabled: false,
 			analytics: DEFAULT_ANALYTICS_CONFIG,
 		});
+		expect(parseConfig({ ...config, enabled: true })).toMatchObject({ enabled: true });
 		expect(() => parseConfig({ ...config, planner: DEFAULT_PLANNER })).toThrow(
 			"Unknown Prewalk config field: planner.",
 		);
-		expect(() => parseConfig({ ...config, enabled: true })).toThrow(
-			"Unknown Prewalk config field: enabled.",
+		expect(() => parseConfig({ ...config, enabled: "yes" })).toThrow(
+			"Prewalk config enabled must be a boolean.",
 		);
 		expect(PLANNER_MODEL_ID).toBe("gpt-5.6-sol");
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");

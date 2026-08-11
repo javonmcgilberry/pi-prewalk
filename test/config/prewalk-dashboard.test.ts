@@ -40,6 +40,7 @@ function tui() {
 
 function initialConfig(): PrewalkConfig {
 	return {
+		enabled: false,
 		executor: { provider: "fixture", model: "executor", reasoning: "low" },
 		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 		children: { agents: { worker: false } },
@@ -160,6 +161,20 @@ describe("Prewalk model picker", () => {
 });
 
 describe("Prewalk configuration menu", () => {
+	it("persists the automatic startup opt-in from the overview", async () => {
+		const saved: PrewalkConfig[] = [];
+		const { instance, done } = component({
+			onSave: async (config) => {
+				saved.push(config);
+			},
+		});
+
+		press(instance, DOWN, DOWN, DOWN, ENTER, DOWN, ENTER, ENTER);
+		await vi.waitFor(() => expect(done).toHaveBeenCalledWith("saved"));
+
+		expect(saved[0]?.enabled).toBe(true);
+	});
+
 	it("resolves on Escape and can be opened again immediately", async () => {
 		const custom = vi.fn(
 			async <T>(
@@ -199,7 +214,21 @@ describe("Prewalk configuration menu", () => {
 
 		press(instance, ENTER, ENTER);
 		for (const character of "target") instance.handleInput(character);
-		press(instance, ENTER, DOWN, ENTER, DOWN, ENTER, ESCAPE, DOWN, DOWN, DOWN, ENTER, ENTER);
+		press(
+			instance,
+			ENTER,
+			DOWN,
+			ENTER,
+			DOWN,
+			ENTER,
+			ESCAPE,
+			DOWN,
+			DOWN,
+			DOWN,
+			DOWN,
+			ENTER,
+			ENTER,
+		);
 		await vi.waitFor(() => expect(done).toHaveBeenCalledWith("saved"));
 
 		expect(onSave).toHaveBeenCalledOnce();
@@ -259,6 +288,7 @@ describe("Prewalk configuration menu", () => {
 			DOWN,
 			ENTER,
 			ESCAPE,
+			DOWN,
 			DOWN,
 			DOWN,
 			DOWN,

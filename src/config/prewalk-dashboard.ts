@@ -326,6 +326,12 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 						description: "Control local run accounting and optional catalog estimates.",
 					},
 					{
+						label: "Automatic startup",
+						value: this.draft.enabled ? "On" : "Off",
+						description:
+							"Use automatic mode for fresh top-level sessions. Resumed sessions stay manual.",
+					},
+					{
 						label: "Review and save",
 						value: this.isDirty() ? this.changeSummary() : "No changes yet",
 						description: "Review the complete draft, then write it atomically.",
@@ -479,7 +485,10 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 	}
 
 	private renderSummary(width: number): string[] {
-		const summary = [`Main executor  ${executorLabel(this.draft.executor)}`];
+		const summary = [
+			`Automatic     ${this.draft.enabled ? "on for fresh sessions" : "off"}`,
+			`Main executor  ${executorLabel(this.draft.executor)}`,
+		];
 		if (this.draft.executorFallbacks && this.draft.executorFallbacks.length > 0) {
 			summary.push(
 				`Fallbacks      ${this.draft.executorFallbacks.map(executorLabel).join("; ")}`,
@@ -522,10 +531,10 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 				return;
 			case "save-confirm":
 				if (this.selectedIndex === 0) await this.save();
-				else this.openScreen("home", 3);
+				else this.openScreen("home", 4);
 				return;
 			case "discard-confirm":
-				if (this.selectedIndex === 0) this.openScreen("home", 4);
+				if (this.selectedIndex === 0) this.openScreen("home", 5);
 				else this.close("cancelled");
 				return;
 			case "model":
@@ -540,6 +549,15 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 		else if (this.selectedIndex === 1) this.openScreen("children");
 		else if (this.selectedIndex === 2) this.openScreen("analytics");
 		else if (this.selectedIndex === 3) {
+			this.draft.enabled = !this.draft.enabled;
+			this.message = {
+				tone: "muted",
+				text: this.draft.enabled
+					? "Fresh top-level sessions will start in automatic mode."
+					: "Fresh top-level sessions will start in manual mode.",
+			};
+			this.requestRender();
+		} else if (this.selectedIndex === 4) {
 			if (this.isDirty()) this.openScreen("save-confirm");
 			else this.message = { tone: "muted", text: "There are no changes to save." };
 		} else if (this.isDirty()) this.openScreen("discard-confirm");
@@ -755,10 +773,10 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 				this.openScreen("children", this.returnIndex);
 				return;
 			case "save-confirm":
-				this.openScreen("home", 3);
+				this.openScreen("home", 4);
 				return;
 			case "discard-confirm":
-				this.openScreen("home", 4);
+				this.openScreen("home", 5);
 				return;
 			case "help":
 				this.openScreen(this.helpReturnScreen, this.helpReturnIndex);
@@ -820,6 +838,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 
 	private changeSummary(): string {
 		let changes = 0;
+		if (Boolean(this.draft.enabled) !== Boolean(this.saved.enabled)) changes += 1;
 		if (JSON.stringify(this.draft.executor) !== JSON.stringify(this.saved.executor)) changes += 1;
 		if (JSON.stringify(this.draft.children) !== JSON.stringify(this.saved.children)) changes += 1;
 		if (JSON.stringify(this.draft.analytics) !== JSON.stringify(this.saved.analytics))

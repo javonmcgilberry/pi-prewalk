@@ -635,7 +635,7 @@ describe("Prewalk extension harness", () => {
 		).resolves.toMatchObject({ content: [{ type: "text" }] });
 	});
 
-	it("starts manual, then preserves automatic mode only across a same-session reload", async () => {
+	it("defaults persistent automatic admission off and preserves a session opt-in on reload", async () => {
 		const first = createHarness();
 		prewalkExtension(first.pi);
 		await first.emit("session_start", { type: "session_start", reason: "startup" });
@@ -665,6 +665,85 @@ describe("Prewalk extension harness", () => {
 			await newSession.commands.get("prewalk")?.("auto", newSession.context);
 			expect(newSession.notifications.at(-1)).toContain("enabled for this session");
 		}
+	});
+
+	it("enables automatic admission from config for fresh sessions but not resumed sessions", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ enabled: true, executor: DEFAULT_EXECUTOR })}\n`,
+		);
+
+		for (const reason of ["startup", "new", "fork"]) {
+			const harness = createHarness({ sessionId: `${reason}-session` });
+			prewalkExtension(harness.pi);
+			await harness.emit("session_start", { type: "session_start", reason });
+
+			expect(harness.entries.at(-1)).toEqual({
+				customType: "prewalk-auto-mode",
+				data: { schemaVersion: 1, sessionId: `${reason}-session`, enabled: true },
+			});
+			expect(harness.statuses.at(-1)).toBe("prewalk: auto-ready");
+			if (reason === "startup") {
+				await harness.emit("input", {
+					type: "input",
+					text: "Implement the requested cross-cutting feature",
+					source: "interactive",
+				});
+				const beforeStart = await harness.emit("before_agent_start", {
+					type: "before_agent_start",
+					prompt: "Implement the requested cross-cutting feature",
+					systemPrompt: "system",
+					systemPromptOptions: {},
+				});
+				expect(beforeStart).toEqual([
+					expect.objectContaining({
+						message: expect.objectContaining({ customType: "prewalk-assess" }),
+					}),
+				]);
+			}
+			await harness.commands.get("prewalk")?.("auto", harness.context);
+			expect(harness.notifications.at(-1)).toContain("already enabled");
+		}
+
+		const resumed = createHarness({ sessionId: "resume-session" });
+		prewalkExtension(resumed.pi);
+		await resumed.emit("session_start", { type: "session_start", reason: "resume" });
+		expect(resumed.entries).toEqual([]);
+		await resumed.emit("input", {
+			type: "input",
+			text: "Implement the requested cross-cutting feature",
+			source: "interactive",
+		});
+		expect(
+			await resumed.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "Implement the requested cross-cutting feature",
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			}),
+		).toEqual([undefined]);
+		await resumed.commands.get("prewalk")?.("auto", resumed.context);
+		expect(resumed.notifications.at(-1)).toContain("enabled for this session");
+	});
+
+	it("keeps a session cancellation disabled across reload even when the default is on", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ enabled: true, executor: DEFAULT_EXECUTOR })}\n`,
+		);
+		const first = createHarness();
+		prewalkExtension(first.pi);
+		await first.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(first.entries.at(-1)?.data).toMatchObject({ enabled: true });
+		await first.commands.get("prewalk")?.("cancel", first.context);
+		expect(first.entries.at(-1)?.data).toMatchObject({ enabled: false });
+
+		const restored = createHarness();
+		restored.setBranch(auditBranch(first));
+		prewalkExtension(restored.pi);
+		await restored.emit("session_start", { type: "session_start", reason: "reload" });
+		await restored.commands.get("prewalk")?.("auto", restored.context);
+		expect(restored.notifications.at(-1)).toContain("enabled for this session");
 	});
 
 	it("cancels automatic mode without starting a run", async () => {
@@ -1919,6 +1998,7 @@ describe("Prewalk extension harness", () => {
 		vi.mocked(harness.context.ui.select)
 			.mockResolvedValueOnce("openai-codex/gpt-5.6-luna")
 			.mockResolvedValueOnce("medium")
+			.mockResolvedValueOnce("disabled")
 			.mockResolvedValueOnce("enabled")
 			.mockResolvedValueOnce("disabled");
 		vi.mocked(harness.context.ui.confirm).mockResolvedValueOnce(true);
@@ -1974,6 +2054,7 @@ describe("Prewalk extension harness", () => {
 		vi.mocked(harness.context.ui.select)
 			.mockResolvedValueOnce("openai-codex/gpt-5.6-luna")
 			.mockResolvedValueOnce("medium")
+			.mockResolvedValueOnce("disabled")
 			.mockResolvedValueOnce("enabled")
 			.mockResolvedValueOnce("disabled");
 		vi.mocked(harness.context.ui.confirm).mockResolvedValueOnce(true);
@@ -1981,6 +2062,7 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.("configure", harness.context);
 
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toEqual({
+			enabled: false,
 			executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
 			analytics: {
 				enabled: true,
@@ -2013,6 +2095,7 @@ describe("Prewalk extension harness", () => {
 		vi.mocked(harness.context.ui.select)
 			.mockResolvedValueOnce("openai-codex/gpt-5.6-luna")
 			.mockResolvedValueOnce("low")
+			.mockResolvedValueOnce("disabled")
 			.mockResolvedValueOnce("enabled")
 			.mockResolvedValueOnce("disabled");
 		vi.mocked(harness.context.ui.confirm).mockResolvedValueOnce(true);

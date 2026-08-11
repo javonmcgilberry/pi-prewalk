@@ -21,6 +21,11 @@ export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 
 export interface PrewalkConfig {
+	/**
+	 * Persisted opt-in for automatic admission in fresh top-level sessions.
+	 * Omitted is the safe, backward-compatible off default.
+	 */
+	enabled?: boolean;
 	executor: ExecutorConfig;
 	/**
 	 * Alternates tried in order when the primary executor is unavailable, so a
@@ -37,7 +42,10 @@ export interface PrewalkConfig {
 	experimentalChild?: ExperimentalChildConfig;
 }
 
-export type ParsedPrewalkConfig = PrewalkConfig & { analytics: AnalyticsConfig };
+export type ParsedPrewalkConfig = PrewalkConfig & {
+	enabled: boolean;
+	analytics: AnalyticsConfig;
+};
 
 export interface ModelConfig {
 	provider: string;

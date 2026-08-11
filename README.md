@@ -104,6 +104,7 @@ inference; a non-empty array is used exactly as written.
 
 ```json
 {
+  "enabled": false,
   "executor": { "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "low" },
   "executorFallbacks": [
     { "provider": "google", "model": "gemini-3.5-flash", "reasoning": "low" }
@@ -194,6 +195,7 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 
 ```json
 {
+  "enabled": false,
   "executor": {
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
@@ -207,6 +209,11 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
   }
 }
 ```
+
+`enabled` controls how a top-level session starts and is `false` when omitted.
+Set it to `true`, or toggle **Automatic startup** in `/prewalk configure`.
+Prewalk then starts in automatic mode for `startup`, `new`, and `fork`
+sessions. It still starts manually for `resume`.
 
 The config is strict. Unknown fields fail closed. In an interactive terminal,
 `/prewalk configure` opens one in-place settings menu and keeps every change in a draft.
@@ -227,7 +234,7 @@ never stores or changes the planner.
 | `/prewalk run` | Start a manual run while Pi is idle |
 | `/prewalk auto` | Enable conservative automatic admission for this session |
 | `/prewalk status` | Show the current planner, executor, gate, route, and failure |
-| `/prewalk configure` | Open the settings menu for the executor, child agents, and analytics |
+| `/prewalk configure` | Configure automatic startup, the executor, child agents, and analytics |
 | `/prewalk children` | Show child-agent settings; use `on`, `off`, or `target` to change one |
 | `/prewalk cancel` | Cancel a pre-handoff run and disable automatic mode |
 | `/prewalk release` | Restore the selected planner after handoff without re-arming |
@@ -245,8 +252,10 @@ Manual mode is the simplest place to start:
 After handoff, later turns stay on the executor, including after `/reload` in
 the same live Pi session and when the planner and executor use different
 providers. `/prewalk release` restores the planner in the same transcript.
-Closing and reopening Pi starts on the planner; an old unfinished
-receipt is recorded as interrupted rather than silently restoring the route.
+Closing and reopening Pi starts on the planner. With automatic startup enabled,
+the fresh session is ready to evaluate the next request, but it never restores
+an old executor route. An unfinished receipt from the old session is recorded
+as interrupted.
 
 If an executor provider fails for a reason other than context pressure, Prewalk
 restores the planner, preserves the transcript and analytics receipt, and keeps
@@ -283,6 +292,12 @@ todo state, usage, model identity, and stop reasons intact.
 
 ## Automatic mode
 
+OMP treats automatic startup as an opt-in. This extension now does the same:
+`enabled` is `false` by default, and `enabled: true` makes `startup`, `new`, and
+`fork` sessions ready to evaluate the next request automatically. A `resume`
+session stays manual. The setting chooses the initial mode; it does not skip
+Prewalk's admission or handoff checks.
+
 `/prewalk auto` applies only to the current live Pi session. A deterministic
 admission check rejects small, research-only, operational, and unclear requests.
 Larger implementation work gets one read-only assessment turn before Prewalk
@@ -290,8 +305,9 @@ decides whether to arm the full flow.
 
 Typing exactly `stop` or `cancel` closes the current task but leaves automatic
 mode ready for another task. `/prewalk cancel` also disables automatic mode.
-New, resumed, and forked sessions start in manual mode. `/reload` keeps automatic
-readiness only for the same session.
+`/prewalk auto` and `/prewalk cancel` override the saved default only for the
+current session. `/reload` keeps that choice. A changed `enabled` value takes
+effect on the next fresh session.
 
 ## Optional integrations
 

@@ -34,7 +34,7 @@ function isMissingFile(error: unknown): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-export async function readPrewalkConfig(): Promise<PrewalkConfig> {
+export async function readPrewalkConfig(): Promise<ParsedPrewalkConfig> {
 	let raw: string;
 	try {
 		raw = await readFileAsync(configPath(), "utf8");
@@ -59,9 +59,13 @@ export async function writePrewalkConfig(config: PrewalkConfig): Promise<void> {
 	await renameFile(temporary, target);
 }
 
-export type ParsedPrewalkConfig = PrewalkConfig & { analytics: AnalyticsConfig };
+export type ParsedPrewalkConfig = PrewalkConfig & {
+	enabled: boolean;
+	analytics: AnalyticsConfig;
+};
 
 const CONFIG_KEYS = new Set([
+	"enabled",
 	"executor",
 	"executorFallbacks",
 	"analytics",
@@ -86,6 +90,9 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config field: ${unknownKeys.join(", ")}.`);
 	}
+	if (value.enabled !== undefined && typeof value.enabled !== "boolean") {
+		throw new Error("Prewalk config enabled must be a boolean.");
+	}
 	const executor = parseExecutorConfig(value.executor, "executor");
 	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
 	const analytics =
@@ -104,6 +111,7 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 		);
 	}
 	return {
+		enabled: value.enabled ?? false,
 		executor,
 		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
 		analytics,
@@ -238,7 +246,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		ctx.ui.notify("Select a planner model in Pi before configuring Prewalk.", "error");
 		return;
 	}
-	let savedConfig: PrewalkConfig | undefined;
+	let savedConfig: ParsedPrewalkConfig | undefined;
 	try {
 		savedConfig = await readPrewalkConfig();
 	} catch {
@@ -249,6 +257,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		const result = await showPrewalkConfigureMenu({
 			ctx,
 			initial: savedConfig ?? {
+				enabled: false,
 				executor: { ...DEFAULT_EXECUTOR },
 				analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 			},
@@ -258,7 +267,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		});
 		ctx.ui.notify(
 			result === "saved"
-				? "Prewalk settings saved. Reload Pi before starting a new run."
+				? "Prewalk settings saved. Reload before using executor changes. Start a fresh session to apply automatic startup."
 				: "No changes saved.",
 			"info",
 		);
@@ -322,6 +331,11 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		);
 		return;
 	}
+	const automaticChoice = await ctx.ui.select("Automatic Prewalk for new sessions", [
+		savedConfig?.enabled ? "enabled" : "disabled",
+		savedConfig?.enabled ? "disabled" : "enabled",
+	]);
+	if (automaticChoice !== "enabled" && automaticChoice !== "disabled") return;
 	const savedAnalytics = savedConfig?.analytics ?? DEFAULT_ANALYTICS_CONFIG;
 	const collectionChoice = await ctx.ui.select("Analytics collection", [
 		savedAnalytics.enabled ? "enabled" : "disabled",
@@ -334,6 +348,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	]);
 	if (catalogChoice !== "enabled" && catalogChoice !== "disabled") return;
 	const nextConfig: PrewalkConfig = {
+		enabled: automaticChoice === "enabled",
 		executor: {
 			provider: executor.provider,
 			model: executor.id,
@@ -354,7 +369,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	};
 	const confirmed = await ctx.ui.confirm(
 		"Save Prewalk configuration?",
-		`${planner.provider}/${planner.id} plans, then ${executorChoice} executes at ${reasoningChoice} reasoning.`,
+		`${planner.provider}/${planner.id} plans, then ${executorChoice} executes at ${reasoningChoice} reasoning. Automatic startup: ${automaticChoice}.`,
 	);
 	if (!confirmed) return;
 	await writePrewalkConfig(nextConfig);

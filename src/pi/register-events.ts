@@ -171,6 +171,7 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 
 function defaultConfig(): PrewalkConfig {
 	return {
+		enabled: false,
 		executor: { ...DEFAULT_EXECUTOR },
 		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 	};
@@ -1129,7 +1130,22 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				"error",
 			);
 		});
-		await startChildPrewalkRun(ctx);
+		if (process.env.PI_SUBAGENT_CHILD === "1") {
+			await startChildPrewalkRun(ctx);
+			return;
+		}
+		if (event.reason === "startup" || event.reason === "new" || event.reason === "fork") {
+			try {
+				const config = await readPrewalkConfig();
+				if (config.enabled) {
+					setAutoEnabled(true, ctx);
+					updateStatus(ctx);
+				}
+			} catch {
+				// Missing or invalid configuration keeps the safe manual default. The
+				// normal run command reports the actionable configuration error.
+			}
+		}
 	});
 
 	pi.on("input", async (event, ctx) => {

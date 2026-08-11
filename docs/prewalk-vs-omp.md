@@ -72,10 +72,11 @@ A normal manual run works like this.
 
 1. **Pi keeps its selected planner.** You select the planner in Pi and choose
    an executor in `prewalk.json`, or use the configured fallback chain.
-2. **You run `/prewalk run`.** Prewalk checks the configuration, provider
-   access, model compatibility, and the session's tool state. `/prewalk auto`
-   can make the same decision for larger implementation requests in the
-   current session.
+2. **You start manually or turn on automatic startup.** `/prewalk run` starts
+   the flow directly. Setting `enabled: true` in `prewalk.json` turns on
+   automatic mode when a fresh top-level session starts. `/prewalk auto` does
+   the same for only the current session. Prewalk still limits automatic runs
+   to larger implementation requests.
 3. **The planner gets a planning instruction.** In the normal top-level flow,
    it must use Prewalk's namespaced `prewalk_todo` checklist when that tool is
    active before handoff is possible. An independently configured implementation
@@ -146,6 +147,7 @@ important rows below in user-facing language.
 | --- | --- | --- | --- | --- |
 | 1 | Handoff mechanism | Native, temporary session model switch | Run-scoped provider overlay; Pi's selected model stays the planner | The flow is the same, but stock Pi forces a different mechanism. |
 | 2 | Saved default model | Not changed | Not changed | A Prewalk run does not rewrite Pi's saved model. |
+| 2a | Persistent automatic startup | Opt-in `prewalk.enabled`, off by default, applied to fresh sessions | Opt-in `enabled` in `prewalk.json`, off by default, applied to fresh top-level sessions | Both remember the preference without silently restoring a prior executor route; this extension still runs its conservative admission check. |
 | 3 | What starts handoff | First `edit` or `write` after the todo gate | First positively proven mutation after the gate; patch surfaces and narrowly configured integrations can count too | Prewalk waits for evidence that code actually changed. |
 | 4 | Todo gate | Required | Required | Planning alone does not switch models. |
 | 5 | Planning nudge | Injected once | Injected once | Both give the planner a hidden instruction to plan deeply. |

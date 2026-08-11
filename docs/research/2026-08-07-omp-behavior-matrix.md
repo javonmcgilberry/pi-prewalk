@@ -62,6 +62,7 @@ Several rows below are consequences of that, not preferences.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Handoff mechanism | Real session model switch, ephemeral | Run-scoped temporary-model lease over a provider `streamSimple` overlay; selected model never changes | **Forced** | OMP `session/prewalk.ts:138`; here `src/model-runtime.ts` |
 | 2 | Persists a new default model | No, `ephemeral: true` | No, nothing is written | Same outcome | `session/model-controls.ts:255`; overlay writes no settings |
+| 2a | Persistent automatic startup | `prewalk.enabled`, default off; fresh sessions only | `enabled` in `prewalk.json`, default off; fresh top-level sessions only | Same operator contract, Pi-adapted admission | OMP `config/settings-schema.ts`, `main.ts`; here `src/config/prewalk-config.ts`, `src/pi/register-events.ts` |
 | 3 | Handoff trigger | First `edit`/`write` tool result after the todo gate | First positively proven mutation after the gate; OMP's `edit`/`write` path is unchanged, while exact patch surfaces and source-owned adapters can supply equivalent evidence | Same core behavior, chosen extension seam | `session/prewalk.ts:22,101`; `src/mutation.ts`; `src/core.ts` `onTurnEnd` |
 | 4 | Todo gate before handoff | Yes | Yes | Same | `session/prewalk.ts:83,100`; `src/core.ts` |
 | 5 | Hidden deep-plan nudge | Injected once | Injected once | Same | `session/prewalk.ts:107`; `PREWALK_PLAN_MESSAGE_TYPE` |
