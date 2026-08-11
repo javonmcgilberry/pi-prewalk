@@ -14,11 +14,12 @@ current question first: which session is this, is a run active, what has it
 spent, and is an estimate available? Session titles are the primary labels;
 stable IDs appear in the details view.
 
-The dashboard speaks in terms of switching: a task starts on one model and a
-cheaper one takes over. `Spent` is what you paid, `Compared` is how much of that
-spending the comparison is built from, and `Saved by switching` is the estimate.
-Internal terms such as planner, executor, and handoff stay out of the interface
-and are used only in this document and in the code.
+The dashboard puts the cost numbers in a fixed order. `Total paid` is the
+provider-reported total. `Estimate based on` is the part of finished spending
+with enough evidence for a comparison. `Estimated cost change` says whether
+switching models may have cost less or more. The details screen puts the
+estimated cost without switching beside the comparable amount actually paid,
+so the relationship is visible without opening Help.
 
 The dashboard order is:
 
@@ -27,10 +28,13 @@ The dashboard order is:
 3. This month
 4. All time
 5. Recent sessions
+6. `See N more sessions`, when older logged sessions exist
 
-Use the arrow keys to select a session, Enter for details, `?` for the cost
-explanation, `R` to refresh, and Escape to close. The dashboard refreshes while
-it is open and shows the snapshot time.
+Use the arrow keys to select a row and Enter to open it. The full history shows
+eight sessions at a time; Page Up and Page Down move through longer lists. `?`
+explains the numbers, `R` refreshes, and Escape moves back one level before it
+closes the dashboard. Selection stays on a visible session when refreshed.
+The dashboard refreshes while it is open and shows the snapshot time.
 
 ## What the numbers mean
 
@@ -39,10 +43,10 @@ shows active and finished Prewalk runs recorded in that session. Delegated child
 sessions are excluded from this section; `/prewalk stats task` reports the whole
 task tree.
 
-An active run can show recorded spend, but its estimated difference can change
+An active run can show total paid, but its estimated cost change can change
 until the run finishes. Historical comparisons use finished runs only.
 
-Recorded spend is provider-reported cost captured for planner, executor,
+Total paid is provider-reported cost captured for planner, executor,
 helper, and compaction calls. The planner is the model selected in Pi before
 handoff. The executor is the model that continues after handoff.
 
@@ -61,10 +65,11 @@ estimated difference
 
 Positive values mean planner + executor calls cost less than the planner-alone
 estimate. Negative values mean they cost more. Helper and compaction calls are
-included in recorded spend but not in this comparison. This is not a separate
+included in total paid but not in this comparison. This is not a separate
 planner-only run or a measured benchmark.
 
-Read the difference as an upper bound, which is why it is shown as `up to`. It
+Read the cost change as an estimate. `Up to` is the most the recorded token mix
+suggests switching might have saved, not a measured amount. The calculation
 prices the tokens the executor actually used, assuming the planner would have
 used the same ones. A cheaper executor often needs more turns to reach the same
 result, and every extra turn is then repriced at planner rates, so the estimate
@@ -72,12 +77,12 @@ leans high. The gap widens as the price ratio widens. Only an accepted
 benchmark report, labelled `verified`, measures the difference instead of
 estimating it.
 
-Recorded spend and the estimated difference cover different runs, so they are
-not two halves of one ratio. Recorded spend counts every run in the period,
+Total paid and the estimated cost change cover different runs, so they are not
+two halves of one ratio. Total paid counts every run in the period,
 including runs that never handed off and runs with no usable pricing. The
 difference only covers runs that could be compared. Each comparison therefore
-states the spend it covers, and that covered figure is the one to read the
-difference against. A small difference beside a large recorded total usually
+states `Estimate based on $X of $Y`, and that $X figure is the one to read the
+difference against. A small difference beside a large total usually
 means narrow coverage rather than a poor result.
 
 A call counts as planner work only while the run is still planning. Once the
@@ -85,11 +90,15 @@ executor takes over, later planner-model turns are recorded as helper spend
 rather than planning, so selecting the planner again after a handoff does not
 inflate the planner-alone baseline.
 
-The labels matter:
+The dashboard labels mean:
 
-- `recorded spend` comes from Pi-reported usage and may include helper or
+- `Total paid` comes from Pi-reported usage and may include helper or
   compaction calls.
-- `estimated difference` uses pricing attached to the recorded models.
+- `Estimate based on` is the finished spending with usable switching and price
+  evidence.
+- `Estimated cost without switching` reprices the comparable recorded work at
+  the first model's rates; it is not a second run.
+- `Estimated cost change` subtracts comparable actual cost from that estimate.
 - `catalog estimate` uses the optional dated catalog fallback.
 - `cannot compare` names the missing input, such as executor usage or model pricing.
 - `finished before handoff` means planning ended without executor work, so

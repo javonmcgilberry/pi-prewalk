@@ -102,6 +102,54 @@ function overview(overrides: Partial<AnalyticsOverview> = {}): AnalyticsOverview
 	};
 }
 
+function overviewWithHistory(count: number): AnalyticsOverview {
+	const currentReceipt = receipt();
+	const historyReceipts = Array.from({ length: count }, (_, index) =>
+		receipt({
+			runId: `run-history-${index + 1}`,
+			sessionId: `session-history-${index + 1}`,
+			completedAt: new Date(Date.UTC(2026, 7, 5, 11) - index * 86_400_000).toISOString(),
+			actualCost: 0.5 + index / 100,
+			estimate: {
+				kind: "session-counterfactual",
+				plannerOnlyCost: 0.7 + index / 100,
+				savings: 0.2,
+			},
+		}),
+	);
+	const receipts = [currentReceipt, ...historyReceipts];
+	return overview({
+		lifetime: aggregate({
+			receiptCount: receipts.length,
+			actualCost: receipts.reduce((total, item) => total + item.actualCost, 0),
+			receipts,
+			recentReceipts: receipts,
+		}),
+		sessionTitles: new Map([
+			["session-current", "Prewalk dashboard redesign"],
+			...historyReceipts.map(
+				(_item, index) =>
+					[`session-history-${index + 1}`, `History session ${index + 1}`] as const,
+			),
+		]),
+	});
+}
+
+const dashboardKeybindings = {
+	matches(data: string, action: string): boolean {
+		return (
+			new Map([
+				["UP", "tui.select.up"],
+				["DOWN", "tui.select.down"],
+				["PAGE_UP", "tui.select.pageUp"],
+				["PAGE_DOWN", "tui.select.pageDown"],
+				["ENTER", "tui.select.confirm"],
+				["ESC", "tui.select.cancel"],
+			]).get(data) === action
+		);
+	},
+};
+
 describe("analytics dashboard", () => {
 	it("puts current session first and orders history from recent to broad", () => {
 		const model = buildAnalyticsDashboardModel(overview());
@@ -135,7 +183,7 @@ describe("analytics dashboard", () => {
 
 	it("replaces opaque savings and coverage labels with plain language", () => {
 		const comparison = summarizeComparison([receipt()]);
-		expect(comparison.label).toBe("saved up to $0.20");
+		expect(comparison.label).toBe("up to $0.20 less");
 		expect(comparison.detail).toBe("1 run compared.");
 		expect(comparison.coveredCost).toBeCloseTo(0.8, 10);
 		expect(comparison.finishedCost).toBeCloseTo(0.8, 10);
@@ -174,8 +222,8 @@ describe("analytics dashboard", () => {
 			90,
 			palette,
 		).join("\n");
-		expect(output.indexOf("CURRENT SESSION")).toBeLessThan(output.indexOf("HISTORY"));
-		expect(output).toContain("1 running");
+		expect(output.indexOf("CURRENT SESSION")).toBeLessThan(output.indexOf("TOTALS OVER TIME"));
+		expect(output).toContain("1 active");
 		expect(output).toContain("$0.35");
 	});
 
@@ -229,7 +277,7 @@ describe("analytics dashboard", () => {
 			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
 		});
 		const mixed = summarizeComparison([receipt(), missingPricing]);
-		expect(mixed.label).toBe("saved up to $0.20");
+		expect(mixed.label).toBe("up to $0.20 less");
 		expect(mixed.detail).toContain("1 run compared");
 		expect(mixed.detail).toContain("1 run with no price data");
 
@@ -252,9 +300,10 @@ describe("analytics dashboard", () => {
 			palette,
 		).join("\n");
 		// The help pane must explain the numbers without internal vocabulary.
-		expect(help).toContain("What you actually paid");
-		expect(help).toContain("if one model had done the whole task");
-		expect(help).toContain("this is a ceiling, not a measurement");
+		expect(help).toContain("Total paid");
+		expect(help).toContain("Estimated cost without switching");
+		expect(help).toContain("most the recorded token mix suggests");
+		expect(help).toContain("not measured savings");
 		expect(help).not.toContain("planner");
 		expect(help).not.toContain("executor");
 		expect(help).not.toContain("counterfactual");
@@ -267,7 +316,7 @@ describe("analytics dashboard", () => {
 			const component = factory(
 				{ requestRender: () => renderCount++ },
 				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
-				{},
+				dashboardKeybindings,
 				() => undefined,
 			);
 			component.handleInput?.("r");
@@ -293,7 +342,7 @@ describe("analytics dashboard", () => {
 		);
 		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		expect(lines.join("\n")).toContain("This week");
-		expect(lines.join("\n").toLowerCase()).toContain("saved");
+		expect(lines.join("\n").toLowerCase()).toContain("estimated");
 	});
 
 	it("states the situation instead of repeating the reason in the current session", () => {
@@ -313,10 +362,217 @@ describe("analytics dashboard", () => {
 			104,
 			palette,
 		).join("\n");
-		const current = lines.slice(0, lines.indexOf("HISTORY"));
+		const current = lines.slice(0, lines.indexOf("TOTALS OVER TIME"));
 
 		// The headline reads as a state, and the reason appears once below it.
 		expect(current).toContain("Not enough data yet");
 		expect(current.match(/no price data/gi) ?? []).toHaveLength(1);
+	});
+
+	it("keeps four recent sessions on the overview and offers the rest through See more", () => {
+		const model = buildAnalyticsDashboardModel(overviewWithHistory(10));
+		expect(model.recentSessions.map((session) => session.title)).toEqual([
+			"History session 1",
+			"History session 2",
+			"History session 3",
+			"History session 4",
+		]);
+		expect(model.sessionHistory).toHaveLength(10);
+		const output = renderAnalyticsDashboard(
+			model,
+			{ view: "overview", selectedIndex: 5 },
+			100,
+			palette,
+		).join("\n");
+		expect(output).toContain("See 6 more sessions");
+		expect(output).toContain("Open the full history, newest first");
+	});
+
+	it("pages through every logged session without overflowing", () => {
+		const model = buildAnalyticsDashboardModel(overviewWithHistory(10));
+		const firstPage = renderAnalyticsDashboard(
+			model,
+			{ view: "history", selectedIndex: 0, historySelectedIndex: 0 },
+			88,
+			palette,
+		);
+		const lastPage = renderAnalyticsDashboard(
+			model,
+			{ view: "history", selectedIndex: 0, historySelectedIndex: 8 },
+			60,
+			palette,
+		);
+		expect(firstPage.join("\n")).toContain("1–8 of 10");
+		expect(firstPage.join("\n")).not.toContain("History session 9");
+		expect(lastPage.join("\n")).toContain("9–10 of 10");
+		expect(lastPage.join("\n")).toContain("History session 10");
+		const failedRefresh = renderAnalyticsDashboard(
+			model,
+			{
+				view: "history",
+				selectedIndex: 0,
+				historySelectedIndex: 0,
+				refreshError: "ledger temporarily unavailable",
+			},
+			88,
+			palette,
+		).join("\n");
+		expect(failedRefresh).toContain("Refresh failed: ledger temporarily unavailable");
+		for (const [width, lines] of [
+			[88, firstPage],
+			[60, lastPage],
+		] as const) {
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+	});
+
+	it.each([24, 60, 110])("keeps every dashboard screen within %d columns", (width) => {
+		const model = buildAnalyticsDashboardModel(overviewWithHistory(10));
+		const screens = [
+			[{ view: "overview", selectedIndex: 5 }, "Esc Close"],
+			[{ view: "history", selectedIndex: 5, historySelectedIndex: 8 }, "Esc Back"],
+			[
+				{ view: "details", selectedIndex: 1, selectedSessionId: "session-history-9" },
+				"Esc Back",
+			],
+			[{ view: "help", selectedIndex: 0 }, "Esc / Enter / ? Back"],
+		] as const;
+		for (const [state, exitHint] of screens) {
+			const lines = renderAnalyticsDashboard(model, state, width, palette);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+			expect(lines.join("\n")).toContain(exitHint);
+		}
+	});
+
+	it("shows an honest empty state for session history", () => {
+		const currentReceipt = receipt();
+		const model = buildAnalyticsDashboardModel(
+			overview({
+				lifetime: aggregate({
+					receiptCount: 1,
+					actualCost: currentReceipt.actualCost,
+					receipts: [currentReceipt],
+					recentReceipts: [currentReceipt],
+				}),
+			}),
+		);
+		const output = renderAnalyticsDashboard(
+			model,
+			{ view: "history", selectedIndex: 0, historySelectedIndex: 0 },
+			60,
+			palette,
+		).join("\n");
+		expect(output).toContain("No earlier sessions have been logged yet");
+		expect(output).toContain("Esc Back");
+	});
+
+	it("keeps the selected history session after a refresh adds a newer one", async () => {
+		const initial = overviewWithHistory(6);
+		const newcomer = receipt({
+			runId: "run-history-new",
+			sessionId: "session-history-new",
+			completedAt: "2026-08-06T11:30:00.000Z",
+		});
+		const refreshed: AnalyticsOverview = {
+			...initial,
+			lifetime: aggregate({
+				receiptCount: initial.lifetime.receipts.length + 1,
+				actualCost: initial.lifetime.actualCost + newcomer.actualCost,
+				receipts: [newcomer, ...initial.lifetime.receipts],
+				recentReceipts: [newcomer, ...initial.lifetime.receipts],
+			}),
+			sessionTitles: new Map([
+				...(initial.sessionTitles ?? new Map()),
+				["session-history-new", "Newest session"],
+			]),
+		};
+		let selectedAfterRefresh = "";
+		const custom = async (factory: any) => {
+			const component = factory(
+				{ requestRender: () => undefined },
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => undefined,
+			);
+			for (const input of ["DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "ENTER", "DOWN", "DOWN"]) {
+				component.handleInput(input);
+			}
+			component.handleInput("R");
+			await Promise.resolve();
+			await Promise.resolve();
+			selectedAfterRefresh = component.render(100).join("\n");
+			component.dispose();
+			return undefined;
+		};
+		await showAnalyticsDashboard({ ui: { custom } } as any, initial, async () => refreshed);
+		expect(selectedAfterRefresh).toContain("› History session 3");
+	});
+
+	it("uses semantic navigation and preserves the history hierarchy", async () => {
+		const rendered: string[] = [];
+		let closeCount = 0;
+		const custom = async (factory: any) => {
+			const component = factory(
+				{ requestRender: () => undefined },
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => closeCount++,
+			);
+			for (const input of ["DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "ENTER"]) {
+				component.handleInput(input);
+			}
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("PAGE_DOWN");
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("ENTER");
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("ESC");
+			component.handleInput("?");
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("?");
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("ESC");
+			component.handleInput("q");
+			rendered.push(component.render(100).join("\n"));
+			component.handleInput("ESC");
+			component.handleInput("ESC");
+			component.dispose();
+			return undefined;
+		};
+
+		await showAnalyticsDashboard({ ui: { custom } } as any, overviewWithHistory(10), async () =>
+			overviewWithHistory(10),
+		);
+
+		expect(rendered[0]).toContain("All logged sessions");
+		expect(rendered[0]).toContain("1–8 of 10");
+		expect(rendered[1]).toContain("9–10 of 10");
+		expect(rendered[1]).toContain("› History session 9");
+		expect(rendered[2]).toContain("Session details");
+		expect(rendered[2]).toContain("History session 9");
+		expect(rendered[3]).toContain("How to read this dashboard");
+		expect(rendered[4]).toContain("All logged sessions");
+		expect(rendered[5]).toContain("Prewalk usage");
+		expect(closeCount).toBe(1);
+	});
+
+	it("can close and reopen repeatedly through the real custom-component boundary", async () => {
+		let closeCount = 0;
+		const custom = async (factory: any) => {
+			const component = factory(
+				{ requestRender: () => undefined },
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => closeCount++,
+			);
+			component.handleInput("ESC");
+			component.handleInput("ESC");
+			component.dispose();
+			return undefined;
+		};
+		const ctx = { ui: { custom } } as any;
+		await showAnalyticsDashboard(ctx, overview(), async () => overview());
+		await showAnalyticsDashboard(ctx, overview(), async () => overview());
+		expect(closeCount).toBe(2);
 	});
 });

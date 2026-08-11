@@ -75,12 +75,15 @@ alongside theme colors.
 
 The redesigned TUI follows this order:
 
-1. Current session: title, freshness, recorded spend, active/finished runs, and
+1. Current session: title, freshness, total paid, active/finished runs, and
    an explicit comparison state.
 2. History: this week, this month, then all time.
-3. Recent sessions: title-first rows with status, recorded spend, and comparison.
-4. Details/help: the formula, missing-evidence explanation, stable IDs, and
-   the counterfactual warning.
+3. Recent sessions: four title-first rows with status, total paid, and the
+   estimated cost change.
+4. `See N more sessions`: a selectable route into the complete newest-first
+   history, with eight rows per page and stable selection.
+5. Details/help: the visible formula, missing-evidence explanation, stable IDs,
+   and estimate-only warning.
 
 The comparison is stated as an estimated difference versus running the same
 primary work without Prewalk. It is calculated as:
@@ -97,6 +100,19 @@ estimated difference
 
 Recorded spend still includes auxiliary model calls. The comparison is not an
 observed control run and does not claim benchmark efficacy.
+
+The interaction is one visible state machine owned by one custom component:
+
+- overview → session details or full history;
+- full history → session details, with Arrow and Page Up/Page Down navigation;
+- details → the screen that opened it;
+- help → the screen that opened it;
+- Escape → one level back, then close at the root.
+
+Pi's semantic selection keybindings own navigation and activation. Printable
+letters are not hidden exit shortcuts. Refresh preserves a selected session by
+identity where it remains visible, every close path resolves once, and all
+screens render within narrow and normal widths.
 
 ## Local implementation evidence
 

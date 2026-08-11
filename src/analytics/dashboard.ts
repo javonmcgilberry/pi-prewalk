@@ -1,10 +1,10 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
-	matchesKey,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { type RunOutcome, type RunReceipt, summarizeComparisons } from "./index.js";
 import type { AnalyticsOverview } from "./report.js";
@@ -12,8 +12,10 @@ import type { AnalyticsAggregate, UnfinishedRunSummary } from "./store.js";
 
 const AUTO_REFRESH_MS = 2_000;
 const RECENT_SESSION_LIMIT = 4;
+const HISTORY_PAGE_SIZE = 8;
+type DashboardKeybindings = Pick<KeybindingsManager, "matches">;
 
-export type DashboardTone = "accent" | "success" | "warning" | "error" | "muted" | "dim";
+type DashboardTone = "accent" | "success" | "warning" | "error" | "muted" | "dim";
 
 export interface DashboardPalette {
 	color(tone: DashboardTone, text: string): string;
@@ -35,7 +37,7 @@ export interface DashboardComparison {
 	percentage?: number;
 }
 
-export interface DashboardPeriod {
+interface DashboardPeriod {
 	label: string;
 	finishedRuns: number;
 	activeRuns: number;
@@ -43,7 +45,7 @@ export interface DashboardPeriod {
 	comparison: DashboardComparison;
 }
 
-export interface DashboardSession {
+interface DashboardSession {
 	sessionId: string;
 	title: string;
 	status: string;
@@ -62,11 +64,14 @@ export interface AnalyticsDashboardModel {
 	};
 	periods: DashboardPeriod[];
 	recentSessions: DashboardSession[];
+	sessionHistory: DashboardSession[];
 }
 
 export interface DashboardRenderState {
-	view: "overview" | "details" | "help";
+	view: "overview" | "history" | "details" | "help";
 	selectedIndex: number;
+	historySelectedIndex?: number;
+	selectedSessionId?: string;
 	refreshing?: boolean;
 	refreshError?: string;
 }
@@ -81,22 +86,20 @@ export function buildAnalyticsDashboardModel(overview: AnalyticsOverview): Analy
 		overview.generatedAt,
 	);
 	const latestCurrentReceipt = currentReceipts[0];
-	const currentStatus =
-		overview.session.unfinished.length > 0
-			? "Active"
-			: latestCurrentReceipt === undefined
-				? "No finished run"
-				: outcomeLabel(latestCurrentReceipt.outcome);
+	let currentStatus = "No finished run";
+	let currentStatusTone: DashboardTone = "muted";
+	if (overview.session.unfinished.length > 0) {
+		currentStatus = "Active";
+		currentStatusTone = "accent";
+	} else if (latestCurrentReceipt !== undefined) {
+		currentStatus = outcomeLabel(latestCurrentReceipt.outcome);
+		currentStatusTone = outcomeTone(latestCurrentReceipt.outcome);
+	}
 	const current: AnalyticsDashboardModel["current"] = {
 		sessionId: overview.sessionId,
 		title: overview.sessionTitles?.get(overview.sessionId) ?? "Untitled session",
 		status: currentStatus,
-		statusTone:
-			overview.session.unfinished.length > 0
-				? "accent"
-				: latestCurrentReceipt === undefined
-					? "muted"
-					: outcomeTone(latestCurrentReceipt.outcome),
+		statusTone: currentStatusTone,
 		lastUpdatedAt: currentUpdatedAt,
 		actualCost: overview.session.actualCost,
 		receipts: currentReceipts,
@@ -111,11 +114,13 @@ export function buildAnalyticsDashboardModel(overview: AnalyticsOverview): Analy
 		period("All time", overview.lifetime),
 	];
 
+	const sessionHistory = groupRecentSessions(overview);
 	return {
 		generatedAt: overview.generatedAt,
 		current,
 		periods,
-		recentSessions: groupRecentSessions(overview).slice(0, RECENT_SESSION_LIMIT),
+		recentSessions: sessionHistory.slice(0, RECENT_SESSION_LIMIT),
+		sessionHistory,
 	};
 }
 
@@ -144,7 +149,7 @@ export function summarizeComparison(
 	if (difference > 0) {
 		return {
 			state: "lower",
-			label: `saved up to ${formatUsd(difference)}`,
+			label: `up to ${formatUsd(difference)} less`,
 			detail: evidence,
 			comparableRuns: summary.comparedRuns,
 			successfulRuns: summary.finishedRuns,
@@ -159,7 +164,7 @@ export function summarizeComparison(
 	if (difference < 0) {
 		return {
 			state: "higher",
-			label: `cost ${formatUsd(-difference)} extra`,
+			label: `${formatUsd(-difference)} more`,
 			detail: evidence,
 			comparableRuns: summary.comparedRuns,
 			successfulRuns: summary.finishedRuns,
@@ -173,7 +178,7 @@ export function summarizeComparison(
 	}
 	return {
 		state: "same",
-		label: "No difference",
+		label: "About the same",
 		detail: evidence,
 		comparableRuns: summary.comparedRuns,
 		successfulRuns: summary.finishedRuns,
@@ -211,19 +216,48 @@ export function renderAnalyticsDashboard(
 ): string[] {
 	const frameWidth = Math.max(6, width);
 	const innerWidth = frameWidth - 4;
+	let viewContent: string[];
+	let title: string;
+	switch (state.view) {
+		case "help":
+			viewContent = renderHelp(innerWidth, palette);
+			title = "How to read this dashboard";
+			break;
+		case "details":
+			viewContent = renderDetails(model, state, innerWidth, palette);
+			title = "Session details";
+			break;
+		case "history":
+			viewContent = renderHistory(model, state, innerWidth, palette);
+			title = "All logged sessions";
+			break;
+		default:
+			viewContent = renderOverview(model, state, innerWidth, palette);
+			title = "Prewalk usage";
+	}
 	const content =
-		state.view === "help"
-			? renderHelp(model, innerWidth, palette)
-			: state.view === "details"
-				? renderDetails(model, state, innerWidth, palette)
-				: renderOverview(model, state, innerWidth, palette);
-	const title =
-		state.view === "help"
-			? "What these numbers mean"
-			: state.view === "details"
-				? "Session details"
-				: "Prewalk usage";
+		state.view === "overview"
+			? viewContent
+			: [...renderSnapshotStatus(model, state, innerWidth, palette), ...viewContent];
 	return frame(title, content, frameWidth, palette);
+}
+
+function renderSnapshotStatus(
+	model: AnalyticsDashboardModel,
+	state: DashboardRenderState,
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	let text = `Updated ${formatUpdated(model.generatedAt)}`;
+	let tone: DashboardTone = "dim";
+	if (state.refreshError) {
+		text = `Refresh failed: ${state.refreshError}`;
+		tone = "error";
+	} else if (state.refreshing) {
+		text = "Refreshing…";
+		tone = "accent";
+	}
+	return [...wrapTextWithAnsi(text, width).map((line) => palette.color(tone, line)), ""];
 }
 
 export async function showAnalyticsDashboard(
@@ -231,33 +265,53 @@ export async function showAnalyticsDashboard(
 	initialOverview: AnalyticsOverview,
 	refreshOverview: () => Promise<AnalyticsOverview>,
 ): Promise<void> {
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		const dashboard = new AnalyticsDashboardComponent(
+	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+		const dashboard = new AnalyticsDashboardComponent({
 			tui,
+			keybindings,
 			theme,
-			buildAnalyticsDashboardModel(initialOverview),
-			async () => buildAnalyticsDashboardModel(await refreshOverview()),
-			() => done(undefined),
-		);
+			model: buildAnalyticsDashboardModel(initialOverview),
+			load: async () => buildAnalyticsDashboardModel(await refreshOverview()),
+			onClose: () => done(undefined),
+		});
 		dashboard.startAutoRefresh();
 		return dashboard;
 	});
 }
 
+interface AnalyticsDashboardComponentOptions {
+	tui: TUI;
+	theme: Theme;
+	keybindings: DashboardKeybindings;
+	model: AnalyticsDashboardModel;
+	load(): Promise<AnalyticsDashboardModel>;
+	onClose(): void;
+}
+
 class AnalyticsDashboardComponent implements Component {
+	private readonly tui: TUI;
+	private readonly theme: Theme;
+	private readonly keybindings: DashboardKeybindings;
+	private readonly load: () => Promise<AnalyticsDashboardModel>;
+	private readonly onClose: () => void;
 	private model: AnalyticsDashboardModel;
-	private state: DashboardRenderState = { view: "overview", selectedIndex: 0 };
+	private state: DashboardRenderState = {
+		view: "overview",
+		selectedIndex: 0,
+		historySelectedIndex: 0,
+	};
+	private detailsReturnView: "overview" | "history" = "overview";
+	private helpReturnView: "overview" | "history" | "details" = "overview";
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private closed = false;
 
-	constructor(
-		private readonly tui: TUI,
-		private readonly theme: Theme,
-		model: AnalyticsDashboardModel,
-		private readonly load: () => Promise<AnalyticsDashboardModel>,
-		private readonly onClose: () => void,
-	) {
-		this.model = model;
+	constructor(options: AnalyticsDashboardComponentOptions) {
+		this.tui = options.tui;
+		this.theme = options.theme;
+		this.keybindings = options.keybindings;
+		this.model = options.model;
+		this.load = options.load;
+		this.onClose = options.onClose;
 	}
 
 	startAutoRefresh(): void {
@@ -279,8 +333,31 @@ class AnalyticsDashboardComponent implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) {
-			if (this.state.view !== "overview") {
+		if (this.closed) return;
+		if (this.state.view === "help") {
+			if (
+				data === "?" ||
+				this.keybindings.matches(data, "tui.select.cancel") ||
+				this.keybindings.matches(data, "tui.select.confirm")
+			) {
+				this.state = { ...this.state, view: this.helpReturnView };
+				this.tui.requestRender();
+			}
+			return;
+		}
+		if (data === "?") {
+			this.helpReturnView = this.state.view;
+			this.state = { ...this.state, view: "help" };
+			this.tui.requestRender();
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
+			if (this.state.view === "details") {
+				this.state = { ...this.state, view: this.detailsReturnView };
+				this.tui.requestRender();
+				return;
+			}
+			if (this.state.view === "history") {
 				this.state = { ...this.state, view: "overview" };
 				this.tui.requestRender();
 				return;
@@ -288,49 +365,108 @@ class AnalyticsDashboardComponent implements Component {
 			this.close();
 			return;
 		}
-		if (data === "?" || data === "h") {
-			this.state = { ...this.state, view: this.state.view === "help" ? "overview" : "help" };
-			this.tui.requestRender();
-			return;
-		}
 		if (data === "r" || data === "R") {
 			void this.refresh();
 			return;
 		}
-		if (this.state.view !== "overview") return;
-		const rowCount = 1 + this.model.recentSessions.length;
-		if (matchesKey(data, "up")) {
-			this.state = {
-				...this.state,
-				selectedIndex: (this.state.selectedIndex - 1 + rowCount) % rowCount,
-			};
+		if (this.state.view === "overview") {
+			this.handleOverviewInput(data);
+			return;
+		}
+		if (this.state.view === "history") this.handleHistoryInput(data);
+	}
+
+	private handleOverviewInput(data: string): void {
+		const rowCount = overviewRowCount(this.model);
+		if (this.keybindings.matches(data, "tui.select.up")) {
+			this.moveOverviewSelection(-1, true, rowCount);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.down")) {
+			this.moveOverviewSelection(1, true, rowCount);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageUp")) {
+			this.moveOverviewSelection(-HISTORY_PAGE_SIZE, false, rowCount);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageDown")) {
+			this.moveOverviewSelection(HISTORY_PAGE_SIZE, false, rowCount);
+			return;
+		}
+		if (!this.keybindings.matches(data, "tui.select.confirm")) return;
+		if (isSeeMoreSelection(this.model, this.state.selectedIndex)) {
+			this.state = { ...this.state, view: "history" };
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, "down")) {
-			this.state = { ...this.state, selectedIndex: (this.state.selectedIndex + 1) % rowCount };
-			this.tui.requestRender();
+		const session = overviewSessionAt(this.model, this.state.selectedIndex);
+		if (!session) return;
+		this.detailsReturnView = "overview";
+		this.state = { ...this.state, view: "details", selectedSessionId: session.sessionId };
+		this.tui.requestRender();
+	}
+
+	private handleHistoryInput(data: string): void {
+		const rowCount = this.model.sessionHistory.length;
+		if (rowCount === 0) return;
+		if (this.keybindings.matches(data, "tui.select.up")) {
+			this.moveHistorySelection(-1, true, rowCount);
 			return;
 		}
-		if (matchesKey(data, "enter")) {
-			this.state = { ...this.state, view: "details" };
-			this.tui.requestRender();
+		if (this.keybindings.matches(data, "tui.select.down")) {
+			this.moveHistorySelection(1, true, rowCount);
+			return;
 		}
+		if (this.keybindings.matches(data, "tui.select.pageUp")) {
+			this.moveHistorySelection(-HISTORY_PAGE_SIZE, false, rowCount);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageDown")) {
+			this.moveHistorySelection(HISTORY_PAGE_SIZE, false, rowCount);
+			return;
+		}
+		if (!this.keybindings.matches(data, "tui.select.confirm")) return;
+		const selectedIndex = this.state.historySelectedIndex ?? 0;
+		const session = this.model.sessionHistory[selectedIndex];
+		if (!session) return;
+		this.detailsReturnView = "history";
+		this.state = { ...this.state, view: "details", selectedSessionId: session.sessionId };
+		this.tui.requestRender();
+	}
+
+	private moveOverviewSelection(delta: number, wrap: boolean, rowCount: number): void {
+		if (rowCount <= 0) return;
+		const selectedIndex = movedIndex(this.state.selectedIndex, delta, rowCount, wrap);
+		this.state = { ...this.state, selectedIndex };
+		this.tui.requestRender();
+	}
+
+	private moveHistorySelection(delta: number, wrap: boolean, rowCount: number): void {
+		const selectedIndex = movedIndex(this.state.historySelectedIndex ?? 0, delta, rowCount, wrap);
+		this.state = { ...this.state, historySelectedIndex: selectedIndex };
+		this.tui.requestRender();
 	}
 
 	private async refresh(): Promise<void> {
 		if (this.closed || this.state.refreshing) return;
+		const overviewKey = overviewSelectionKey(this.model, this.state.selectedIndex);
+		const historySessionId =
+			this.model.sessionHistory[this.state.historySelectedIndex ?? 0]?.sessionId;
 		this.state = { ...this.state, refreshing: true, refreshError: undefined };
 		this.tui.requestRender();
 		try {
-			this.model = await this.load();
-			const maxIndex = this.model.recentSessions.length;
+			const model = await this.load();
+			if (this.closed) return;
+			this.model = model;
 			this.state = {
 				...this.state,
-				selectedIndex: Math.min(this.state.selectedIndex, maxIndex),
+				selectedIndex: overviewIndexForKey(this.model, overviewKey),
+				historySelectedIndex: historyIndexForSession(this.model, historySessionId),
 				refreshing: false,
 			};
 		} catch (error) {
+			if (this.closed) return;
 			this.state = {
 				...this.state,
 				refreshing: false,
@@ -341,6 +477,7 @@ class AnalyticsDashboardComponent implements Component {
 	}
 
 	private close(): void {
+		if (this.closed) return;
 		this.closed = true;
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
@@ -356,34 +493,38 @@ function renderOverview(
 ): string[] {
 	const lines: string[] = [];
 	const updated = `Updated ${formatUpdated(model.generatedAt)}`;
-	lines.push(
-		joinSides(
-			palette.bold(
-				truncateToWidth(model.current.title, Math.max(10, width - updated.length - 3)),
-			),
-			palette.color(
-				state.refreshing ? "accent" : "dim",
-				state.refreshing ? "Refreshing…" : updated,
-			),
-			width,
-		),
+	const freshness = palette.color(
+		state.refreshing ? "accent" : "dim",
+		state.refreshing ? "Refreshing…" : updated,
 	);
+	if (width < 60) {
+		lines.push(palette.bold(truncateToWidth(model.current.title, width, "…")), freshness);
+	} else {
+		lines.push(
+			joinSides(
+				palette.bold(
+					truncateToWidth(model.current.title, Math.max(10, width - updated.length - 3)),
+				),
+				freshness,
+				width,
+			),
+		);
+	}
 	if (state.refreshError)
 		lines.push(palette.color("error", `Refresh failed: ${state.refreshError}`));
 	lines.push(sectionLabel("Current session", palette));
 	lines.push(...renderCurrent(model, state.selectedIndex === 0, width, palette));
 	lines.push(separator(width, palette));
-	lines.push(sectionLabel("History", palette));
+	lines.push(sectionLabel("Totals over time", palette));
 	lines.push(...renderPeriods(model.periods, width, palette));
 	lines.push(separator(width, palette));
 	lines.push(sectionLabel("Recent sessions", palette));
 	lines.push(...renderRecent(model, state.selectedIndex, width, palette));
 	lines.push(
-		palette.color(
-			"dim",
-			width >= 76
-				? "↑↓ Select   Enter Details   ? What this means   R Refresh   Esc Close"
-				: "↑↓ Select · Enter Details · ? Help · R Refresh · Esc Close",
+		...dashboardFooter(
+			["↑↓ Select", "Enter Open", "? Explain numbers", "R Refresh", "Esc Close"],
+			width,
+			palette,
 		),
 	);
 	return lines;
@@ -396,39 +537,37 @@ function renderCurrent(
 	palette: DashboardPalette,
 ): string[] {
 	const current = model.current;
-	// The headline states the situation; the detail line below already names the
-	// specific reason, so repeating it here reads as a failure rather than a
-	// session that simply has nothing comparable in it yet.
-	const estimate =
+	const difference =
 		current.comparison.state === "unavailable"
 			? palette.color("muted", "Not enough data yet")
 			: colorComparison(current.comparison, palette);
 	const prefix = selected ? palette.color("accent", "›") : " ";
+	const activeLines =
+		current.activeRuns.length === 0
+			? []
+			: [
+					`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
+				];
+	const commonLines = [
+		...activeLines,
+		...comparisonSummaryLines(current.comparison, Math.max(1, width - 2), palette).map(
+			(line) => `  ${line}`,
+		),
+		"  This session only. Use /prewalk stats task to include work it handed to other agents.",
+	];
 	if (width < 76) {
 		return [
 			`${prefix} ${palette.bold(current.title)}`,
-			`  Spent ${palette.bold(formatUsd(current.actualCost))} · ${current.activeRuns.length} running · ${current.finishedRuns} done`,
-			`  Saved by switching: ${estimate}`,
-			...(current.activeRuns.length === 0
-				? []
-				: [
-						`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
-					]),
-			`  ${palette.color("dim", current.comparison.detail)}`,
-			"  This session only. Use /prewalk stats task to include work it handed to other agents.",
+			`  Total paid ${palette.bold(formatUsd(current.actualCost))} · ${current.finishedRuns} finished · ${current.activeRuns.length} active`,
+			`  Estimated cost change: ${difference}`,
+			...commonLines,
 		];
 	}
 	const metricWidth = Math.floor((width - 6) / 3);
 	return [
-		`${prefix} ${cell("SPENT", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("RUNS", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("SAVED BY SWITCHING", metricWidth, "left", (text) => palette.color("dim", text))}`,
-		`  ${cell(formatUsd(current.actualCost), metricWidth, "left", palette.bold)}  ${cell(`${current.finishedRuns} done · ${current.activeRuns.length} running`, metricWidth, "left")}  ${cell(estimate, metricWidth, "left")}`,
-		...(current.activeRuns.length === 0
-			? []
-			: [
-					`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
-				]),
-		`  ${palette.color("dim", current.comparison.detail)}`,
-		"  This session only. Use /prewalk stats task to include work it handed to other agents.",
+		`${prefix} ${cell("TOTAL PAID", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("RUNS", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("ESTIMATED COST CHANGE", metricWidth, "left", (text) => palette.color("dim", text))}`,
+		`  ${cell(formatUsd(current.actualCost), metricWidth, "left", palette.bold)}  ${cell(`${current.finishedRuns} finished · ${current.activeRuns.length} active`, metricWidth, "left")}  ${cell(difference, metricWidth, "left")}`,
+		...commonLines,
 	];
 }
 
@@ -437,36 +576,33 @@ function renderPeriods(
 	width: number,
 	palette: DashboardPalette,
 ): string[] {
-	if (width < 96) {
+	if (width < 110) {
 		return periods.flatMap((item) => [
-			`${palette.bold(item.label)} · ${item.finishedRuns} done · ${item.activeRuns} running · ${formatUsd(item.actualCost)} spent`,
-			`  ${colorComparison(item.comparison, palette)} · ${palette.color("dim", item.comparison.detail)}`,
+			`${palette.bold(item.label)} · ${formatUsd(item.actualCost)} total paid · ${item.finishedRuns} finished · ${item.activeRuns} active`,
+			`  Estimate based on ${coveredLabel(item.comparison)} · ${colorComparison(item.comparison, palette)}`,
 		]);
 	}
 	const periodWidth = 10;
-	const runsWidth = 9;
-	const activeWidth = 7;
+	const runsWidth = 22;
 	const actualWidth = 14;
-	const coveredWidth = 24;
+	const coveredWidth = 25;
 	const differenceWidth = Math.max(
-		22,
-		width - periodWidth - runsWidth - activeWidth - actualWidth - coveredWidth - 14,
+		16,
+		width - periodWidth - runsWidth - actualWidth - coveredWidth - 8,
 	);
 	const header = [
 		cell("PERIOD", periodWidth, "left"),
-		cell("DONE", runsWidth, "right"),
-		cell("RUNNING", activeWidth, "right"),
-		cell("SPENT", actualWidth, "right"),
-		cell("COMPARED", coveredWidth, "right"),
-		cell("SAVED BY SWITCHING", differenceWidth, "right"),
+		cell("RUNS", runsWidth, "right"),
+		cell("TOTAL PAID", actualWidth, "right"),
+		cell("ESTIMATE BASED ON", coveredWidth, "right"),
+		cell("EST. COST CHANGE", differenceWidth, "right"),
 	].join("  ");
 	return [
 		palette.color("dim", header),
 		...periods.map((item) =>
 			[
 				cell(item.label, periodWidth, "left", palette.bold),
-				cell(String(item.finishedRuns), runsWidth, "right"),
-				cell(String(item.activeRuns), activeWidth, "right"),
+				cell(`${item.finishedRuns} finished · ${item.activeRuns} active`, runsWidth, "right"),
 				cell(formatUsd(item.actualCost), actualWidth, "right"),
 				cell(coveredLabel(item.comparison), coveredWidth, "right", (text) =>
 					palette.color("dim", text),
@@ -486,21 +622,36 @@ function renderRecent(
 	palette: DashboardPalette,
 ): string[] {
 	if (model.recentSessions.length === 0) return [palette.color("muted", "No other sessions yet.")];
+	const remaining = model.sessionHistory.length - model.recentSessions.length;
+	const seeMoreSelected = isSeeMoreSelection(model, selectedIndex);
+	const seeMore: string[] = [];
+	if (remaining > 0) {
+		const rawLabel = `See ${remaining} more ${plural(remaining, "session")}`;
+		const label = seeMoreSelected ? palette.color("accent", rawLabel) : rawLabel;
+		const prefix = seeMoreSelected ? palette.color("accent", "›") : " ";
+		seeMore.push(
+			`${prefix} ${label}`,
+			palette.color("dim", "  Open the full history, newest first."),
+		);
+	}
 	if (width < 88) {
-		return model.recentSessions.flatMap((session, index) => {
-			const selected = selectedIndex === index + 1;
-			const prefix = selected ? palette.color("accent", "›") : " ";
-			return [
-				`${prefix} ${selected ? palette.color("accent", session.title) : session.title}`,
-				`  ${colorStatus(session, palette)} · ${formatUsd(session.actualCost)} · ${colorComparison(session.comparison, palette)}`,
-			];
-		});
+		return [
+			...model.recentSessions.flatMap((session, index) => {
+				const selected = selectedIndex === index + 1;
+				const prefix = selected ? palette.color("accent", "›") : " ";
+				return [
+					`${prefix} ${selected ? palette.color("accent", session.title) : session.title}`,
+					`  ${colorStatus(session, palette)} · ${formatUsd(session.actualCost)} total paid · ${colorComparison(session.comparison, palette)}`,
+				];
+			}),
+			...seeMore,
+		];
 	}
 	const titleWidth = Math.max(24, width - 55);
 	const statusWidth = 12;
 	const actualWidth = 13;
 	const estimateWidth = 22;
-	const header = `  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("SPENT", actualWidth, "right")}  ${cell("SAVED BY SWITCHING", estimateWidth, "right")}`;
+	const header = `  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("TOTAL PAID", actualWidth, "right")}  ${cell("EST. COST CHANGE", estimateWidth, "right")}`;
 	// Repeating the same unavailability on every row reads as a broken tool.
 	// Rows stay quiet and one line below the table carries the reason.
 	const uncomparable = model.recentSessions.filter(
@@ -526,7 +677,89 @@ function renderRecent(
 						`  — ${uncomparable.length} of ${model.recentSessions.length} ${plural(model.recentSessions.length, "session")} could not be compared. Select one to see why.`,
 					),
 				]),
+		...seeMore,
 	];
+}
+
+function renderHistory(
+	model: AnalyticsDashboardModel,
+	state: DashboardRenderState,
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	if (model.sessionHistory.length === 0) {
+		return [
+			palette.color("muted", "No earlier sessions have been logged yet."),
+			"",
+			palette.color("dim", "R Refresh · Esc Back"),
+		];
+	}
+	const selectedIndex = Math.min(
+		Math.max(0, state.historySelectedIndex ?? 0),
+		model.sessionHistory.length - 1,
+	);
+	const start = Math.floor(selectedIndex / HISTORY_PAGE_SIZE) * HISTORY_PAGE_SIZE;
+	const end = Math.min(start + HISTORY_PAGE_SIZE, model.sessionHistory.length);
+	const visible = model.sessionHistory.slice(start, end);
+	const range = palette.color(
+		"dim",
+		`${start + 1}–${end} of ${model.sessionHistory.length} · newest first`,
+	);
+	const lines = [
+		...(width < 60
+			? [palette.bold("Session history"), range]
+			: [joinSides(palette.bold("Session history"), range, width)]),
+		...wrapTextWithAnsi("Select a session to see its cost calculation and stable ID.", width).map(
+			(line) => palette.color("dim", line),
+		),
+		"",
+	];
+	if (width < 88) {
+		for (const [offset, session] of visible.entries()) {
+			const selected = selectedIndex === start + offset;
+			lines.push(
+				`${selected ? palette.color("accent", "›") : " "} ${selected ? palette.color("accent", session.title) : session.title}`,
+				`  ${colorStatus(session, palette)} · ${formatUsd(session.actualCost)} total paid · ${colorComparison(session.comparison, palette)}`,
+			);
+		}
+	} else {
+		const titleWidth = Math.max(24, width - 55);
+		const statusWidth = 12;
+		const actualWidth = 13;
+		const differenceWidth = 22;
+		lines.push(
+			palette.color(
+				"dim",
+				`  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("TOTAL PAID", actualWidth, "right")}  ${cell("EST. COST CHANGE", differenceWidth, "right")}`,
+			),
+			...visible.map((session, offset) => {
+				const selected = selectedIndex === start + offset;
+				const prefix = selected ? palette.color("accent", "›") : " ";
+				const title = selected ? palette.color("accent", session.title) : session.title;
+				const difference =
+					session.comparison.state === "unavailable"
+						? palette.color("dim", "—")
+						: colorComparison(session.comparison, palette);
+				return `${prefix} ${cell(title, titleWidth, "left")}  ${cell(colorStatus(session, palette), statusWidth, "left")}  ${cell(formatUsd(session.actualCost), actualWidth, "right")}  ${cell(difference, differenceWidth, "right")}`;
+			}),
+		);
+	}
+	lines.push(
+		"",
+		...dashboardFooter(
+			[
+				"↑↓ Select",
+				"PgUp/PgDn More sessions",
+				"Enter Details",
+				"? Explain",
+				"R Refresh",
+				"Esc Back",
+			],
+			width,
+			palette,
+		),
+	);
+	return lines;
 }
 
 function renderDetails(
@@ -536,89 +769,79 @@ function renderDetails(
 	palette: DashboardPalette,
 ): string[] {
 	const session = selectedSession(model, state.selectedIndex);
-	const comparison = session.comparison;
+	let selected = session;
+	if (state.selectedSessionId === model.current.sessionId) {
+		selected = model.current;
+	} else if (state.selectedSessionId) {
+		selected =
+			model.sessionHistory.find((item) => item.sessionId === state.selectedSessionId) ?? session;
+	}
+	const comparison = selected.comparison;
 	const lines = [
-		palette.bold(session.title),
-		palette.color("dim", session.sessionId),
+		palette.bold(selected.title),
+		palette.color("dim", selected.sessionId),
 		"",
-		`${palette.color("muted", "Status")}              ${colorStatus(session, palette)}`,
-		`${palette.color("muted", "Spent")}               ${palette.bold(formatUsd(session.actualCost))}`,
-		`${palette.color("muted", "Runs")}                ${session.receipts.length} done, ${session.activeRuns.length} running`,
-		`${palette.color("muted", "Saved by switching")}  ${colorComparison(comparison, palette)}`,
-		`${palette.color("muted", "What was compared")}   ${comparison.detail}`,
+		`${palette.color("muted", "Status")}                ${colorStatus(selected, palette)}`,
+		`${palette.color("muted", "Total paid")}            ${palette.bold(formatUsd(selected.actualCost))}`,
+		`${palette.color("muted", "Runs")}                  ${selected.receipts.length} finished, ${selected.activeRuns.length} active`,
+		`${palette.color("muted", "Estimated cost change")}  ${colorComparison(comparison, palette)}`,
+		`${palette.color("muted", "Estimate based on")}     ${coveredLabel(comparison)}`,
+		...wrapTextWithAnsi(comparison.detail, width).map((line) => palette.color("dim", line)),
 	];
 	if (comparison.state !== "unavailable") {
 		lines.push(
 			"",
-			sectionLabel("How that was worked out", palette),
-			`If you had never switched   ${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
-			`What you actually paid      ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
-			`Difference                  ${formatSignedDifference(comparison)}`,
-			palette.color(
-				"dim",
-				"Spent above also counts background calls. This comparison only counts the main ones.",
-			),
+			sectionLabel("How the estimate is calculated", palette),
+			`Estimated cost without switching   ${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
+			`Comparable work actually cost       ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
+			`Estimated cost change               ${formatSignedDifference(comparison)}`,
+			...wrapTextWithAnsi(
+				"Total paid can be higher because it also includes background calls. Only comparable main calls are used in the estimate.",
+				width,
+			).map((line) => palette.color("dim", line)),
+			"",
+			...wrapTextWithAnsi(
+				'Estimate only, not measured savings. Prewalk did not run a second control task. "Up to" is the most the recorded token mix suggests you may have saved; the real amount may be smaller.',
+				width,
+			).map((line) => palette.color("warning", line)),
 		);
 	}
 	lines.push(
 		"",
-		palette.color(
-			"warning",
-			"Nothing was run twice. We took the work the second model did and priced it as if the first",
-		),
-		palette.color(
-			"warning",
-			"model had done it, so treat this as a ceiling rather than a measurement.",
-		),
-		"",
-		palette.color(
-			"dim",
-			width >= 65 ? "? What this means   R Refresh   Esc Back" : "? Help · R Refresh · Esc Back",
-		),
+		...dashboardFooter(["? Explain numbers", "R Refresh", "Esc Back"], width, palette),
 	);
 	return lines;
 }
 
-function renderHelp(
-	model: AnalyticsDashboardModel,
-	_width: number,
-	palette: DashboardPalette,
-): string[] {
-	return [
-		palette.bold("What these numbers mean"),
-		"",
-		palette.color("accent", "What this tool does"),
-		"It starts a task on one model, then switches to a cheaper one to finish the work.",
-		"These numbers ask a single question: did switching actually cost you less?",
-		"",
-		palette.color("accent", "Spent"),
-		"What you actually paid, from the provider's own numbers. Every run counts here,",
-		"including ones that never switched and ones we could not compare.",
-		"",
-		palette.color("accent", "Saved by switching"),
-		"How much less you paid than if one model had done the whole task.",
-		"We take the work the cheaper model did and price it at the first model's rates.",
-		"A negative number means switching cost you more.",
-		"",
-		palette.color("accent", "Compared"),
-		"How much of your spending the savings number is actually based on.",
-		"Some runs cannot be compared, so this is usually smaller than Spent.",
-		"Judge the savings against this figure, not against everything you spent.",
-		"",
-		palette.color("accent", "Why a run might not be compared"),
-		"It never switched models, it stopped early, or we have no price data for it.",
-		"Those runs still cost real money, so they stay in Spent.",
-		"",
-		palette.color(
-			"warning",
-			"Nothing was ever run twice, so this is a ceiling, not a measurement. A cheaper model",
-		),
-		palette.color(
-			"warning",
-			"often needs more turns, and every extra turn gets priced at the pricier rate.",
-		),
-		palette.color("dim", `Snapshot ${formatUpdated(model.generatedAt)} · R Refresh · Esc Back`),
-	];
+function renderHelp(width: number, palette: DashboardPalette): string[] {
+	const lines: string[] = [palette.bold("Start with these three cost numbers"), ""];
+	const addSection = (title: string, text: string, tone: DashboardTone = "accent") => {
+		lines.push(palette.color(tone, title));
+		lines.push(...wrapTextWithAnsi(text, width), "");
+	};
+	addSection(
+		"1. Total paid",
+		"The provider-reported cost of every recorded call, including background calls and runs that could not be estimated.",
+	);
+	addSection(
+		"2. Estimate based on",
+		"The part of finished spending with enough model-switch and price data to estimate. This can be smaller than Total paid.",
+	);
+	addSection(
+		"3. Estimated cost change",
+		'Estimated cost without switching minus what the comparable work actually cost. "Up to $X less" is the most the recorded token mix suggests you may have saved. "$X more" means switching was estimated to cost more.',
+	);
+	addSection(
+		'Why it says "up to"',
+		"Prewalk did not run the task twice. It kept the recorded work and repriced it at the first model's rates. The first model might have used a different number of turns or tokens, so this is not measured savings.",
+		"warning",
+	);
+	addSection(
+		"Why an estimate may be missing",
+		"The run never switched models, stopped before enough evidence was recorded, or had no usable price data. Its real cost still remains in Total paid.",
+	);
+	lines.push(...dashboardFooter(["R Refresh", "Esc / Enter / ? Back"], width, palette));
+	return lines;
 }
 
 function frame(
@@ -724,21 +947,16 @@ function unavailableDetail(
 }
 
 /**
- * Shows the recorded spend the estimate is built from. Without it a small
- * difference beside a large recorded total reads as a poor result rather than
- * as narrow coverage.
- */
-/**
  * Compact difference for the period table, where the full sentence cannot fit
  * and gets truncated into meaninglessness.
  */
 function compactDifference(comparison: DashboardComparison): string {
 	if (comparison.state === "unavailable") return "no comparison";
-	if (comparison.state === "same") return "no difference";
+	if (comparison.state === "same") return "about the same";
 	const amount = formatUsd(Math.abs(comparison.difference ?? 0));
 	const share =
 		comparison.percentage === undefined ? "" : ` (${comparison.percentage.toFixed(0)}%)`;
-	return comparison.state === "higher" ? `${amount} extra${share}` : `up to ${amount}${share}`;
+	return comparison.state === "higher" ? `${amount} more${share}` : `up to ${amount} less${share}`;
 }
 
 function coveredLabel(comparison: DashboardComparison): string {
@@ -783,6 +1001,75 @@ function unavailableReasonLabel(reason: string): string {
 	if (reason === "analytics-disabled") return "recorded while tracking was off";
 	if (reason === "unfinished-run") return "still running";
 	return "stopped early";
+}
+
+function comparisonSummaryLines(
+	comparison: DashboardComparison,
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	if (comparison.state === "unavailable") {
+		return wrapTextWithAnsi(comparison.detail, width).map((line) => palette.color("dim", line));
+	}
+	const equation = `${formatUsd(comparison.plannerOnlyEstimate ?? 0)} estimated without switching − ${formatUsd(comparison.actualPrimaryCost ?? 0)} comparable paid = ${comparison.label}.`;
+	const basis = `Estimate based on ${coveredLabel(comparison)}. ${comparison.detail}`;
+	return [
+		...wrapTextWithAnsi(equation, width),
+		...wrapTextWithAnsi(basis, width).map((line) => palette.color("dim", line)),
+	];
+}
+
+function hasMoreSessions(model: AnalyticsDashboardModel): boolean {
+	return model.sessionHistory.length > model.recentSessions.length;
+}
+
+function overviewRowCount(model: AnalyticsDashboardModel): number {
+	return 1 + model.recentSessions.length + (hasMoreSessions(model) ? 1 : 0);
+}
+
+function isSeeMoreSelection(model: AnalyticsDashboardModel, selectedIndex: number): boolean {
+	return hasMoreSessions(model) && selectedIndex === model.recentSessions.length + 1;
+}
+
+function overviewSessionAt(
+	model: AnalyticsDashboardModel,
+	selectedIndex: number,
+): DashboardSession | undefined {
+	if (selectedIndex === 0) return model.current;
+	return model.recentSessions[selectedIndex - 1];
+}
+
+function overviewSelectionKey(model: AnalyticsDashboardModel, selectedIndex: number): string {
+	if (selectedIndex === 0) return `current:${model.current.sessionId}`;
+	if (isSeeMoreSelection(model, selectedIndex)) return "see-more";
+	const session = model.recentSessions[selectedIndex - 1];
+	return session ? `session:${session.sessionId}` : `current:${model.current.sessionId}`;
+}
+
+function overviewIndexForKey(model: AnalyticsDashboardModel, key: string): number {
+	if (key === "see-more" && hasMoreSessions(model)) return model.recentSessions.length + 1;
+	if (key.startsWith("session:")) {
+		const sessionId = key.slice("session:".length);
+		const index = model.recentSessions.findIndex((session) => session.sessionId === sessionId);
+		if (index >= 0) return index + 1;
+		if (hasMoreSessions(model)) return model.recentSessions.length + 1;
+	}
+	return 0;
+}
+
+function historyIndexForSession(
+	model: AnalyticsDashboardModel,
+	sessionId: string | undefined,
+): number {
+	if (!sessionId) return 0;
+	const index = model.sessionHistory.findIndex((session) => session.sessionId === sessionId);
+	return Math.max(0, index);
+}
+
+function movedIndex(current: number, delta: number, count: number, wrap: boolean): number {
+	if (count <= 0) return 0;
+	if (wrap) return (((current + delta) % count) + count) % count;
+	return Math.min(count - 1, Math.max(0, current + delta));
 }
 
 function selectedSession(model: AnalyticsDashboardModel, selectedIndex: number): DashboardSession {
@@ -837,9 +1124,9 @@ function formatSignedDifference(comparison: DashboardComparison): string {
 	if (comparison.difference === undefined) return "Unavailable";
 	const amount = comparison.difference;
 	const percent = comparison.percentage?.toFixed(1) ?? "0.0";
-	if (amount > 0) return `saved up to ${formatUsd(amount)} (${percent}%)`;
-	if (amount < 0) return `cost ${formatUsd(-amount)} extra (${percent}%)`;
-	return "No cost difference (0.0%)";
+	if (amount > 0) return `up to ${formatUsd(amount)} less (${percent}%)`;
+	if (amount < 0) return `${formatUsd(-amount)} more (${percent}%)`;
+	return "About the same (0.0%)";
 }
 
 function formatUsd(value: number): string {
@@ -866,6 +1153,27 @@ function sectionLabel(label: string, palette: DashboardPalette): string {
 
 function separator(width: number, palette: DashboardPalette): string {
 	return palette.color("dim", "─".repeat(Math.max(1, width)));
+}
+
+function dashboardFooter(
+	actions: readonly string[],
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	const separatorText = " · ";
+	const lines: string[] = [];
+	let current = "";
+	for (const action of actions) {
+		const candidate = current ? `${current}${separatorText}${action}` : action;
+		if (visibleWidth(candidate) <= width) {
+			current = candidate;
+			continue;
+		}
+		if (current) lines.push(current);
+		current = truncateToWidth(action, width, "…");
+	}
+	if (current) lines.push(current);
+	return lines.map((line) => palette.color("dim", line));
 }
 
 function joinSides(left: string, right: string, width: number): string {

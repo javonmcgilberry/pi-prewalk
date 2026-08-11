@@ -388,14 +388,16 @@ allowlisted metadata. Generated session summaries are not stored in Prewalk
 analytics.
 
 In TUI mode, `/prewalk stats` opens an interactive dashboard with the exact
-current Pi session first, followed by this week, this month, all time, and
-recent sessions. Use the arrow keys, Enter, `?`, `R`, and Escape to navigate it.
-The dashboard uses session titles first and keeps stable IDs in details. It
-does not fold delegated child sessions into the current-session section; use
-`/prewalk stats task` for the whole task tree. Active runs show recorded spend
-only. Finished runs compare planner + executor call cost with the price of the
-same recorded tokens at planner rates. A planning-only run is shown as a run
-that finished before handoff, not as missing usage.
+current Pi session first, followed by this week, this month, all time, and four
+recent sessions. When older sessions exist, `See N more sessions` opens the
+full newest-first history. Use the arrow keys to select, Page Up and Page Down
+to move through longer history, Enter to open, `?` to explain the numbers, `R`
+to refresh, and Escape to go back or close. The dashboard uses session titles
+first and keeps stable IDs in details. It does not fold delegated child
+sessions into the current-session section; use `/prewalk stats task` for the
+whole task tree. Active runs show provider-recorded cost only. A planning-only
+run is shown as a run that finished before switching models, not as missing
+usage.
 
 Analytics are enabled by default and stay under
 `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`. Prewalk stores
@@ -404,20 +406,22 @@ outcomes, and timestamps. It does not store prompts, responses, code, tool
 inputs or outputs, credentials, provider payloads, raw errors, or filesystem
 paths.
 
-Recorded spend is provider-reported cost captured for the run. It can include
-planner, executor, helper, and compaction calls. An estimated difference is a
-price-based comparison: the planner-only estimate for the recorded primary
-tokens minus Prewalk's planner and executor primary-call cost. It is not a
-separate planner-only run, a billing statement, or a measured benchmark.
+`Total paid` is provider-reported cost captured for the run. It can include
+planner, executor, helper, and compaction calls. `Estimate based on` names the
+part of finished spending with enough evidence for a comparison. The details
+screen then shows one equation: estimated cost without switching minus what
+the comparable work actually cost equals the estimated cost change. It is not
+a separate planner-only run, a billing statement, or measured savings.
 Missing pricing or usage is named directly; Prewalk does not invent a rate.
 
-Recorded spend and the estimated difference cover different runs, so dividing
-one by the other understates the result. Recorded spend counts every run;
-the difference covers only comparable ones. Each comparison reports the spend
-it covers, and that is the figure to read the difference against.
+Total paid and the estimated cost change can cover different runs, so dividing
+one by the other understates the result. Total paid counts every run; the
+difference covers only comparable ones. Each comparison says exactly how much
+finished spending the estimate is based on.
 
-The difference is shown as `up to` because it is an upper bound. It assumes the
-planner would have used the same tokens the executor did, while a cheaper
+The change is shown as `up to` because it is an estimate. This is the most the
+recorded token mix suggests you may have saved, not a measured amount. The math
+assumes the planner would have used the same tokens the executor did. A cheaper
 executor often needs more turns, each repriced at planner rates. Only an
 accepted benchmark report, labelled `verified`, measures the difference.
 

@@ -40,7 +40,7 @@ function helpText(): string {
 		"Prewalk quick guide",
 		"",
 		"/prewalk status  Show the current planner, executor, gate, route, and failure reason.",
-		"/prewalk stats  Open the current-session dashboard; press ? for cost explanations.",
+		"/prewalk stats  Open usage, cost estimates, and the full logged-session history.",
 		"/prewalk stats --successful  Show successful receipts only.",
 		"/prewalk stats receipt <run-id>  Show one receipt's evidence and calculation.",
 		"/prewalk stats task  Show root and delegated task-tree analytics.",
