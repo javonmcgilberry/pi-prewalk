@@ -358,9 +358,37 @@ setup. A child must load this extension explicitly through its upstream
 `extensions` or `subagentOnlyExtensions` configuration. Each child agent is
 then opted in separately under `children.agents`; a boolean `true` uses the
 main executor, `false` leaves that child alone, and an object selects a custom
-executor. The default `worker` entry is off. Review and planning children stay
-off unless you explicitly turn them on, and descendants do not inherit a
-parent target.
+executor. The standard built-in roles are off by default. Review and planning
+children stay off unless you explicitly turn them on, and descendants do not
+inherit a parent target.
+
+Prewalk starts with the standard pi-subagents built-in role names ready to
+configure, all off by default. If pi-subagents is installed, those names are
+available immediately; otherwise the entries stay inert until another
+launcher supplies matching children:
+
+| Agent | Use it when you want... |
+| --- | --- |
+| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks. |
+| `researcher` | Web/docs research with sources and a concise research brief. |
+| `worker` | Implementation work. Edits files, validates, escalates unapproved decisions instead of guessing. |
+| `reviewer` | Code review and small fixes against the task/plan, tests, edge cases, and simplicity. |
+| `oracle` | A second opinion before acting that challenges assumptions without editing. |
+| `delegate` | A lightweight general delegate that behaves close to the parent session. |
+
+Use `scout` before you understand the code, `researcher` before you trust
+external facts, `worker` to implement, `reviewer` to check, and `oracle` when
+the decision itself feels risky. These are launcher-owned roles; Prewalk only
+stores the policy for each name.
+
+Prewalk does not discover, define, or launch child agents. The keys under
+`children.agents` are a manually maintained allowlist of exact runtime names
+owned by the child launcher. With pi-subagents, install the recommended
+launcher with `pi install npm:pi-subagents`, then enter the agent's exact
+frontmatter `name` in `/prewalk configure`. Without a child launcher, these
+entries are harmless policy records and remain off; Prewalk itself still works
+normally in the parent session. Prewalk intentionally does not scan another
+extension's agent files or duplicate its discovery rules.
 
 ```json
 {

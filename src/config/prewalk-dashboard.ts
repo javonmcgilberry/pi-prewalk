@@ -16,6 +16,7 @@ import {
 	REASONING_LEVELS,
 } from "../orchestration/coordinator.js";
 import {
+	childAgentDescription,
 	childAgentNames,
 	childPolicyFor,
 	childPolicyLabel,
@@ -127,10 +128,11 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 			lines.push(...this.modelPicker.render(contentWidth));
 		} else if (this.screen === "add-agent" && this.agentInput) {
 			lines.push(
-				this.theme.fg("muted", "Use the exact name from the pi-subagents agent file:"),
+				this.theme.fg("muted", "Use the exact runtime name supplied by the child launcher:"),
+				this.theme.fg("muted", "For pi-subagents, use the name from its agent file."),
 				...this.agentInput.render(contentWidth),
 				"",
-				this.theme.fg("muted", "Type a name · Enter add · Esc back"),
+				this.theme.fg("muted", "Type a runtime name · Enter add · Esc back"),
 			);
 		} else if (this.screen === "help") {
 			lines.push(...this.renderHelp(contentWidth));
@@ -250,9 +252,9 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 			case "main":
 				return "The planner stays unchanged. These settings apply after the handoff.";
 			case "children":
-				return "Each child is independent and off until you enable it.";
+				return "Child names come from the launcher. Each policy is independent and off until enabled.";
 			case "child-agent":
-				return "Choose whether this agent stays unchanged, uses the main executor, or gets its own.";
+				return "Choose whether this configured child receives Prewalk and which executor it uses.";
 			case "analytics":
 				return "Usage records stay local and do not change model routing.";
 			case "model":
@@ -260,7 +262,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 			case "reasoning":
 				return "Choose how much reasoning effort the executor may use.";
 			case "add-agent":
-				return "Adding an agent creates an off-by-default entry.";
+				return "Add the exact runtime name supplied by your child-agent launcher.";
 			case "save-confirm":
 				return "Review the draft below before writing prewalk.json.";
 			case "discard-confirm":
@@ -318,7 +320,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 						label: "Child agents",
 						value: this.childSummary(),
 						description:
-							"Opt in individual pi-subagents without changing their parent or siblings.",
+							"Opt in named child sessions without defining or launching them. The launcher remains in control of each child.",
 					},
 					{
 						label: "Usage records",
@@ -362,11 +364,12 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 					...childAgentNames(this.draft).map((agent) => ({
 						label: agent,
 						value: childPolicyLabel(childPolicyFor(this.draft, agent), this.draft.executor),
-						description: "Open this agent’s independent Prewalk policy.",
+						description: childAgentDescription(agent),
 					})),
 					{
 						label: "Add child agent",
-						description: "Add another pi-subagents agent name. New entries start off.",
+						description:
+							"Add another exact runtime name from the child launcher. New entries start off.",
 					},
 					{ label: "Back to overview" },
 				];
@@ -399,7 +402,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 						label: "Turn off",
 						value: policy === false ? "✓ current" : undefined,
 						description:
-							"Leave this child’s model and tools exactly as pi-subagents supplied them.",
+							"Leave this child’s model and tools exactly as the launcher supplied them.",
 					},
 					{ label: "Back to child agents" },
 				);
@@ -473,7 +476,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 			"Every change stays in a draft until you choose Review and save, then Save changes.",
 			"Use ↑ and ↓ inside a list. Enter opens or changes the selected row. Escape moves back one level. Escape from the overview closes the menu; if the draft changed, Prewalk asks before discarding it.",
 			"Model screens work like Pi’s model picker: start typing to fuzzy-filter by provider, model name, or ID. Use Page Up and Page Down for longer result sets.",
-			"Child policies are independent. Off leaves the child alone, Use main executor follows the main handoff target, and Use custom executor stores a target for that agent only.",
+			"Child policies are independent. Enter the exact runtime name supplied by your launcher; Prewalk does not discover, define, or launch children. Off leaves the child alone, Use main executor follows the main handoff target, and Use custom executor stores a target for that child only.",
 			"No printable letter is an exit shortcut, so typing in search or name fields cannot accidentally close configuration.",
 		];
 		const lines: string[] = [];
@@ -698,7 +701,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 		) {
 			const name = this.agentInput?.getValue().trim() ?? "";
 			if (!name) {
-				this.message = { tone: "error", text: "Enter a child agent name first." };
+				this.message = { tone: "error", text: "Enter a child launcher name first." };
 				this.requestRender();
 				return;
 			}

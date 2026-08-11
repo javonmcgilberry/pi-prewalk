@@ -20,7 +20,12 @@
   },
   "children": {
     "agents": {
-      "worker": false
+      "scout": false,
+      "researcher": false,
+      "worker": false,
+      "reviewer": false,
+      "oracle": false,
+      "delegate": false
     }
   }
 }

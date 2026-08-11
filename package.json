@@ -29,6 +29,7 @@
     "docs/prewalk-vs-omp.md",
     "docs/architecture/host-event-correlation.md",
     "docs/architecture/repository-structure.md",
+    "docs/architecture/pi-subagents-catalog-request.md",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

@@ -3,6 +3,12 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_ANALYTICS_CONFIG } from "../../src/analytics/index.js";
+import {
+	childAgentDescription,
+	childAgentNames,
+	childPolicyFor,
+	withChildPolicy,
+} from "../../src/config/child-policy.js";
 import { PrewalkModelPicker } from "../../src/config/model-picker.js";
 import {
 	PrewalkConfigureComponent,
@@ -161,6 +167,29 @@ describe("Prewalk model picker", () => {
 });
 
 describe("Prewalk configuration menu", () => {
+	it("shows the standard pi-subagents roles off by default and keeps custom names", () => {
+		const config = initialConfig();
+		expect(childAgentNames(config)).toEqual([
+			"scout",
+			"researcher",
+			"worker",
+			"reviewer",
+			"oracle",
+			"delegate",
+		]);
+		expect(childAgentNames(withChildPolicy(config, "qa-agent", false))).toEqual([
+			"scout",
+			"researcher",
+			"worker",
+			"reviewer",
+			"oracle",
+			"delegate",
+			"qa-agent",
+		]);
+		expect(childPolicyFor(config, "scout")).toBe(false);
+		expect(childAgentDescription("oracle")).toContain("without editing");
+	});
+
 	it("persists the automatic startup opt-in from the overview", async () => {
 		const saved: PrewalkConfig[] = [];
 		const { instance, done } = component({
@@ -251,7 +280,11 @@ describe("Prewalk configuration menu", () => {
 	it("allows printable input in add-agent mode and keeps help recoverable", () => {
 		const { instance, done } = component();
 
-		press(instance, "?", ESCAPE, DOWN, ENTER, DOWN, ENTER);
+		press(instance, "?", ESCAPE, DOWN, ENTER, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, ENTER);
+		const addScreen = instance.render(100).join("\n");
+		expect(addScreen).toContain("exact runtime name supplied by the child launcher");
+		expect(addScreen).toContain("For pi-subagents, use the name from its agent file.");
+		expect(addScreen).not.toContain("Use the exact name from the pi-subagents agent file:");
 		for (const character of "qa-agent") instance.handleInput(character);
 		press(instance, ENTER, ESCAPE);
 
