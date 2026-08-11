@@ -249,6 +249,14 @@ function executorContextPressureMessage(executor: Model<Api>): AssistantMessage 
 	};
 }
 
+function executorCompactionPendingMessage(executor: Model<Api>): AssistantMessage {
+	return {
+		...failedAssistantMessage(executor),
+		stopReason: "stop",
+		errorMessage: undefined,
+	};
+}
+
 function contextPressureStream(
 	executor: Model<Api>,
 	onPressure: () => void | Promise<void>,
@@ -261,9 +269,9 @@ function contextPressureStream(
 			stream.end(abortedAssistantMessage(executor));
 			return;
 		}
-		const error = executorContextPressureMessage(executor);
-		stream.push({ type: "start", partial: error });
-		stream.push({ type: "error", reason: "error", error });
+		const message = executorCompactionPendingMessage(executor);
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "done", reason: "stop", message });
 		stream.end();
 	})();
 	return stream;

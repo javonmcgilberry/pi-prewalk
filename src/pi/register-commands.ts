@@ -397,6 +397,13 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 					ctx.ui.notify("Prewalk is already active.", "error");
 					return;
 				}
+				if (!ctx.isIdle()) {
+					ctx.ui.notify(
+						"Prewalk cannot start during an active agent turn. Wait for it to finish, then run /prewalk run again.",
+						"error",
+					);
+					return;
+				}
 				await deps.startManual(ctx);
 				return;
 			}

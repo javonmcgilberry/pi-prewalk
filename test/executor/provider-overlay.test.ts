@@ -457,8 +457,9 @@ describe("provider overlay", () => {
 		expect(fixture.delegatedModels).toEqual([]);
 		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
 		expect(fixture.state.onExecutorStreamFailed).not.toHaveBeenCalled();
-		expect(result?.stopReason).toBe("error");
-		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		expect(result?.stopReason).toBe("stop");
+		expect(result?.errorMessage).toBeUndefined();
+		expect(result?.content).toEqual([]);
 	});
 
 	it("uses the host's effective reserve for executor preflight", async () => {
@@ -477,7 +478,8 @@ describe("provider overlay", () => {
 
 		expect(fixture.delegatedModels).toEqual([]);
 		expect(fixture.state.onExecutorContextPressure).toHaveBeenCalledWith("run-1", true);
-		expect(result?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		expect(result?.stopReason).toBe("stop");
+		expect(result?.errorMessage).toBeUndefined();
 	});
 
 	it("turns a provider-reported executor overflow into a compaction request", async () => {

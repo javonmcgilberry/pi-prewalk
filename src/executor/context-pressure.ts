@@ -124,6 +124,10 @@ export class ContextPressureController {
 		this.#pressure = { ...identity, retry };
 	}
 
+	hasRetryPressure(run: PrewalkRun): boolean {
+		return sameIdentity(this.#pressure, run) && this.#pressure?.retry === true;
+	}
+
 	takePendingFailure(run: PrewalkRun): boolean {
 		if (!sameIdentity(this.#pendingFailure, run)) return false;
 		this.#pendingFailure = undefined;

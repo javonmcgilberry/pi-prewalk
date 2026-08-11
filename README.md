@@ -127,12 +127,14 @@ the planner selected, so Prewalk adds a request-time watchdog using Pi's
 effective `compaction.reserveTokens` setting (16,384 when it is not configured).
 It prevents an oversized executor request from reaching the provider, triggers
 Pi's public compaction API after the agent settles, and retries the hidden
-executor checklist once when the blocked or failed request needs a replay. If
-Pi's own compaction already handled the turn, Prewalk reuses that result instead
-of starting a second compaction. When automatic compaction is disabled, Prewalk
-fails closed rather than issuing an oversized request. A completed over-window
-response is compacted without duplicating its answer; if the executor is still
-oversized after that retry, Prewalk fails safely instead of looping. The
+executor checklist once when the blocked or failed request needs a replay. A
+preflight pause stays hidden while compaction runs; it is not reported as an
+executor error. If Pi's own compaction already handled the turn, Prewalk reuses
+that result instead of starting a second compaction. When automatic compaction
+is disabled, Prewalk fails closed rather than issuing an oversized request. A
+completed over-window response is compacted without duplicating its answer; if
+the executor is still oversized after that retry, Prewalk fails safely instead
+of looping. The
 [plain-language Prewalk and OMP guide](docs/prewalk-vs-omp.md) explains what
 this means in practice and which limits remain. The source-level [OMP behavior
 matrix](https://github.com/javonmcgilberry/pi-prewalk/blob/main/docs/research/2026-08-07-omp-behavior-matrix.md)
@@ -222,7 +224,7 @@ never stores or changes the planner.
 
 | Command | What it does |
 | --- | --- |
-| `/prewalk run` | Start a manual run |
+| `/prewalk run` | Start a manual run while Pi is idle |
 | `/prewalk auto` | Enable conservative automatic admission for this session |
 | `/prewalk status` | Show the current planner, executor, gate, route, and failure |
 | `/prewalk configure` | Open the settings menu for the executor, child agents, and analytics |
@@ -236,7 +238,7 @@ never stores or changes the planner.
 Manual mode is the simplest place to start:
 
 1. Select the planner in Pi.
-2. Run `/prewalk run`.
+2. Wait for any active agent turn to finish, then run `/prewalk run`.
 3. Let the planner inspect the repo, create the todo list, and begin the change.
 4. Check `/prewalk status` if you want to see which model owns the next turn.
 

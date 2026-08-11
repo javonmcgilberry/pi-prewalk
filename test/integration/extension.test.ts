@@ -114,6 +114,7 @@ function createHarness(
 		unresolvableModelIds?: string[];
 		/** Model ids for which the registry reports no configured credentials. */
 		unauthorizedModelIds?: string[];
+		idle?: boolean;
 	} = {},
 ) {
 	const handlers = new Map<string, Handler[]>();
@@ -144,6 +145,7 @@ function createHarness(
 	let contextUsage:
 		| { tokens: number | null; contextWindow: number; percent: number | null }
 		| undefined;
+	let idle = options.idle ?? true;
 	const activeToolUpdates: string[][] = [];
 	let activeTools = options.activeTools ?? [PREWALK_TODO_TOOL_NAME, "edit", "write", "bash"];
 	let terminalInputHandler:
@@ -275,6 +277,7 @@ function createHarness(
 			confirm: vi.fn(),
 		},
 		getContextUsage: () => contextUsage,
+		isIdle: () => idle,
 		isProjectTrusted: () => true,
 		compact: (options: {
 			onComplete?: (result: unknown) => void;
@@ -318,6 +321,9 @@ function createHarness(
 		compactionCalls,
 		setContextUsage: (value: typeof contextUsage) => {
 			contextUsage = value;
+		},
+		setIdle: (value: boolean) => {
+			idle = value;
 		},
 		completeCompaction: (result: unknown = {}) => {
 			compactionCalls.at(-1)?.onComplete?.(result);
@@ -595,6 +601,38 @@ describe("Prewalk extension harness", () => {
 		expect(harness.handlers.has("context")).toBe(true);
 		expect(harness.handlers.has("session_before_compact")).toBe(true);
 		expect("setModel" in harness.pi).toBe(false);
+	});
+
+	it("refuses to arm manual Prewalk during an active agent turn", async () => {
+		const harness = createHarness({ idle: false });
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.entries).toEqual([]);
+		expect(harness.messages).toEqual([]);
+		expect(harness.notifications.at(-1)).toBe(
+			"Prewalk cannot start during an active agent turn. Wait for it to finish, then run /prewalk run again.",
+		);
+
+		harness.setIdle(true);
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("before_agent_start", { type: "before_agent_start" });
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "fresh-todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			args: { op: "init", list: [{ phase: "Work", items: ["Continue"] }] },
+		});
+
+		await expect(
+			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("fresh-todo", {
+				op: "init",
+				list: [{ phase: "Work", items: ["Continue"] }],
+			}),
+		).resolves.toMatchObject({ content: [{ type: "text" }] });
 	});
 
 	it("starts manual, then preserves automatic mode only across a same-session reload", async () => {
@@ -4505,16 +4543,18 @@ describe("Prewalk extension harness", () => {
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		};
-		const errorMessage = await harness
+		const pressureMessage = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized as never)
 			.result();
 
-		expect(errorMessage?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		expect(pressureMessage?.stopReason).toBe("stop");
+		expect(pressureMessage?.errorMessage).toBeUndefined();
+		expect(pressureMessage?.content).toEqual([]);
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 2,
-			message: errorMessage,
+			message: pressureMessage,
 			toolResults: [],
 		});
 		await harness.emit("agent_settled", { type: "agent_settled" });
@@ -4595,18 +4635,19 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		const errorMessage = await harness
+		const pressureMessage = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(1_100_000), timestamp: 1 }],
 			} as never)
 			.result();
 
-		expect(errorMessage?.errorMessage).toBe("Prewalk executor context requires compaction.");
+		expect(pressureMessage?.stopReason).toBe("stop");
+		expect(pressureMessage?.errorMessage).toBeUndefined();
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 2,
-			message: errorMessage,
+			message: pressureMessage,
 			toolResults: [],
 		});
 		await harness.emit("agent_settled", { type: "agent_settled" });

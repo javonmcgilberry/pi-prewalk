@@ -1545,7 +1545,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			}
 		}
 		const currentRun = application.run;
-		if (sameRunIdentity(identityOf(run), currentRun) && event.message.role === "assistant") {
+		if (
+			sameRunIdentity(identityOf(run), currentRun) &&
+			event.message.role === "assistant" &&
+			!contextPressure.hasRetryPressure(run)
+		) {
 			const executor =
 				currentRun &&
 				ctx.modelRegistry.find(
