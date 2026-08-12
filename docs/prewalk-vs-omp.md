@@ -78,11 +78,10 @@ A normal manual run works like this.
    the same for only the current session. Prewalk still limits automatic runs
    to larger implementation requests.
 3. **The planner gets a planning instruction.** In the normal top-level flow,
-   it must use Prewalk's namespaced `prewalk_todo` checklist when that tool is
-   active before handoff is possible. An independently configured implementation
-   child whose tool list has no active todo tool may skip this gate, but it still
-   needs positive mutation evidence. Prewalk does not consume another
-   extension's todo list.
+   it must use Prewalk's namespaced `prewalk_todo` checklist before handoff is
+   possible. An independently configured mutation-capable child receives the
+   same namespaced tool in its own session and must open its own local gate;
+   Prewalk does not consume another extension's todo list.
 4. **The planner makes a real change.** A successful `edit`, `write`, direct
    or shell `apply_patch` can provide the positive evidence Prewalk needs. A
    narrowly configured integration can recognize a successful patch result too.
@@ -187,10 +186,33 @@ important rows below in user-facing language.
 Child-local Prewalk remains off by default. An independently configured child is
 enabled with `children.agents.worker: true`, or with an object containing a
 custom executor. `false` keeps that agent on its own model and tool slate. An
-implementation child whose tool list has no active todo tool may hand off after
-positively proven mutation. The parent does not supply that child configuration
-or inherit its route policy. The older `experimentalChild` object is accepted
-and normalized, but new configuration uses the simpler per-agent shape.
+implementation child receives its own `prewalk_todo` tool and must open that
+local gate before positively proven mutation can hand off the child. The parent
+does not supply that child configuration or inherit its route policy. The older
+`experimentalChild` object is accepted and normalized, but new configuration
+uses the simpler per-agent shape.
+
+Each opted-in child owns an independent Prewalk trajectory: its run identity,
+checklist, mutation evidence, and executor route are local to that child
+session. A child result or edit cannot satisfy the parent's first-mutation
+gate, and the parent's checklist cannot satisfy the child. The executor object
+still changes routing only; it does not grant tools or permissions. `worker`
+and deliberate `delegate` opt-ins are the ordinary implementation choices,
+while `scout`, `researcher`, `reviewer`, and `oracle` are commonly report or
+advice roles even when their launcher slate happens to include write tools.
+
+This isolation is about policy, not filesystem locking. Foreground child calls
+usually serialize the parent, but background children can write concurrently
+with the parent or another child. The launcher must provide separate worktrees
+or the agents must coordinate ownership before they share a checkout; Prewalk
+does not schedule or serialize those writes.
+
+This child gate is an intentional hardening at the integration boundary. OMP's
+lower-level restricted-tool behavior can leave a missing todo tool as an open
+gate, but a standalone extension cannot assume that a launcher-supplied child
+slate represents a safe implementation role. Adding Prewalk's own namespaced
+tool keeps the checklist contract explicit without scanning pi-subagents,
+changing its permissions, or copying its discovery rules.
 
 ### Extras and deliberate differences
 
@@ -260,12 +282,10 @@ matrix keeps the stock-Pi limits visible instead of hiding them.
 Prewalk should fail back to the planner rather than leave a broken route in the
 session.
 
-- In the normal top-level flow, the namespaced `prewalk_todo` tool must be
-  active and successfully called before handoff, along with positive mutation
-  evidence. An independently configured implementation child whose tool list
-  has no active todo tool may skip that gate, but it still needs positive
-  mutation evidence. Failed, cancelled, partial, still-running, quoted, or
-  dynamically assembled patches do not qualify.
+- In the normal top-level flow and every opted-in mutation-capable child, the
+  namespaced `prewalk_todo` tool must be active and successfully called before
+  handoff, along with positive mutation evidence. Failed, cancelled, partial,
+  still-running, quoted, or dynamically assembled patches do not qualify.
 - Missing authorization, invalid configuration, a todo conflict, an unusable
   executor, or unsupported native Responses compaction leaves the run unarmed
   or restores the planner.
@@ -281,7 +301,9 @@ session.
   mutation, todo, analytics, and scheduling decisions stay with their existing
   owners.
 - Child sessions keep their own local state. A parent does not pass down its
-  executor, fallback list, thinking level, or route policy automatically.
+  executor, fallback list, thinking level, route policy, checklist, or mutation
+  evidence automatically. Background writers still require worktree isolation
+  or explicit coordination because this policy does not lock a checkout.
 
 The technical contract for that last part is in
 [the host-event correlation guide](architecture/host-event-correlation.md).

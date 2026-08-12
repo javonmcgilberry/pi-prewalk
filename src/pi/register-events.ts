@@ -382,25 +382,31 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		return policy;
 	};
 	const deactivatePrewalkTools = (): void => {
+		const capturedSlate = prewalkToolSlate;
 		const baseline =
-			prewalkToolSlate ??
-			pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+			capturedSlate ?? pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		prewalkToolSlate = undefined;
-		const next = baseline.filter((name) => name !== PREWALK_TODO_TOOL_NAME);
+		const restoreCapturedChildSlate =
+			process.env.PI_SUBAGENT_CHILD === "1" && capturedSlate !== undefined;
+		const next = restoreCapturedChildSlate
+			? [...baseline]
+			: baseline.filter((name) => name !== PREWALK_TODO_TOOL_NAME);
 		if (
-			process.env.PI_SUBAGENT_CHILD !== "1" ||
-			baseline.includes(PREWALK_TODO_TOOL_NAME) ||
-			application.run?.todoActive
-		) {
+			!restoreCapturedChildSlate &&
+			(process.env.PI_SUBAGENT_CHILD !== "1" ||
+				baseline.includes(PREWALK_TODO_TOOL_NAME) ||
+				application.run?.todoActive)
+		)
 			next.push(PREWALK_TODO_TOOL_NAME);
-		}
 		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
-	const activatePlanningTools = (toolSlate = pi.getActiveTools()): void => {
+	const activatePlanningTools = (toolSlate = pi.getActiveTools(), requireTodo = false): void => {
 		const baseline = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
 		prewalkToolSlate ??= baseline;
 		const todoWasActive =
-			baseline.includes(PREWALK_TODO_TOOL_NAME) || application.run?.todoActive === true;
+			requireTodo ||
+			baseline.includes(PREWALK_TODO_TOOL_NAME) ||
+			application.run?.todoActive === true;
 		const next = todoWasActive
 			? [
 					...baseline.filter((name) => name !== "todo" && name !== PREWALK_TODO_TOOL_NAME),
@@ -760,6 +766,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		triggerTurn = false,
 		configOverride?: PrewalkConfig,
 		expectedRun?: HostRunIdentity | null,
+		requireTodo = false,
 	): Promise<"armed" | "executor-unavailable" | "failed"> => {
 		let armedRunIdentity: HostRunIdentity | undefined;
 		try {
@@ -778,7 +785,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			if (compactionState === "enabled") {
 				throw new Error("native-compaction-unsupported");
 			}
-			activatePlanningTools();
+			activatePlanningTools(undefined, requireTodo);
 			if (!ctx.model) throw new Error("model-unavailable");
 			const planner: PlannerProfile = {
 				provider: ctx.model.provider,
@@ -934,11 +941,18 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		// A child runs the executor its own agent entry names. Session-level
 		// fallbacks belong to the parent and must not silently redirect a child to
 		// a model nobody opted it into.
-		const outcome = await startRun("automatic", ctx, false, {
-			...config,
-			executor: targetExecutor,
-			executorFallbacks: [],
-		});
+		const outcome = await startRun(
+			"automatic",
+			ctx,
+			false,
+			{
+				...config,
+				executor: targetExecutor,
+				executorFallbacks: [],
+			},
+			undefined,
+			true,
+		);
 		if (outcome === "executor-unavailable") {
 			// Without this the child reports no diagnostic at all, so `/prewalk
 			// status` cannot say why the hand-off never happened.

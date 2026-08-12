@@ -92,9 +92,10 @@ Cross-provider executor requests use the executor provider's resolved
 credentials; a planner-resolved API key is never forwarded, while a distinct
 request-level override remains available.
 
-Prewalk keeps `prewalk_todo` available for the full session. Calls outside an
-active Prewalk run fail without changing the checklist. During a run, the
-hidden planning and executor prompts explain how to use it.
+Top-level Prewalk keeps `prewalk_todo` available for the full session. An
+opted-in mutation-capable child receives the same namespaced tool for its own
+run. Calls outside an active Prewalk run fail without changing the checklist.
+During a run, the hidden planning and executor prompts explain how to use it.
 
 An optional `executorFallbacks` array lists alternates to try in order when the
 primary executor is unavailable. If the field is omitted, Prewalk infers an
@@ -390,6 +391,30 @@ entries are harmless policy records and remain off; Prewalk itself still works
 normally in the parent session. Prewalk intentionally does not scan another
 extension's agent files or duplicate its discovery rules.
 
+An opted-in child that has a mutation-capable tool slate receives its own
+namespaced `prewalk_todo` tool even when the launcher did not provide one. The
+child must successfully initialize that local checklist before its first
+positively proven mutation can trigger its handoff. The parent and child have
+separate run identity, todo state, mutation evidence, and executor routes: a
+child result or edit never triggers the parent, and the parent’s checklist
+never satisfies the child. Unconfigured, disabled, read-only, equal-target,
+and unavailable-executor children keep the launcher’s supplied tools and do
+not gain this tool.
+
+`worker` and a deliberately configured `delegate` are the usual implementation
+choices. `scout`, `researcher`, `reviewer`, and `oracle` are commonly
+reconnaissance, research, review, or advice roles; a launcher may give them
+write tools, but tool capability alone does not make them suitable
+implementation agents. Choose those roles deliberately.
+
+The child executor object selects only that child’s model route. It does not
+grant write tools, change the launcher’s permissions, or make Prewalk own
+child scheduling. Foreground child calls usually block the parent while they
+run, but background children can overlap the parent or one another. If those
+runs write, use launcher-provided worktree isolation or coordinate ownership
+explicitly; Prewalk keeps trajectories separate but does not serialize a
+shared checkout.
+
 ```json
 {
   "children": {
@@ -418,10 +443,8 @@ You can inspect or change this without editing JSON:
 ```
 
 The older `experimentalChild` shape is read and normalized for compatibility,
-but new settings use `children`. A child with no active `prewalk_todo` can
-still hand off after its first positively verified code change; loading the
-extension alone does not add tools to an unconfigured, read-only, or planning
-child. We have not measured whether this improves child runs. `/prewalk status`
+but new settings use `children`. Loading the extension alone does not add tools
+to an unconfigured, disabled, read-only, or planning child. `/prewalk status`
 says why a loaded child is disabled or unavailable.
 
 ## Local analytics

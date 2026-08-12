@@ -9,6 +9,23 @@ A Pi session is one Pi conversation identified by one session ID.
 A task tree is a Pi session together with the delegated descendant sessions
 attributable to it.
 
+Task-tree attribution is an analytics and reporting relationship. It does not
+merge the sessions' Prewalk runs, todo state, mutation evidence, or executor
+routes.
+
+## Child Prewalk trajectory
+
+A child Prewalk trajectory is the independent run owned by a delegated child
+session after that child is explicitly opted in. A mutation-capable child gets
+its own `prewalk_todo` gate. Its checklist and first-edit evidence cannot arm
+the parent, and the parent's checklist and evidence cannot arm the child.
+
+The child launcher still owns the child definition, tools, permissions,
+scheduling, and filesystem isolation. A per-child executor override selects a
+model route only; it does not grant mutation capability. Separate trajectories
+also do not lock a shared checkout, so concurrent writers require launcher
+worktree isolation or explicit coordination.
+
 ## Current-session snapshot
 
 A current-session snapshot is the observed data for the exact current Pi session

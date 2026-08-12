@@ -1565,6 +1565,10 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain(
 			"derives the planner from Pi's selected model and reasoning",
 		);
+		expect(harness.notifications.at(-1)).toContain(
+			"Opted-in mutation-capable children receive their own prewalk_todo gate",
+		);
+		expect(harness.notifications.at(-1)).toContain("worktree isolation or coordination");
 	});
 
 	it("opens the plain-language configure menu in TUI mode without saving on exit", async () => {
@@ -2338,6 +2342,76 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toBe("prewalk: 5.6 Sol · low / [Luna · low]");
 	});
 
+	it("does not treat a child subagent result as the parent's first mutation", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-parent",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "child-run",
+			toolName: "subagent",
+			input: { agent: "worker", task: "Implement the change" },
+			content: [],
+			isError: false,
+			details: { output: "Implemented the change", changedFiles: ["src/child.ts"] },
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "todo-parent",
+						name: PREWALK_TODO_TOOL_NAME,
+						arguments: {},
+					},
+					{
+						type: "toolCall",
+						id: "child-run",
+						name: "subagent",
+						arguments: {},
+					},
+				],
+			},
+			toolResults: [],
+		});
+		expect(harness.messages.at(-1)?.customType).not.toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
+		expect(harness.statuses.at(-1)).not.toContain("switching after this turn");
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "parent-edit",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "parent-edit", name: "edit", arguments: {} }],
+			},
+			toolResults: [],
+		});
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
+	});
+
 	it("derives a new epoch planner from Pi's selected runtime profile", async () => {
 		const selectedPlanner = model("gpt-5.4");
 		const harness = createHarness({ selectedModel: selectedPlanner });
@@ -2564,14 +2638,14 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages).toEqual([]);
 	});
 
-	it("allows an opted-in child without prewalk_todo to hand off after verified mutation", async () => {
+	it("requires an opted-in child's local todo before handoff and restores its tool slate", async () => {
 		identifyChild();
 		await writeChildConfig({ worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } });
-		const harness = createHarness({ activeTools: ["read", "edit"] });
+		const harness = createHarness({ activeTools: ["read", "todo", "edit"] });
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		expect(harness.activeTools()).toEqual(["read", "edit"]);
+		expect(harness.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 0,
@@ -2598,12 +2672,58 @@ describe("Prewalk extension harness", () => {
 			},
 			toolResults: [],
 		});
+		expect(harness.messages.at(-1)?.customType).not.toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
+
+		const todoResult = await harness.tools
+			.get(PREWALK_TODO_TOOL_NAME)
+			?.execute(
+				"child-todo",
+				{ op: "init", list: [{ phase: "Implement", items: ["Change behavior"] }] },
+				undefined,
+				undefined,
+				harness.context,
+			);
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "child-todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			input: { op: "init" },
+			content: todoResult?.content ?? [],
+			isError: false,
+			details: todoResult?.details,
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "child-edit-after-todo",
+			toolName: "edit",
+			input: {},
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "child-edit-after-todo",
+						name: "edit",
+						arguments: {},
+					},
+				],
+			},
+			toolResults: [],
+		});
 
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "handoff-triggered",
-			todoActive: false,
+			todoActive: true,
 		});
-		expect(harness.activeTools()).toEqual(["read", "edit"]);
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
 	});
 
 	it.each([
@@ -2618,6 +2738,7 @@ describe("Prewalk extension harness", () => {
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		expect(harness.messages).toEqual([]);
+		expect(harness.activeTools()).toEqual(activeTools);
 		await harness.commands.get("prewalk")?.("status", harness.context);
 		expect(harness.notifications.at(-1)).toContain(reason);
 	});

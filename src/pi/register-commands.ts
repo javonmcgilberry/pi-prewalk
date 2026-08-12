@@ -71,8 +71,10 @@ function helpText(): string {
 		"Prewalk derives the planner from Pi's selected model and reasoning for each epoch. Only primary Agent-loop requests route to the executor after the handoff gate.",
 		"Shift+Tab changes Sol reasoning while Sol is active and Luna reasoning after Luna takes over.",
 		"Sol and Luna reasoning are independent; Luna defaults to low unless you configure another level.",
-		"Subagents run independent Prewalk lifecycles. A strict child without prewalk_todo still switches after its first successful code change.",
-		"Parent status reports an observed child outcome, but child code changes never switch the parent.",
+		"Opted-in mutation-capable children receive their own prewalk_todo gate before a code change can switch them.",
+		"Worker and deliberately configured delegate children are the usual implementation choices; report-oriented roles need deliberate opt-in.",
+		"Parent and child runs are independent. A child result or code change never switches the parent, and a parent todo never satisfies a child.",
+		"Background writers still need launcher worktree isolation or coordination; Prewalk does not serialize shared checkouts.",
 	].join("\n");
 }
 
