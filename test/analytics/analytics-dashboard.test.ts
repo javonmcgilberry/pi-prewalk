@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	buildAnalyticsDashboardModel,
 	type DashboardPalette,
@@ -424,6 +424,100 @@ describe("analytics dashboard", () => {
 		});
 		expect(refreshCount).toBe(1);
 		expect(renderCount).toBeGreaterThanOrEqual(2);
+	});
+
+	it("does not auto-poll when the current session has no active run", async () => {
+		vi.useFakeTimers();
+		let refreshCount = 0;
+		const custom = async (factory: any) => {
+			const component = factory(
+				{ requestRender: () => undefined },
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => undefined,
+			);
+			await vi.advanceTimersByTimeAsync(20_000);
+			component.dispose?.();
+			return undefined;
+		};
+		try {
+			await showAnalyticsDashboard({ ui: { custom } } as any, overview(), async () => {
+				refreshCount += 1;
+				return overview();
+			});
+			expect(refreshCount).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("quietly polls while a run is active and stops once it finishes", async () => {
+		vi.useFakeTimers();
+		const active = overview({
+			session: aggregate({
+				receiptCount: 0,
+				actualCost: 0.1,
+				receipts: [],
+				unfinished: [
+					{
+						runId: "run-active",
+						epoch: "epoch-active",
+						sessionId: "session-current",
+						startedAt: "2026-08-06T12:09:00.000Z",
+						outcome: "unfinished",
+						handoffState: "pending",
+						planner: { provider: "anthropic", model: "opus" },
+						executor: { provider: "anthropic", model: "sonnet" },
+						actualCost: 0.1,
+					},
+				],
+			}),
+		});
+		const finished = overview({
+			session: aggregate({
+				receiptCount: 1,
+				actualCost: 0.8,
+				receipts: [receipt()],
+				unfinished: [],
+			}),
+		});
+		let refreshCount = 0;
+		const frames: string[] = [];
+		const custom = async (factory: any) => {
+			let component: {
+				render(width: number): string[];
+				dispose?: () => void;
+			};
+			component = factory(
+				{
+					requestRender: () => {
+						frames.push(component.render(100).join("\n"));
+					},
+				},
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => undefined,
+			);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await Promise.resolve();
+			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(5_000);
+			await Promise.resolve();
+			await Promise.resolve();
+			component.dispose?.();
+			return undefined;
+		};
+		try {
+			await showAnalyticsDashboard({ ui: { custom } } as any, active, async () => {
+				refreshCount += 1;
+				return finished;
+			});
+			expect(refreshCount).toBe(1);
+			expect(frames.some((frame) => frame.includes("Refreshing"))).toBe(false);
+			expect(frames.some((frame) => frame.includes("up to $0.20 saved"))).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it.each([24, 60, 88])("renders a readable layout at %d columns without overflowing", (width) => {

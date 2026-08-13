@@ -459,12 +459,14 @@ current Pi session first, followed by this week, this month, all time, and four
 recent sessions. When older sessions exist, `See N more sessions` opens the
 full newest-first history. Use the arrow keys to select, Page Up and Page Down
 to move through longer history, Enter to open, `?` to explain the numbers, `R`
-to refresh, and Escape to go back or close. The dashboard uses session titles
-first and keeps stable IDs in details. It does not fold delegated child
-sessions into the current-session section; use `/prewalk stats task` for the
-whole task tree. Active runs show provider-recorded cost only. A planning-only
-run is shown as a run that finished before switching models, not as missing
-usage.
+to refresh, and Escape to go back or close. While a Prewalk run is still
+active in the current session, the dashboard quietly polls every few seconds
+without flashing a refresh banner; idle dashboards stay on the last snapshot
+until you press `R`. The dashboard uses session titles first and keeps stable
+IDs in details. It does not fold delegated child sessions into the current-
+session section; use `/prewalk stats task` for the whole task tree. Active
+runs show provider-recorded cost only. A planning-only run is shown as a run
+that finished before switching models, not as missing usage.
 
 Analytics are enabled by default and stay under
 `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`. Prewalk stores

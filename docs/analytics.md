@@ -34,7 +34,9 @@ Use the arrow keys to select a row and Enter to open it. The full history shows
 eight sessions at a time; Page Up and Page Down move through longer lists. `?`
 explains the numbers, `R` refreshes, and Escape moves back one level before it
 closes the dashboard. Selection stays on a visible session when refreshed.
-The dashboard refreshes while it is open and shows the snapshot time.
+While a Prewalk run is still active in the current session, the dashboard
+quietly polls every few seconds without flashing a refresh banner. Idle
+dashboards stay on the last snapshot until you press `R`.
 
 ## What the numbers mean
 

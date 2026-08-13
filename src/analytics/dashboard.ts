@@ -16,7 +16,8 @@ import {
 import type { AnalyticsOverview } from "./report.js";
 import type { AnalyticsAggregate, UnfinishedRunSummary } from "./store.js";
 
-const AUTO_REFRESH_MS = 2_000;
+/** Live poll while the current session has an unfinished Prewalk run. Idle dashboards do not auto-poll. */
+const ACTIVE_REFRESH_MS = 5_000;
 const RECENT_SESSION_LIMIT = 4;
 const HISTORY_PAGE_SIZE = 8;
 const DETAIL_RUN_LIMIT = 6;
@@ -342,9 +343,7 @@ class AnalyticsDashboardComponent implements Component {
 	}
 
 	startAutoRefresh(): void {
-		if (this.timer) return;
-		this.timer = setInterval(() => void this.refresh(), AUTO_REFRESH_MS);
-		this.timer.unref?.();
+		this.syncAutoRefresh();
 	}
 
 	/** Quiet title backfill — does not flip the refreshing banner. */
@@ -354,6 +353,7 @@ class AnalyticsDashboardComponent implements Component {
 			const model = await load();
 			if (this.closed) return;
 			this.model = model;
+			this.syncAutoRefresh();
 			this.tui.requestRender();
 		} catch {
 			// Titles are cosmetic; keep the already-open cost view.
@@ -406,7 +406,7 @@ class AnalyticsDashboardComponent implements Component {
 			return;
 		}
 		if (data === "r" || data === "R") {
-			void this.refresh();
+			void this.refresh({ quiet: false });
 			return;
 		}
 		if (this.state.view === "overview") {
@@ -488,23 +488,41 @@ class AnalyticsDashboardComponent implements Component {
 		this.tui.requestRender();
 	}
 
-	private async refresh(): Promise<void> {
+	/**
+	 * Reload ledger data.
+	 * - Manual R: show the Refreshing… banner.
+	 * - Quiet auto ticks: update only when live numbers change; never flash the banner.
+	 */
+	private async refresh(options: { quiet?: boolean } = {}): Promise<void> {
+		const quiet = options.quiet === true;
 		if (this.closed || this.state.refreshing) return;
 		const overviewKey = overviewSelectionKey(this.model, this.state.selectedIndex);
 		const historySessionId =
 			this.model.sessionHistory[this.state.historySelectedIndex ?? 0]?.sessionId;
-		this.state = { ...this.state, refreshing: true, refreshError: undefined };
-		this.tui.requestRender();
+		const previousFingerprint = liveFingerprint(this.model);
+		if (!quiet) {
+			this.state = { ...this.state, refreshing: true, refreshError: undefined };
+			this.tui.requestRender();
+		}
 		try {
 			const model = await this.load();
 			if (this.closed) return;
-			this.model = model;
-			this.state = {
-				...this.state,
-				selectedIndex: overviewIndexForKey(this.model, overviewKey),
-				historySelectedIndex: historyIndexForSession(this.model, historySessionId),
-				refreshing: false,
-			};
+			const unchanged = quiet && liveFingerprint(model) === previousFingerprint;
+			if (!unchanged) {
+				this.model = model;
+				this.state = {
+					...this.state,
+					selectedIndex: overviewIndexForKey(this.model, overviewKey),
+					historySelectedIndex: historyIndexForSession(this.model, historySessionId),
+					refreshing: false,
+					refreshError: undefined,
+				};
+			} else if (this.state.refreshError || this.state.refreshing) {
+				this.state = { ...this.state, refreshing: false, refreshError: undefined };
+				if (!this.closed) this.tui.requestRender();
+			}
+			this.syncAutoRefresh();
+			if (!unchanged && !this.closed) this.tui.requestRender();
 		} catch (error) {
 			if (this.closed) return;
 			this.state = {
@@ -512,8 +530,23 @@ class AnalyticsDashboardComponent implements Component {
 				refreshing: false,
 				refreshError: error instanceof Error ? error.message : String(error),
 			};
+			if (!this.closed) this.tui.requestRender();
 		}
-		if (!this.closed) this.tui.requestRender();
+	}
+
+	/** Poll only while this session has an unfinished run; stop when idle. */
+	private syncAutoRefresh(): void {
+		const needsLive = this.model.current.activeRuns.length > 0;
+		if (!needsLive) {
+			if (this.timer) {
+				clearInterval(this.timer);
+				this.timer = undefined;
+			}
+			return;
+		}
+		if (this.timer) return;
+		this.timer = setInterval(() => void this.refresh({ quiet: true }), ACTIVE_REFRESH_MS);
+		this.timer.unref?.();
 	}
 
 	private close(): void {
@@ -523,6 +556,35 @@ class AnalyticsDashboardComponent implements Component {
 		this.timer = undefined;
 		this.onClose();
 	}
+}
+
+/** Compare cost/activity only — ignores generatedAt so quiet polls can skip no-op renders. */
+function liveFingerprint(model: AnalyticsDashboardModel): string {
+	return JSON.stringify({
+		currentCost: model.current.actualCost,
+		currentFinished: model.current.finishedRuns,
+		currentStatus: model.current.status,
+		active: model.current.activeRuns.map((run) => [
+			run.runId,
+			run.epoch,
+			run.actualCost,
+			run.handoffState,
+		]),
+		periods: model.periods.map((period) => [
+			period.label,
+			period.actualCost,
+			period.finishedRuns,
+			period.activeRuns,
+			period.comparison.state,
+			period.comparison.difference ?? null,
+		]),
+		recent: model.recentSessions.map((session) => [
+			session.sessionId,
+			session.actualCost,
+			session.status,
+			session.activeRuns.length,
+		]),
+	});
 }
 
 function renderOverview(
