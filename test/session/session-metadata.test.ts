@@ -74,9 +74,7 @@ describe("private session metadata", () => {
 			].join("\n"),
 		);
 
-		const titles = await readSessionLogTitles(path.join(agentDir, "sessions"), [
-			"session-named",
-		]);
+		const titles = await readSessionLogTitles(path.join(agentDir, "sessions"), ["session-named"]);
 		expect(titles.get("session-named")).toBe("Latest name");
 		expect(titles.has("session-other")).toBe(false);
 

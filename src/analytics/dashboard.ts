@@ -298,9 +298,10 @@ export async function showAnalyticsDashboard(
 			onClose: () => done(undefined),
 		});
 		dashboard.startAutoRefresh();
-		if (options?.enrichTitles) {
+		const enrichTitles = options?.enrichTitles;
+		if (enrichTitles) {
 			void dashboard.enrichTitles(async () =>
-				buildAnalyticsDashboardModel(await options.enrichTitles!()),
+				buildAnalyticsDashboardModel(await enrichTitles()),
 			);
 		}
 		return dashboard;
@@ -662,7 +663,16 @@ function renderCurrent(
 	const title = selected ? palette.color("accent", current.title) : palette.bold(current.title);
 	return [
 		palette.color("dim", `  ${metricHeader(layout, "SESSION")}`),
-		`${prefix} ${metricRow(layout, title, "", formatUsd(current.actualCost), difference, (text) => text, (text) => text, palette.bold)}`,
+		`${prefix} ${metricRow(
+			layout,
+			title,
+			"",
+			formatUsd(current.actualCost),
+			difference,
+			(text) => text,
+			(text) => text,
+			palette.bold,
+		)}`,
 		...commonLines,
 	];
 }
