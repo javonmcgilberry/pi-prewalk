@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { dispatchWorkerRequest } from "../scripts/benchmark-worker.mjs";
+import { countUnreachableObjects, dispatchWorkerRequest } from "../scripts/benchmark-worker.mjs";
 
 let root: string | undefined;
 
@@ -21,6 +21,18 @@ async function fixture() {
 }
 
 describe("benchmark worker protocol", () => {
+	it("ignores git fsck diagnostics when counting unreachable objects", () => {
+		expect(
+			countUnreachableObjects(
+				[
+					"Checking object directories: 100% (256/256), done.",
+					"unreachable blob 0123456789abcdef0123456789abcdef01234567",
+					"unreachable commit 89abcdef0123456789abcdef0123456789abcdef",
+				].join("\n"),
+			),
+		).toBe(2);
+	});
+
 	it("creates one clean root commit and seals a binary candidate patch", async () => {
 		const { source, workspace } = await fixture();
 		const prepared = await dispatchWorkerRequest({ method: "prepare" }, { source, workspace });
@@ -78,7 +90,6 @@ describe("benchmark worker protocol", () => {
 		"cat /opt/task-base/solution.patch",
 	])("blocks solution or network lookup commands: %s", async (cmd) => {
 		const { source, workspace } = await fixture();
-		await dispatchWorkerRequest({ method: "prepare" }, { source, workspace });
 		const result = await dispatchWorkerRequest(
 			{ method: "exec_command", cmd },
 			{ source, workspace },

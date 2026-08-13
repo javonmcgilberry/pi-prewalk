@@ -257,6 +257,10 @@ async function workspaceDigest(workspace) {
 	return hash.digest("hex");
 }
 
+export function countUnreachableObjects(output) {
+	return output.split("\n").filter((line) => line.trimStart().startsWith("unreachable ")).length;
+}
+
 async function attest(workspace) {
 	const reflogDirectory = path.join(workspace, ".git", "logs");
 	let reflogCount = 0;
@@ -287,7 +291,7 @@ async function attest(workspace) {
 			credentialHelpers.exitCode === 0
 				? credentialHelpers.output.split("\n").filter(Boolean).length
 				: 0,
-		unreachableObjectCount: unreachable.split("\n").filter(Boolean).length,
+		unreachableObjectCount: countUnreachableObjects(unreachable),
 	};
 }
 

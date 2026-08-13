@@ -26,6 +26,8 @@ export interface WorkerResponse {
 	};
 }
 
+export function countUnreachableObjects(output: string): number;
+
 export function dispatchWorkerRequest(
 	request: WorkerRequest,
 	options?: { source?: string; workspace?: string },
