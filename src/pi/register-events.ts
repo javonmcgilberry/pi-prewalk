@@ -367,6 +367,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
+	let retainedCancelledRun: PrewalkRun | undefined;
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
 	const contextPressure = new ContextPressureController();
@@ -450,10 +451,16 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const nextStatus =
 			childDiagnostic && !application.run
 				? `prewalk: child ${childDiagnostic}`
-				: compactStatus(application.run, ctx.model, ctx.thinkingLevel, delegation, {
-						mode: autoEnabled ? "auto-ready" : "manual",
-						...(lastOutcome ? { lastOutcome } : {}),
-					});
+				: compactStatus(
+						application.run ?? retainedCancelledRun,
+						ctx.model,
+						ctx.thinkingLevel,
+						delegation,
+						{
+							mode: autoEnabled ? "auto-ready" : "manual",
+							...(lastOutcome ? { lastOutcome } : {}),
+						},
+					);
 		if (nextStatus === lastStatus) return;
 		ctx.ui.setStatus(STATUS_KEY, nextStatus);
 		lastStatus = nextStatus;
@@ -817,6 +824,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				planner,
 				effectiveConfig,
 			);
+			retainedCancelledRun = undefined;
 			const armedRun = application.run;
 			armedRunIdentity = identityOf(armedRun);
 			if (armedRun && prewalkToolSlate) {
@@ -989,6 +997,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				await cancel(isPlannerSelected(ctx.model, application.run.planner), ctx);
 				if (sameRunIdentity(cancelledRun, application.run)) {
 					deactivatePrewalkTools();
+					retainedCancelledRun = application.run;
 					application.reset();
 				}
 			}
@@ -1004,6 +1013,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		resetExecutorCompactionState();
+		retainedCancelledRun = undefined;
 		refreshExecutorCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
@@ -1668,7 +1678,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		const run = application.run;
-		if (!run || run.phase === "cancelled") return;
+		if (!run) {
+			if (retainedCancelledRun) updateStatus(ctx);
+			return;
+		}
+		if (run.phase === "cancelled") {
+			updateStatus(ctx);
+			return;
+		}
 		const runIdentity = identityOf(run);
 		await cancel(isPlannerSelected(event.model, run.planner), ctx);
 		if (!sameRunIdentity(runIdentity, application.run)) return;

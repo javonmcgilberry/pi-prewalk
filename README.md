@@ -8,6 +8,8 @@ takes over the same conversation.
 Pi still shows and saves the planner as the selected model. After handoff,
 Prewalk keeps routing primary turns to the executor until explicit release or
 terminal session cleanup. The selected planner remains underneath the overlay.
+After `/prewalk cancel`, the footer keeps the cancelled run visible and updates
+its `selected:` model when Pi's selection changes.
 
 This project reproduces Oh My Pi's observable Prewalk flow with stock Pi's
 public extension APIs. If you want the plain-language version first, read

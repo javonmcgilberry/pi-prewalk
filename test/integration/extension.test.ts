@@ -4400,6 +4400,25 @@ describe("Prewalk extension harness", () => {
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 	});
 
+	it("refreshes the retained cancelled status when Pi selects another model", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+
+		(harness.context as { model: Model<"openai-codex-responses"> }).model = harness.executor;
+		await harness.emit("model_select", {
+			type: "model_select",
+			source: "user",
+			model: harness.executor,
+		});
+
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: 5.6 Sol / Luna (cancelled; selected: openai-codex/gpt-5.6-luna)",
+		);
+	});
+
 	it("cancels on an explicit model selection but ignores restore selection", async () => {
 		const restoredSelection = createHarness();
 		prewalkExtension(restoredSelection.pi);
