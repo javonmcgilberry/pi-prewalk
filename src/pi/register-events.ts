@@ -6,7 +6,6 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
-	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
@@ -52,7 +51,7 @@ import {
 	PREWALK_AUDIT_TYPE,
 	PREWALK_AUTO_MODE_TYPE,
 } from "../session/audit.js";
-import { mergeSessionTitles, readSessionMetadataTitles } from "../session/metadata.js";
+import { loadSessionTitlesForIds } from "../session/metadata.js";
 import {
 	latestAuditRecord,
 	latestAutoModeRecord,
@@ -346,14 +345,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	const hostCorrelation = new PiHostEventCorrelation();
 	const turnGate = new TurnGate();
 	const sessionRecovery = new SessionRecovery();
-	const loadSessionTitles = async (): Promise<ReadonlyMap<string, string>> => {
-		const metadataTitles = await readSessionMetadataTitles(getAgentDir());
-		const sessionDirectory = process.env.PI_CODING_AGENT_SESSION_DIR;
-		const sessions = sessionDirectory
-			? await SessionManager.listAll(sessionDirectory)
-			: await SessionManager.listAll();
-		return mergeSessionTitles(metadataTitles, sessions);
-	};
+	const loadSessionTitles = async (
+		sessionIds?: readonly string[],
+	): Promise<ReadonlyMap<string, string>> =>
+		loadSessionTitlesForIds(getAgentDir(), sessionIds, process.env.PI_CODING_AGENT_SESSION_DIR);
 	let activeSessionId: string | undefined;
 	let autoEnabled = false;
 	let lastOutcome: "bypassed" | "completed" | "failed" | "released" | undefined;

@@ -6,14 +6,32 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { type RunOutcome, type RunReceipt, summarizeComparisons } from "./index.js";
+import {
+	type HandoffState,
+	type ModelIdentity,
+	type RunOutcome,
+	type RunReceipt,
+	summarizeComparisons,
+} from "./index.js";
 import type { AnalyticsOverview } from "./report.js";
 import type { AnalyticsAggregate, UnfinishedRunSummary } from "./store.js";
 
 const AUTO_REFRESH_MS = 2_000;
 const RECENT_SESSION_LIMIT = 4;
 const HISTORY_PAGE_SIZE = 8;
+const DETAIL_RUN_LIMIT = 6;
+const SAVINGS_HEADER_FULL = "EST. SAVINGS FROM MODEL SWITCHING";
+const SAVINGS_HEADER_SHORT = "EST. SAVINGS";
+/** Wide overview/history tables share one grid so COST/savings columns line up. */
+const WIDE_TABLE_MIN = 88;
 type DashboardKeybindings = Pick<KeybindingsManager, "matches">;
+
+interface SharedMetricLayout {
+	leadingWidth: number;
+	statusWidth: number;
+	costWidth: number;
+	savingsWidth: number;
+}
 
 type DashboardTone = "accent" | "success" | "warning" | "error" | "muted" | "dim";
 
@@ -149,7 +167,7 @@ export function summarizeComparison(
 	if (difference > 0) {
 		return {
 			state: "lower",
-			label: `up to ${formatUsd(difference)} less`,
+			label: `up to ${formatUsd(difference)} saved`,
 			detail: evidence,
 			comparableRuns: summary.comparedRuns,
 			successfulRuns: summary.finishedRuns,
@@ -164,7 +182,7 @@ export function summarizeComparison(
 	if (difference < 0) {
 		return {
 			state: "higher",
-			label: `${formatUsd(-difference)} more`,
+			label: `${formatUsd(-difference)} extra`,
 			detail: evidence,
 			comparableRuns: summary.comparedRuns,
 			successfulRuns: summary.finishedRuns,
@@ -264,6 +282,10 @@ export async function showAnalyticsDashboard(
 	ctx: ExtensionContext,
 	initialOverview: AnalyticsOverview,
 	refreshOverview: () => Promise<AnalyticsOverview>,
+	options?: {
+		/** Fill in session titles after first paint without blocking open. */
+		enrichTitles?: () => Promise<AnalyticsOverview>;
+	},
 ): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 		const dashboard = new AnalyticsDashboardComponent({
@@ -275,6 +297,11 @@ export async function showAnalyticsDashboard(
 			onClose: () => done(undefined),
 		});
 		dashboard.startAutoRefresh();
+		if (options?.enrichTitles) {
+			void dashboard.enrichTitles(async () =>
+				buildAnalyticsDashboardModel(await options.enrichTitles!()),
+			);
+		}
 		return dashboard;
 	});
 }
@@ -318,6 +345,19 @@ class AnalyticsDashboardComponent implements Component {
 		if (this.timer) return;
 		this.timer = setInterval(() => void this.refresh(), AUTO_REFRESH_MS);
 		this.timer.unref?.();
+	}
+
+	/** Quiet title backfill — does not flip the refreshing banner. */
+	async enrichTitles(load: () => Promise<AnalyticsDashboardModel>): Promise<void> {
+		if (this.closed) return;
+		try {
+			const model = await load();
+			if (this.closed) return;
+			this.model = model;
+			this.tui.requestRender();
+		} catch {
+			// Titles are cosmetic; keep the already-open cost view.
+		}
 	}
 
 	render(width: number): string[] {
@@ -539,34 +579,28 @@ function renderCurrent(
 	const current = model.current;
 	const difference =
 		current.comparison.state === "unavailable"
-			? palette.color("muted", "Not enough data yet")
+			? palette.color("muted", "Not enough data")
 			: colorComparison(current.comparison, palette);
 	const prefix = selected ? palette.color("accent", "›") : " ";
-	const activeLines =
-		current.activeRuns.length === 0
-			? []
-			: [
-					`  Active now: ${current.activeRuns.map((run) => `${run.runId} ${formatUsd(run.actualCost)}`).join(", ")}`,
-				];
 	const commonLines = [
-		...activeLines,
+		palette.color("dim", `  ${formatRunCount(current.finishedRuns, current.activeRuns.length)}`),
 		...comparisonSummaryLines(current.comparison, Math.max(1, width - 2), palette).map(
 			(line) => `  ${line}`,
 		),
 		"  This session only. Use /prewalk stats task to include work it handed to other agents.",
 	];
-	if (width < 76) {
+	if (width < WIDE_TABLE_MIN) {
 		return [
 			`${prefix} ${palette.bold(current.title)}`,
-			`  Total paid ${palette.bold(formatUsd(current.actualCost))} · ${current.finishedRuns} finished · ${current.activeRuns.length} active`,
-			`  Estimated cost change: ${difference}`,
+			`  Cost ${palette.bold(formatUsd(current.actualCost))} · Est. savings ${difference}`,
 			...commonLines,
 		];
 	}
-	const metricWidth = Math.floor((width - 6) / 3);
+	const layout = sharedMetricLayout(width);
+	const title = selected ? palette.color("accent", current.title) : palette.bold(current.title);
 	return [
-		`${prefix} ${cell("TOTAL PAID", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("RUNS", metricWidth, "left", (text) => palette.color("dim", text))}  ${cell("ESTIMATED COST CHANGE", metricWidth, "left", (text) => palette.color("dim", text))}`,
-		`  ${cell(formatUsd(current.actualCost), metricWidth, "left", palette.bold)}  ${cell(`${current.finishedRuns} finished · ${current.activeRuns.length} active`, metricWidth, "left")}  ${cell(difference, metricWidth, "left")}`,
+		palette.color("dim", `  ${metricHeader(layout, "SESSION")}`),
+		`${prefix} ${metricRow(layout, title, "", formatUsd(current.actualCost), difference, (text) => text, (text) => text, palette.bold)}`,
 		...commonLines,
 	];
 }
@@ -576,42 +610,30 @@ function renderPeriods(
 	width: number,
 	palette: DashboardPalette,
 ): string[] {
-	if (width < 110) {
-		return periods.flatMap((item) => [
-			`${palette.bold(item.label)} · ${formatUsd(item.actualCost)} total paid · ${item.finishedRuns} finished · ${item.activeRuns} active`,
-			`  Estimate based on ${coveredLabel(item.comparison)} · ${colorComparison(item.comparison, palette)}`,
-		]);
+	if (width < WIDE_TABLE_MIN) {
+		return [
+			palette.color("dim", "COST · EST. SAVINGS FROM MODEL SWITCHING"),
+			...periods.flatMap((item) => [
+				`${palette.bold(item.label)} · ${formatRunCount(item.finishedRuns, item.activeRuns)}`,
+				`  ${formatUsd(item.actualCost)} · ${colorComparison(item.comparison, palette)}`,
+			]),
+		];
 	}
-	const periodWidth = 10;
-	const runsWidth = 22;
-	const actualWidth = 14;
-	const coveredWidth = 25;
-	const differenceWidth = Math.max(
-		16,
-		width - periodWidth - runsWidth - actualWidth - coveredWidth - 8,
-	);
-	const header = [
-		cell("PERIOD", periodWidth, "left"),
-		cell("RUNS", runsWidth, "right"),
-		cell("TOTAL PAID", actualWidth, "right"),
-		cell("ESTIMATE BASED ON", coveredWidth, "right"),
-		cell("EST. COST CHANGE", differenceWidth, "right"),
-	].join("  ");
+	const layout = sharedMetricLayout(width);
 	return [
-		palette.color("dim", header),
-		...periods.map((item) =>
-			[
-				cell(item.label, periodWidth, "left", palette.bold),
-				cell(`${item.finishedRuns} finished · ${item.activeRuns} active`, runsWidth, "right"),
-				cell(formatUsd(item.actualCost), actualWidth, "right"),
-				cell(coveredLabel(item.comparison), coveredWidth, "right", (text) =>
-					palette.color("dim", text),
-				),
-				cell(compactDifference(item.comparison), differenceWidth, "right", (text) =>
-					comparisonTone(item.comparison, palette, text),
-				),
-			].join("  "),
-		),
+		palette.color("dim", `  ${metricHeader(layout, "PERIOD")}`),
+		...periods.flatMap((item) => [
+			`  ${metricRow(
+				layout,
+				item.label,
+				"",
+				formatUsd(item.actualCost),
+				compactDifference(item.comparison),
+				palette.bold,
+				(text) => comparisonTone(item.comparison, palette, text),
+			)}`,
+			palette.color("dim", `  ${formatRunCount(item.finishedRuns, item.activeRuns)}`),
+		]),
 	];
 }
 
@@ -634,31 +656,27 @@ function renderRecent(
 			palette.color("dim", "  Open the full history, newest first."),
 		);
 	}
-	if (width < 88) {
+	if (width < WIDE_TABLE_MIN) {
 		return [
 			...model.recentSessions.flatMap((session, index) => {
 				const selected = selectedIndex === index + 1;
 				const prefix = selected ? palette.color("accent", "›") : " ";
 				return [
 					`${prefix} ${selected ? palette.color("accent", session.title) : session.title}`,
-					`  ${colorStatus(session, palette)} · ${formatUsd(session.actualCost)} total paid · ${colorComparison(session.comparison, palette)}`,
+					`  ${colorStatus(session, palette)} · Cost ${formatUsd(session.actualCost)} · ${colorComparison(session.comparison, palette)}`,
 				];
 			}),
 			...seeMore,
 		];
 	}
-	const titleWidth = Math.max(24, width - 55);
-	const statusWidth = 12;
-	const actualWidth = 13;
-	const estimateWidth = 22;
-	const header = `  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("TOTAL PAID", actualWidth, "right")}  ${cell("EST. COST CHANGE", estimateWidth, "right")}`;
+	const layout = sharedMetricLayout(width);
 	// Repeating the same unavailability on every row reads as a broken tool.
 	// Rows stay quiet and one line below the table carries the reason.
 	const uncomparable = model.recentSessions.filter(
 		(session) => session.comparison.state === "unavailable",
 	);
 	return [
-		palette.color("dim", header),
+		palette.color("dim", `  ${metricHeader(layout, "SESSION")}`),
 		...model.recentSessions.map((session, index) => {
 			const selected = selectedIndex === index + 1;
 			const prefix = selected ? palette.color("accent", "›") : " ";
@@ -667,7 +685,13 @@ function renderRecent(
 				session.comparison.state === "unavailable"
 					? palette.color("dim", "—")
 					: colorComparison(session.comparison, palette);
-			return `${prefix} ${cell(title, titleWidth, "left")}  ${cell(colorStatus(session, palette), statusWidth, "left")}  ${cell(formatUsd(session.actualCost), actualWidth, "right")}  ${cell(estimate, estimateWidth, "right")}`;
+			return `${prefix} ${metricRow(
+				layout,
+				title,
+				colorStatus(session, palette),
+				formatUsd(session.actualCost),
+				estimate,
+			)}`;
 		}),
 		...(uncomparable.length === 0
 			? []
@@ -714,24 +738,18 @@ function renderHistory(
 		),
 		"",
 	];
-	if (width < 88) {
+	if (width < WIDE_TABLE_MIN) {
 		for (const [offset, session] of visible.entries()) {
 			const selected = selectedIndex === start + offset;
 			lines.push(
 				`${selected ? palette.color("accent", "›") : " "} ${selected ? palette.color("accent", session.title) : session.title}`,
-				`  ${colorStatus(session, palette)} · ${formatUsd(session.actualCost)} total paid · ${colorComparison(session.comparison, palette)}`,
+				`  ${colorStatus(session, palette)} · Cost ${formatUsd(session.actualCost)} · ${colorComparison(session.comparison, palette)}`,
 			);
 		}
 	} else {
-		const titleWidth = Math.max(24, width - 55);
-		const statusWidth = 12;
-		const actualWidth = 13;
-		const differenceWidth = 22;
+		const layout = sharedMetricLayout(width);
 		lines.push(
-			palette.color(
-				"dim",
-				`  ${cell("SESSION", titleWidth, "left")}  ${cell("STATUS", statusWidth, "left")}  ${cell("TOTAL PAID", actualWidth, "right")}  ${cell("EST. COST CHANGE", differenceWidth, "right")}`,
-			),
+			palette.color("dim", `  ${metricHeader(layout, "SESSION")}`),
 			...visible.map((session, offset) => {
 				const selected = selectedIndex === start + offset;
 				const prefix = selected ? palette.color("accent", "›") : " ";
@@ -740,7 +758,13 @@ function renderHistory(
 					session.comparison.state === "unavailable"
 						? palette.color("dim", "—")
 						: colorComparison(session.comparison, palette);
-				return `${prefix} ${cell(title, titleWidth, "left")}  ${cell(colorStatus(session, palette), statusWidth, "left")}  ${cell(formatUsd(session.actualCost), actualWidth, "right")}  ${cell(difference, differenceWidth, "right")}`;
+				return `${prefix} ${metricRow(
+					layout,
+					title,
+					colorStatus(session, palette),
+					formatUsd(session.actualCost),
+					difference,
+				)}`;
 			}),
 		);
 	}
@@ -781,24 +805,29 @@ function renderDetails(
 		palette.bold(selected.title),
 		palette.color("dim", selected.sessionId),
 		"",
-		`${palette.color("muted", "Status")}                ${colorStatus(selected, palette)}`,
-		`${palette.color("muted", "Total paid")}            ${palette.bold(formatUsd(selected.actualCost))}`,
-		`${palette.color("muted", "Runs")}                  ${selected.receipts.length} finished, ${selected.activeRuns.length} active`,
-		`${palette.color("muted", "Estimated cost change")}  ${colorComparison(comparison, palette)}`,
-		`${palette.color("muted", "Estimate based on")}     ${coveredLabel(comparison)}`,
-		...wrapTextWithAnsi(comparison.detail, width).map((line) => palette.color("dim", line)),
+		`${palette.color("muted", "Status")}      ${colorStatus(selected, palette)}`,
+		`${palette.color("muted", "Total cost")}  ${palette.bold(formatUsd(selected.actualCost))}`,
+		...wrapTextWithAnsi(
+			"Every recorded call, including background work and runs that could not be compared.",
+			width,
+		).map((line) => palette.color("dim", line)),
+		"",
+		sectionLabel("Prewalk runs", palette),
+		palette.color("dim", formatRunCount(selected.receipts.length, selected.activeRuns.length)),
+		...renderRunRoutes(selected, width, palette),
+		"",
+		sectionLabel("Est. savings from model switching", palette),
+		...comparisonCoverageLines(comparison, width, palette),
 	];
 	if (comparison.state !== "unavailable") {
 		lines.push(
 			"",
-			sectionLabel("How the estimate is calculated", palette),
-			`Estimated cost without switching   ${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
-			`Comparable work actually cost       ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
-			`Estimated cost change               ${formatSignedDifference(comparison)}`,
+			`Cost with model switching  ${formatUsd(comparison.actualPrimaryCost ?? 0)}`,
 			...wrapTextWithAnsi(
-				"Total paid can be higher because it also includes background calls. Only comparable main calls are used in the estimate.",
+				`Estimated cost if each run's starting model continued  ~${formatUsd(comparison.plannerOnlyEstimate ?? 0)}`,
 				width,
-			).map((line) => palette.color("dim", line)),
+			),
+			`${palette.bold("Est. savings from switching")}  ${formatSignedDifference(comparison)}`,
 			"",
 			...wrapTextWithAnsi(
 				'Estimate only, not measured savings. Prewalk did not run a second control task. "Up to" is the most the recorded token mix suggests you may have saved; the real amount may be smaller.',
@@ -814,22 +843,18 @@ function renderDetails(
 }
 
 function renderHelp(width: number, palette: DashboardPalette): string[] {
-	const lines: string[] = [palette.bold("Start with these three cost numbers"), ""];
+	const lines: string[] = [palette.bold("How to read the cost estimate"), ""];
 	const addSection = (title: string, text: string, tone: DashboardTone = "accent") => {
 		lines.push(palette.color(tone, title));
 		lines.push(...wrapTextWithAnsi(text, width), "");
 	};
 	addSection(
-		"1. Total paid",
-		"The provider-reported cost of every recorded call, including background calls and runs that could not be estimated.",
+		"Cost",
+		"The provider-reported cost of every recorded call, including background work.",
 	);
 	addSection(
-		"2. Estimate based on",
-		"The part of finished spending with enough model-switch and price data to estimate. This can be smaller than Total paid.",
-	);
-	addSection(
-		"3. Estimated cost change",
-		'Estimated cost without switching minus what the comparable work actually cost. "Up to $X less" is the most the recorded token mix suggests you may have saved. "$X more" means switching was estimated to cost more.',
+		"Est. savings from model switching",
+		'For runs that switched models and have usable prices, Prewalk estimates what the same recorded work would have cost if each run\'s starting model had continued. "Up to $X saved" is the most the recorded token mix suggests you may have saved. "$X extra" means switching was estimated to cost more.',
 	);
 	addSection(
 		'Why it says "up to"',
@@ -838,7 +863,7 @@ function renderHelp(width: number, palette: DashboardPalette): string[] {
 	);
 	addSection(
 		"Why an estimate may be missing",
-		"The run never switched models, stopped before enough evidence was recorded, or had no usable price data. Its real cost still remains in Total paid.",
+		"The run never switched models, stopped before enough evidence was recorded, or had no usable price data. Its real cost still counts in Cost.",
 	);
 	lines.push(...dashboardFooter(["R Refresh", "Esc / Enter / ? Back"], width, palette));
 	return lines;
@@ -956,24 +981,18 @@ function compactDifference(comparison: DashboardComparison): string {
 	const amount = formatUsd(Math.abs(comparison.difference ?? 0));
 	const share =
 		comparison.percentage === undefined ? "" : ` (${comparison.percentage.toFixed(0)}%)`;
-	return comparison.state === "higher" ? `${amount} more${share}` : `up to ${amount} less${share}`;
-}
-
-function coveredLabel(comparison: DashboardComparison): string {
-	if (comparison.finishedCost <= 0) return "nothing finished yet";
-	const share = (comparison.coveredCost / comparison.finishedCost) * 100;
-	return `${formatUsd(comparison.coveredCost)} of ${formatUsd(comparison.finishedCost)} (${share.toFixed(0)}%)`;
+	return comparison.state === "higher"
+		? `${amount} extra${share}`
+		: `up to ${amount} saved${share}`;
 }
 
 function comparisonDetail(summary: ReturnType<typeof summarizeComparisons>): string {
-	// Coverage has its own column, so the detail stays short enough to survive
-	// the width the table can actually give it.
-	const parts = [`${summary.comparedRuns} ${plural(summary.comparedRuns, "run")} compared`];
+	const parts: string[] = [];
 	if (summary.noHandoffRuns > 0) {
 		parts.push(`${summary.noHandoffRuns} ${plural(summary.noHandoffRuns, "run")} never switched`);
 	}
 	if (summary.unavailableRuns > 0) parts.push(unavailableSummary(summary));
-	return `${parts.join(". ")}.`;
+	return parts.length > 0 ? `${parts.join(". ")}.` : "";
 }
 
 function unavailableSummary(summary: ReturnType<typeof summarizeComparisons>): string {
@@ -1011,12 +1030,113 @@ function comparisonSummaryLines(
 	if (comparison.state === "unavailable") {
 		return wrapTextWithAnsi(comparison.detail, width).map((line) => palette.color("dim", line));
 	}
-	const equation = `${formatUsd(comparison.plannerOnlyEstimate ?? 0)} estimated without switching − ${formatUsd(comparison.actualPrimaryCost ?? 0)} comparable paid = ${comparison.label}.`;
-	const basis = `Estimate based on ${coveredLabel(comparison)}. ${comparison.detail}`;
+	return comparisonCoverageLines(comparison, width, palette);
+}
+
+function comparisonCoverageLines(
+	comparison: DashboardComparison,
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	const coverage = `Estimate covers ${comparison.comparableRuns} finished ${plural(comparison.comparableRuns, "run")} (${formatUsd(comparison.coveredCost)} of ${formatUsd(comparison.finishedCost)}).`;
+	const text = comparison.detail ? `${coverage} ${comparison.detail}` : coverage;
+	return wrapTextWithAnsi(text, width).map((line) => palette.color("dim", line));
+}
+
+function formatRunCount(finished: number, active: number): string {
+	const total = finished + active;
+	return `${total} Prewalk ${plural(total, "run")}: ${finished} finished, ${active} active`;
+}
+
+/** Prefer the full product label when the column is wide enough; otherwise keep a short readable form. */
+function savingsColumnHeader(columnWidth: number): string {
+	return columnWidth >= SAVINGS_HEADER_FULL.length ? SAVINGS_HEADER_FULL : SAVINGS_HEADER_SHORT;
+}
+
+function sharedMetricLayout(width: number): SharedMetricLayout {
+	const statusWidth = 12;
+	const costWidth = 12;
+	const savingsWidth = Math.min(
+		Math.max(SAVINGS_HEADER_SHORT.length + 2, SAVINGS_HEADER_FULL.length),
+		Math.max(22, width - 50),
+	);
+	const leadingWidth = Math.max(12, width - statusWidth - costWidth - savingsWidth - 10);
+	return { leadingWidth, statusWidth, costWidth, savingsWidth };
+}
+
+function metricHeader(layout: SharedMetricLayout, leadingLabel: string): string {
 	return [
-		...wrapTextWithAnsi(equation, width),
-		...wrapTextWithAnsi(basis, width).map((line) => palette.color("dim", line)),
-	];
+		cell(leadingLabel, layout.leadingWidth, "left"),
+		cell("STATUS", layout.statusWidth, "left"),
+		cell("COST", layout.costWidth, "right"),
+		cell(savingsColumnHeader(layout.savingsWidth), layout.savingsWidth, "right"),
+	].join("  ");
+}
+
+function metricRow(
+	layout: SharedMetricLayout,
+	leading: string,
+	status: string,
+	cost: string,
+	savings: string,
+	leadingStyle: (text: string) => string = (text) => text,
+	savingsStyle: (text: string) => string = (text) => text,
+	costStyle: (text: string) => string = (text) => text,
+): string {
+	return [
+		cell(leading, layout.leadingWidth, "left", leadingStyle),
+		cell(status, layout.statusWidth, "left"),
+		cell(cost, layout.costWidth, "right", costStyle),
+		cell(savings, layout.savingsWidth, "right", savingsStyle),
+	].join("  ");
+}
+
+function renderRunRoutes(
+	session: DashboardSession,
+	width: number,
+	palette: DashboardPalette,
+): string[] {
+	const runs = [
+		...session.receipts.map((receipt) => ({
+			startedAt: receipt.startedAt,
+			status: outcomeLabel(receipt.outcome),
+			handoffState: receipt.handoffState,
+			planner: receipt.planner,
+			executor: receipt.executor,
+		})),
+		...session.activeRuns.map((run) => ({
+			startedAt: run.startedAt,
+			status: "Active",
+			handoffState: run.handoffState,
+			planner: run.planner,
+			executor: run.executor,
+		})),
+	].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+	if (runs.length === 0) return [palette.color("dim", "No runs recorded.")];
+	const visible = runs.slice(0, DETAIL_RUN_LIMIT);
+	const lines = visible.flatMap((run) =>
+		wrapTextWithAnsi(
+			`${run.status} · ${formatModelRoute(run.planner, run.executor, run.handoffState)}`,
+			width,
+		),
+	);
+	if (runs.length > visible.length) {
+		lines.push(palette.color("dim", `${runs.length - visible.length} older runs not shown.`));
+	}
+	return lines;
+}
+
+function formatModelRoute(
+	planner: ModelIdentity,
+	executor: ModelIdentity,
+	handoffState: HandoffState,
+): string {
+	const startedOn = `${planner.provider}/${planner.model}`;
+	const switchedTo = `${executor.provider}/${executor.model}`;
+	if (handoffState === "completed") return `${startedOn} → ${switchedTo}`;
+	if (handoffState === "pending") return `${startedOn} → ${switchedTo} (switch pending)`;
+	if (handoffState === "failed") return `${startedOn} → ${switchedTo} (switch failed)`;
+	return `${startedOn} only`;
 }
 
 function hasMoreSessions(model: AnalyticsDashboardModel): boolean {
@@ -1124,8 +1244,8 @@ function formatSignedDifference(comparison: DashboardComparison): string {
 	if (comparison.difference === undefined) return "Unavailable";
 	const amount = comparison.difference;
 	const percent = comparison.percentage?.toFixed(1) ?? "0.0";
-	if (amount > 0) return `up to ${formatUsd(amount)} less (${percent}%)`;
-	if (amount < 0) return `${formatUsd(-amount)} more (${percent}%)`;
+	if (amount > 0) return `up to ${formatUsd(amount)} saved (${percent}%)`;
+	if (amount < 0) return `${formatUsd(-amount)} extra (${percent}%)`;
 	return "About the same (0.0%)";
 }
 

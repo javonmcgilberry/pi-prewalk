@@ -20,6 +20,8 @@ import {
 	type DelegationEvidence,
 	deserializeRunJournal,
 	deserializeRunReceipt,
+	type HandoffState,
+	type ModelIdentity,
 	parseRunJournal,
 	parseRunReceipt,
 	parseVerifiedBenchmarkSummary,
@@ -72,6 +74,9 @@ export interface UnfinishedRunSummary {
 	sessionId: string;
 	startedAt: string;
 	outcome: "unfinished";
+	handoffState: HandoffState;
+	planner: ModelIdentity;
+	executor: ModelIdentity;
 	actualCost: number;
 }
 
@@ -959,6 +964,9 @@ function summarizeUnfinishedJournal(journal: RunJournal): UnfinishedRunSummary {
 		sessionId: journal.sessionId,
 		startedAt: journal.startedAt,
 		outcome: "unfinished",
+		handoffState: journal.handoffState,
+		planner: journal.configuration.planner,
+		executor: journal.configuration.executor,
 		actualCost: summarizeActualCost(journal.usage).total,
 	};
 }

@@ -556,6 +556,9 @@ describe("AnalyticsStore", () => {
 				sessionId: "session-1",
 				startedAt: "2026-03-08T06:30:00.000Z",
 				outcome: "unfinished",
+				handoffState: "pending",
+				planner,
+				executor,
 				actualCost: 0.25,
 			},
 		]);

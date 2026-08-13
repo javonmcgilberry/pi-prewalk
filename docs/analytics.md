@@ -14,12 +14,12 @@ current question first: which session is this, is a run active, what has it
 spent, and is an estimate available? Session titles are the primary labels;
 stable IDs appear in the details view.
 
-The dashboard puts the cost numbers in a fixed order. `Total paid` is the
-provider-reported total. `Estimate based on` is the part of finished spending
-with enough evidence for a comparison. `Estimated cost change` says whether
-switching models may have cost less or more. The details screen puts the
-estimated cost without switching beside the comparable amount actually paid,
-so the relationship is visible without opening Help.
+The main table stays short: `COST` is the provider-reported total, and
+`EST. SAVINGS FROM MODEL SWITCHING` says how much switching may have saved or
+cost. Open a session to see what the estimate used, how it was calculated, and
+the model route for each recent run. Prewalk run counts appear as secondary
+text instead of another table column. Current session, totals, and recent
+sessions share one wide-screen column grid so `COST` and savings line up.
 
 The dashboard order is:
 
@@ -43,12 +43,12 @@ shows active and finished Prewalk runs recorded in that session. Delegated child
 sessions are excluded from this section; `/prewalk stats task` reports the whole
 task tree.
 
-An active run can show total paid, but its estimated cost change can change
-until the run finishes. Historical comparisons use finished runs only.
+An active run can show cost, but its est. savings from model switching can
+change until the run finishes. Historical comparisons use finished runs only.
 
-Total paid is provider-reported cost captured for planner, executor,
-helper, and compaction calls. The planner is the model selected in Pi before
-handoff. The executor is the model that continues after handoff.
+Cost is the provider-reported amount captured for planner, executor, helper,
+and compaction calls. The planner is the model selected in Pi before handoff.
+The executor is the model that continues after handoff.
 
 The estimated difference keeps the recorded primary token counts and prices the
 executor's tokens at the planner's rates:
@@ -65,10 +65,10 @@ estimated difference
 
 Positive values mean planner + executor calls cost less than the planner-alone
 estimate. Negative values mean they cost more. Helper and compaction calls are
-included in total paid but not in this comparison. This is not a separate
+included in total spend but not in this comparison. This is not a separate
 planner-only run or a measured benchmark.
 
-Read the cost change as an estimate. `Up to` is the most the recorded token mix
+Read the result as an estimate. `Up to` is the most the recorded token mix
 suggests switching might have saved, not a measured amount. The calculation
 prices the tokens the executor actually used, assuming the planner would have
 used the same ones. A cheaper executor often needs more turns to reach the same
@@ -77,13 +77,12 @@ leans high. The gap widens as the price ratio widens. Only an accepted
 benchmark report, labelled `verified`, measures the difference instead of
 estimating it.
 
-Total paid and the estimated cost change cover different runs, so they are not
-two halves of one ratio. Total paid counts every run in the period,
-including runs that never handed off and runs with no usable pricing. The
-difference only covers runs that could be compared. Each comparison therefore
-states `Estimate based on $X of $Y`, and that $X figure is the one to read the
-difference against. A small difference beside a large total usually
-means narrow coverage rather than a poor result.
+Cost and the est. savings from model switching cover different scopes. Cost
+includes every run in the period, including runs that never handed off or had
+no usable pricing. The estimate only uses finished runs that switched models
+and had enough data. The details screen says how many finished runs the
+estimate covers and shows their share of the cost. A small estimate beside a
+large total may simply mean that few runs qualified.
 
 A call counts as planner work only while the run is still planning. Once the
 executor takes over, later planner-model turns are recorded as helper spend
@@ -92,13 +91,14 @@ inflate the planner-alone baseline.
 
 The dashboard labels mean:
 
-- `Total paid` comes from Pi-reported usage and may include helper or
+- `Cost` comes from Pi-reported usage and may include helper or
   compaction calls.
-- `Estimate based on` is the finished spending with usable switching and price
-  evidence.
-- `Estimated cost without switching` reprices the comparable recorded work at
-  the first model's rates; it is not a second run.
-- `Estimated cost change` subtracts comparable actual cost from that estimate.
+- `Est. savings from model switching` reports `up to $X saved`, `$X extra`,
+  or `about the same`.
+- `Estimated cost if each run's starting model continued` reprices the recorded
+  work at that model's rates; it is not a second run.
+- `Prewalk runs` lists each recent run as `provider/model → provider/model`.
+  Runs that never switched say `only`; pending or failed switches are labelled.
 - `catalog estimate` uses the optional dated catalog fallback.
 - `cannot compare` names the missing input, such as executor usage or model pricing.
 - `finished before handoff` means planning ended without executor work, so

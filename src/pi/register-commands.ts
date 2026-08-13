@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { showAnalyticsDashboard } from "../analytics/dashboard.js";
-import type { AnalyticsConfig, RunOutcome } from "../analytics/index.js";
+import type { AnalyticsConfig, RunOutcome, TaskTreeReport } from "../analytics/index.js";
 import {
 	renderAnalyticsOverview,
 	renderReceiptReport,
 	renderTaskTreeReport,
 } from "../analytics/report.js";
 import type { PrewalkAnalytics } from "../analytics/run-accounting.js";
+import type { AnalyticsAggregate } from "../analytics/store.js";
 import {
 	childAgentNames,
 	childPolicyFor,
@@ -193,7 +194,7 @@ export interface PrewalkCommandRegistration {
 	onRelease(ctx: ExtensionContext): Promise<void>;
 	startManual(ctx: ExtensionContext): Promise<void>;
 	onConfigure(ctx: ExtensionContext): Promise<void>;
-	loadSessionTitles(): Promise<ReadonlyMap<string, string>>;
+	loadSessionTitles(sessionIds?: readonly string[]): Promise<ReadonlyMap<string, string>>;
 	analyticsConfig(): AnalyticsConfig;
 }
 
@@ -255,7 +256,13 @@ async function showStats(
 		}
 		if (input === "task") {
 			const report = await deps.analytics.taskTree(ctx.sessionManager.getSessionId());
-			ctx.ui.notify(renderTaskTreeReport(report, await deps.loadSessionTitles()), "info");
+			ctx.ui.notify(
+				renderTaskTreeReport(
+					report,
+					await deps.loadSessionTitles(collectTaskTreeSessionIds(report)),
+				),
+				"info",
+			);
 			return;
 		}
 		if (input.startsWith("receipt ")) {
@@ -267,7 +274,10 @@ async function showStats(
 				ctx.ui.notify(`No analytics receipt found for run ${runId}.`, "error");
 				return;
 			}
-			ctx.ui.notify(renderReceiptReport(receipt, await deps.loadSessionTitles()), "info");
+			ctx.ui.notify(
+				renderReceiptReport(receipt, await deps.loadSessionTitles([receipt.sessionId])),
+				"info",
+			);
 			return;
 		}
 		const successfulOnly = input === "--successful";
@@ -276,7 +286,8 @@ async function showStats(
 			? ["succeeded"]
 			: undefined;
 		const common = outcomes ? { outcomes } : {};
-		const loadOverview = async () => {
+		let cachedTitles: ReadonlyMap<string, string> | undefined;
+		const loadOverview = async (titleMode: "metadata" | "full" = "full") => {
 			await deps.analytics.waitForWrites();
 			const config = deps.analyticsConfig();
 			const snapshot = await deps.analytics.snapshot();
@@ -299,6 +310,14 @@ async function showStats(
 				deps.analytics.aggregate({ ...common, now, timeZone, sessionId }, snapshot),
 			]);
 			const verifiedBenchmark = await deps.analytics.readVerifiedBenchmarkSummary();
+			const sessionIds = collectOverviewSessionIds(sessionId, lifetime, month, week, session);
+			let sessionTitles: ReadonlyMap<string, string>;
+			if (titleMode === "metadata") {
+				sessionTitles = cachedTitles ?? (await deps.loadSessionTitles([]));
+			} else {
+				sessionTitles = await deps.loadSessionTitles(sessionIds);
+				cachedTitles = sessionTitles;
+			}
 			return {
 				generatedAt: now.toISOString(),
 				sessionId,
@@ -307,14 +326,28 @@ async function showStats(
 				week,
 				session,
 				verifiedBenchmark: verifiedBenchmark ?? undefined,
-				sessionTitles: await deps.loadSessionTitles(),
+				sessionTitles,
 			};
 		};
-		const overview = await loadOverview();
 		if (!input && ctx.mode === "tui") {
-			await showAnalyticsDashboard(ctx, overview, loadOverview);
+			const overview = await loadOverview("metadata");
+			await showAnalyticsDashboard(ctx, overview, () => loadOverview("metadata"), {
+				enrichTitles: async () => {
+					const sessionIds = collectOverviewSessionIds(
+						overview.sessionId,
+						overview.lifetime,
+						overview.month,
+						overview.week,
+						overview.session,
+					);
+					const sessionTitles = await deps.loadSessionTitles(sessionIds);
+					cachedTitles = sessionTitles;
+					return { ...overview, sessionTitles };
+				},
+			});
 			return;
 		}
+		const overview = await loadOverview("full");
 		ctx.ui.notify(renderAnalyticsOverview(overview), "info");
 	} catch (error) {
 		if (error instanceof Error && error.message.includes("choose a new filename")) {
@@ -334,6 +367,28 @@ async function showStats(
 			"error",
 		);
 	}
+}
+
+function collectOverviewSessionIds(
+	currentSessionId: string,
+	...aggregates: readonly AnalyticsAggregate[]
+): string[] {
+	const ids = new Set<string>([currentSessionId]);
+	for (const aggregate of aggregates) {
+		for (const receipt of aggregate.receipts) ids.add(receipt.sessionId);
+		for (const run of aggregate.unfinished) ids.add(run.sessionId);
+	}
+	return [...ids];
+}
+
+function collectTaskTreeSessionIds(report: TaskTreeReport): string[] {
+	const ids = new Set<string>([report.rootSessionId]);
+	for (const receipt of report.rootReceipts) ids.add(receipt.sessionId);
+	for (const receipt of report.descendantReceipts) ids.add(receipt.sessionId);
+	for (const evidence of report.fallbackEvidence) {
+		if (evidence.childSessionId) ids.add(evidence.childSessionId);
+	}
+	return [...ids];
 }
 
 export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandRegistration): void {

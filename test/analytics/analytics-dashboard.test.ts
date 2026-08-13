@@ -181,10 +181,10 @@ describe("analytics dashboard", () => {
 		expect(details).toContain("session-current");
 	});
 
-	it("replaces opaque savings and coverage labels with plain language", () => {
+	it("keeps the table focused on cost and the switching estimate", () => {
 		const comparison = summarizeComparison([receipt()]);
-		expect(comparison.label).toBe("up to $0.20 less");
-		expect(comparison.detail).toBe("1 run compared.");
+		expect(comparison.label).toBe("up to $0.20 saved");
+		expect(comparison.detail).toBe("");
 		expect(comparison.coveredCost).toBeCloseTo(0.8, 10);
 		expect(comparison.finishedCost).toBeCloseTo(0.8, 10);
 		const output = renderAnalyticsDashboard(
@@ -195,7 +195,97 @@ describe("analytics dashboard", () => {
 		).join("\n");
 		expect(output).not.toContain("Prewalk primary");
 		expect(output).not.toContain("COVERAGE");
+		expect(output).not.toContain("COMPARED ON");
+		expect(output).not.toContain("VS. NO SWITCH");
+		expect(output).not.toMatch(/\bRUNS\b/);
+		expect(output).toContain("EST. SAVINGS FROM MODEL SWITCHING");
+		expect(output).toContain("up to $0.20 saved");
+		expect(output).toContain("1 Prewalk run: 1 finished, 0 active");
+		expect(output).toContain("Estimate covers 1 finished run ($0.80 of $0.80).");
+		expect(output).toContain("PERIOD");
 		expect(output).not.toMatch(/\b\d+\s*\/\s*\d+\b/);
+	});
+
+	it("explains the switching baseline in session details", () => {
+		const details = renderAnalyticsDashboard(
+			buildAnalyticsDashboardModel(overview()),
+			{ view: "details", selectedIndex: 0 },
+			90,
+			palette,
+		).join("\n");
+		expect(details).toContain("Cost with model switching");
+		expect(details).toContain("starting model continued");
+		expect(details).toContain("Est. savings from switching");
+		expect(details).toContain("up to $0.20 saved");
+		expect(details).toContain("Complete · openai/planner → openai/executor");
+		expect(details).not.toContain("Compared on");
+		expect(details).not.toContain("Vs. no switching");
+		expect(details).not.toContain("SWITCHING ESTIMATE");
+	});
+
+	it("shows each run's route without implying a switch that did not happen", () => {
+		const planningOnly = receipt({
+			runId: "run-planning-only",
+			startedAt: "2026-08-06T12:08:00.000Z",
+			handoffState: "not-started",
+			actualCost: 0.4,
+			estimate: { kind: "unavailable", reason: "usage-incomplete" },
+			pricingEvidence: { source: "unavailable", reason: "usage-incomplete" },
+		});
+		const active = {
+			runId: "run-active",
+			epoch: "epoch-active",
+			sessionId: "session-current",
+			startedAt: "2026-08-06T12:09:00.000Z",
+			outcome: "unfinished" as const,
+			handoffState: "pending" as const,
+			planner: { provider: "anthropic", model: "opus" },
+			executor: { provider: "anthropic", model: "sonnet" },
+			actualCost: 0.1,
+		};
+		const model = buildAnalyticsDashboardModel(
+			overview({
+				session: aggregate({
+					receiptCount: 1,
+					actualCost: 0.5,
+					receipts: [planningOnly],
+					unfinished: [active],
+				}),
+			}),
+		);
+		const details = renderAnalyticsDashboard(
+			model,
+			{ view: "details", selectedIndex: 0 },
+			90,
+			palette,
+		).join("\n");
+		expect(details).toContain("Active · anthropic/opus → anthropic/sonnet (switch pending)");
+		expect(details).toContain("Complete · openai/planner only");
+	});
+
+	it("bounds the run-route list in long sessions", () => {
+		const receipts = Array.from({ length: 8 }, (_, index) =>
+			receipt({
+				runId: `run-${index + 1}`,
+				startedAt: `2026-08-06T12:${String(index).padStart(2, "0")}:00.000Z`,
+			}),
+		);
+		const details = renderAnalyticsDashboard(
+			buildAnalyticsDashboardModel(
+				overview({
+					session: aggregate({
+						receiptCount: receipts.length,
+						actualCost: 6.4,
+						receipts,
+					}),
+				}),
+			),
+			{ view: "details", selectedIndex: 0 },
+			90,
+			palette,
+		).join("\n");
+		expect(details.match(/openai\/planner → openai\/executor/g)).toHaveLength(6);
+		expect(details).toContain("2 older runs not shown.");
 	});
 
 	it("puts active current-session spend before historical analysis", () => {
@@ -210,6 +300,9 @@ describe("analytics dashboard", () => {
 							sessionId: "session-current",
 							startedAt: "2026-08-06T12:09:00.000Z",
 							outcome: "unfinished",
+							handoffState: "completed",
+							planner: { provider: "openai", model: "planner" },
+							executor: { provider: "openai", model: "executor" },
 							actualCost: 0.35,
 						},
 					],
@@ -263,9 +356,9 @@ describe("analytics dashboard", () => {
 
 		expect(comparison.comparableRuns).toBe(1);
 		expect(comparison.successfulRuns).toBe(2);
-		expect(comparison.detail).toBe("1 run compared. 1 run never switched.");
-		// Coverage is a column now, so the difference cannot be read as a rate
-		// over spend it never covered.
+		expect(comparison.detail).toBe("1 run never switched.");
+		// The estimate still records the spending it covers, even though that
+		// supporting detail no longer crowds the overview table.
 		expect(comparison.coveredCost).toBeCloseTo(0.8, 10);
 		expect(comparison.finishedCost).toBeCloseTo(1.2, 10);
 	});
@@ -277,8 +370,7 @@ describe("analytics dashboard", () => {
 			pricingEvidence: { source: "unavailable", reason: "pricing-missing" },
 		});
 		const mixed = summarizeComparison([receipt(), missingPricing]);
-		expect(mixed.label).toBe("up to $0.20 less");
-		expect(mixed.detail).toContain("1 run compared");
+		expect(mixed.label).toBe("up to $0.20 saved");
 		expect(mixed.detail).toContain("1 run with no price data");
 
 		const cancelled = summarizeComparison([
@@ -300,8 +392,9 @@ describe("analytics dashboard", () => {
 			palette,
 		).join("\n");
 		// The help pane must explain the numbers without internal vocabulary.
-		expect(help).toContain("Total paid");
-		expect(help).toContain("Estimated cost without switching");
+		expect(help).toContain("Cost");
+		expect(help).toContain("Est. savings from model switching");
+		expect(help).toContain("starting model had continued");
 		expect(help).toContain("most the recorded token mix suggests");
 		expect(help).toContain("not measured savings");
 		expect(help).not.toContain("planner");
@@ -342,7 +435,7 @@ describe("analytics dashboard", () => {
 		);
 		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		expect(lines.join("\n")).toContain("This week");
-		expect(lines.join("\n").toLowerCase()).toContain("estimated");
+		expect(lines.join("\n").toLowerCase()).toContain("estimate");
 	});
 
 	it("states the situation instead of repeating the reason in the current session", () => {
@@ -365,7 +458,7 @@ describe("analytics dashboard", () => {
 		const current = lines.slice(0, lines.indexOf("TOTALS OVER TIME"));
 
 		// The headline reads as a state, and the reason appears once below it.
-		expect(current).toContain("Not enough data yet");
+		expect(current).toContain("Not enough data");
 		expect(current.match(/no price data/gi) ?? []).toHaveLength(1);
 	});
 
@@ -554,6 +647,38 @@ describe("analytics dashboard", () => {
 		expect(rendered[4]).toContain("All logged sessions");
 		expect(rendered[5]).toContain("Prewalk usage");
 		expect(closeCount).toBe(1);
+	});
+
+	it("backfills session titles after open without a refreshing banner", async () => {
+		const initial = overview({
+			sessionTitles: new Map([["session-current", "Untitled for now"]]),
+		});
+		const enriched = overview({
+			sessionTitles: new Map([["session-current", "Backfilled title"]]),
+		});
+		let sawRefreshing = false;
+		let finalFrame = "";
+		const custom = async (factory: any) => {
+			const component = factory(
+				{ requestRender: () => undefined },
+				{ fg: (_tone: string, text: string) => text, bold: (text: string) => text },
+				dashboardKeybindings,
+				() => undefined,
+			);
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			const frame = component.render(100).join("\n");
+			sawRefreshing = frame.includes("Refreshing");
+			finalFrame = frame;
+			component.dispose();
+			return undefined;
+		};
+		await showAnalyticsDashboard({ ui: { custom } } as any, initial, async () => initial, {
+			enrichTitles: async () => enriched,
+		});
+		expect(sawRefreshing).toBe(false);
+		expect(finalFrame).toContain("Backfilled title");
 	});
 
 	it("can close and reopen repeatedly through the real custom-component boundary", async () => {

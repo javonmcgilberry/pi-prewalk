@@ -473,18 +473,19 @@ outcomes, and timestamps. It does not store prompts, responses, code, tool
 inputs or outputs, credentials, provider payloads, raw errors, or filesystem
 paths.
 
-`Total paid` is provider-reported cost captured for the run. It can include
-planner, executor, helper, and compaction calls. `Estimate based on` names the
-part of finished spending with enough evidence for a comparison. The details
-screen then shows one equation: estimated cost without switching minus what
-the comparable work actually cost equals the estimated cost change. It is not
-a separate planner-only run, a billing statement, or measured savings.
-Missing pricing or usage is named directly; Prewalk does not invent a rate.
+`Cost` is the provider-reported cost captured for the run. It can include
+planner, executor, helper, and compaction calls. `Est. savings from model
+switching` says how much switching may have saved or cost. The details screen
+shows the cost with model switching and the estimated cost if each run's
+starting model had continued. This is not a separate control run, a billing
+statement, or measured savings. Missing pricing or usage is named directly;
+Prewalk does not invent a rate.
 
-Total paid and the estimated cost change can cover different runs, so dividing
-one by the other understates the result. Total paid counts every run; the
-difference covers only comparable ones. Each comparison says exactly how much
-finished spending the estimate is based on.
+Cost covers every run. The savings estimate only uses finished runs with a
+model switch and enough pricing data. The details screen says how many finished
+runs the estimate covers and shows their share of the cost. Run counts stay
+below the main cost table. Open a session to see each run's model route,
+including runs that never switched or still have a switch pending.
 
 The change is shown as `up to` because it is an estimate. This is the most the
 recorded token mix suggests you may have saved, not a measured amount. The math
