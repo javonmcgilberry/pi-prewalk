@@ -37,10 +37,11 @@ The relevant pieces have separate owners:
 1. `SettingsManager` owns effective global-plus-project compaction policy.
 2. `AgentSession` uses that policy for Pi's native compaction check and emits
    `session_before_compact` and `session_compact` when it persists a result.
-3. `src/provider-overlay.ts` owns the request-time executor guard. It can stop a
-   request before transport and report pressure to Prewalk.
-4. `extensions/prewalk.ts` owns the run state, the public `ctx.compact()` call,
-   and the retry/checklist decision.
+3. `src/executor/provider-overlay.ts` owns the request-time planner and executor
+   guards. It can stop an oversized Prewalk request before transport and report
+   pressure to the run.
+4. `src/pi/register-events.ts` owns the run state, the public `ctx.compact()`
+   call, and the planner continuation or executor checklist retry.
 5. Codex Conversion owns its provider registration and its transport wrapper;
    Prewalk must not assume that it is the only registered stream.
 
@@ -57,33 +58,35 @@ is reconciled before an observer error can change the outcome.
 The flow is:
 
 ```text
-executor request
-  ├─ preflight pressure ──> wait for turn_end/agent_settled
-  │                         ├─ Pi session_compact ──> host satisfied
-  │                         └─ no host compaction ──> ctx.compact()
-  └─ provider overflow ──> same pressure path
+active Prewalk request
+  ├─ planner or executor preflight pressure ──> wait for turn_end/agent_settled
+  │                                              ├─ Pi session_compact ──> host satisfied
+  │                                              └─ no host compaction ──> ctx.compact()
+  └─ executor provider overflow ──> same pressure path
 ```
 
-The retry counter is scoped to a run and pressure sequence. A failed or
-blocked request may replay the hidden checklist once. A completed over-window
-response can compact without replaying its answer. If the retried request is
-still oversized, Prewalk fails instead of looping.
+The retry counter is scoped to a run, route, and pressure sequence. Planning
+may continue once after compaction; an executor request may replay the hidden
+checklist once. A completed over-window response can compact without replaying
+its answer. If the retried request is still oversized, Prewalk fails instead
+of looping. One request that fits clears the route's retry counter, so a later
+pressure sequence can compact normally.
 
 ## Policy correction
 
-`src/executor-context.ts` keeps 16,384 as a compatibility fallback, but both
-threshold helpers accept the effective reserve. The extension reads
+`src/executor/context.ts` keeps 16,384 as a compatibility fallback, and the
+shared threshold helpers accept the effective reserve. The extension reads
 `SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings()`
-and passes the reserve through both executor checks:
+and passes the reserve through all request checks:
 
-- the provider overlay's preflight check; and
+- the provider overlay's planner and executor preflight checks; and
 - the post-turn executor watchdog.
 
 The policy is refreshed at session start, before a handoff, and before each
-turn. If automatic compaction is disabled, an oversized executor request is
-not sent and Prewalk fails closed with `executor-compaction-failed`. That is
-safer than calling the public compactor when Pi's own policy says not to
-compact.
+turn. If automatic compaction is disabled, an oversized request is not sent.
+Prewalk fails closed with `planner-compaction-failed` or
+`executor-compaction-failed` instead of calling the public compactor when Pi's
+setting says not to.
 
 The setting lookup stays in the extension. The public extension context
 exposes `cwd`, `getAgentDir()` is the same runtime directory used by Pi, and
@@ -117,15 +120,16 @@ Oh My Pi can switch the session model temporarily, so its compaction and
 overflow paths naturally size themselves against the executor. A stock Pi
 extension cannot use the public `setModel()` for that purpose: it changes the
 user's saved model. Prewalk therefore keeps the planner selected and overlays
-the registered provider stream. The executor guard, effective reserve lookup,
-settled scheduling, and host-compaction reconciliation are Pi-native repairs
-for that public-API boundary, not attempts to claim private-session-model
-parity.
+the registered provider stream. The planner/executor guards, effective reserve
+lookup, settled scheduling, and host-compaction reconciliation are Prewalk
+safeguards built on Pi's public API. They do not patch Pi or claim the same
+integration as a private session-model switch.
 
 The following behavior remains intentionally different:
 
-- Pi's native compaction is still sized for the selected planner. Prewalk adds
-  the executor watchdog rather than replacing Pi's compaction policy.
+- Pi's native compaction is still sized for the selected planner. During an
+  active run, Prewalk adds request guards for its planner and executor rather
+  than replacing Pi's compaction policy. An inactive session is not wrapped.
 - Prewalk waits for `agent_settled` before invoking public compaction so it does
   not compete with Pi's post-turn work.
 - The selected planner remains visible to Pi and the user while executor
@@ -148,13 +152,14 @@ deep module. `src/executor-chain.ts` remains the one source of truth for
 executor selection, and the extension remains the owner of durable run
 semantics.
 
-The implemented seam is narrower: `src/model-runtime.ts` exposes a
+The implemented seam is narrower: `src/executor/temporary-runtime.ts` exposes a
 run-scoped `TemporaryModelRuntime` with `mount()` and a
 `TemporaryModelLease.restore()`/`ownsRoute()` contract. Its stock-Pi
 adapter hides provider registration, exact planning-prompt removal,
-request-time executor/auth resolution, executor stream evidence, context
-preflight, and provider ownership. Semantic callbacks report only observed
-executor start/success/failure, context pressure, and provider drift. A lease
+request-time executor/auth resolution, executor stream evidence, planner and
+executor context preflight, and provider ownership. Semantic callbacks report
+only observed executor start/success/failure, route-specific context pressure,
+and provider drift. A lease
 captures its run identity and invalidates callbacks before restoring the
 provider, so a delayed stream or stale overlay from run N cannot fail run N+1.
 
@@ -177,16 +182,16 @@ real.
 
 Tests cover the public boundaries separately:
 
-- `test/model-runtime.test.ts` checks the run-scoped lease contract, exact
-  provider restoration, and stale callback isolation.
-- `test/executor-context.test.ts` checks the default and custom reserve math.
-- `test/provider-overlay.test.ts` checks that the effective reserve reaches
-  executor preflight.
-- `test/extension.test.ts` checks configured reserves, disabled compaction,
-  settled scheduling, native-compaction deduplication, retry limits, and
-  observer-error reconciliation.
-- `test/codex-conversion.test.ts` composes the installed Conversion stream in
-  both registration orders.
+- `test/executor/model-runtime.test.ts` checks the run-scoped lease contract,
+  exact provider restoration, and stale callback isolation.
+- `test/executor/executor-context.test.ts` checks the default and custom reserve math.
+- `test/executor/provider-overlay.test.ts` checks that the effective reserve
+  reaches planner and executor preflight.
+- `test/integration/extension.test.ts` checks configured reserves, disabled
+  compaction, settled scheduling, native-compaction deduplication, retry limits,
+  inactive tool slates, and observer-error reconciliation.
+- `test/integration/codex-conversion.test.ts` composes the installed Conversion
+  stream in both registration orders.
 - `scripts/teeth/cross-provider.teeth.json` keeps the pressure and lifecycle
   regressions mutation-tested.
 

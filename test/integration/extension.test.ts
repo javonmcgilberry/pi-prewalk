@@ -550,8 +550,10 @@ afterEach(async () => {
 });
 
 describe("Prewalk extension harness", () => {
-	it("registers an always-available todo tool and public lifecycle handlers", async () => {
-		const harness = createHarness();
+	it("registers Prewalk tools but exposes them only while Prewalk is active", async () => {
+		const harness = createHarness({
+			activeTools: [PREWALK_TODO_TOOL_NAME, "prewalk_assess", "edit", "write", "bash"],
+		});
 		prewalkExtension(harness.pi);
 
 		expect([...harness.tools.keys()].sort()).toEqual(["prewalk_assess", PREWALK_TODO_TOOL_NAME]);
@@ -594,9 +596,15 @@ describe("Prewalk extension harness", () => {
 			"continue",
 			"bypass",
 		]);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
 		await expect(
 			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("todo-1", { op: "view" }),
 		).rejects.toThrow("inactive");
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
 		expect(harness.handlers.has("session_start")).toBe(true);
 		expect(harness.handlers.has("context")).toBe(true);
 		expect(harness.handlers.has("session_before_compact")).toBe(true);
@@ -860,7 +868,7 @@ describe("Prewalk extension harness", () => {
 		await harness.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "bypass" });
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
-		expect(harness.activeTools()).toEqual(["read", "grep", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.activeTools()).toEqual(["read", "grep"]);
 		expect(harness.messages).toEqual([]);
 		expect(harness.entries.filter((entry) => entry.customType === "prewalk-audit")).toEqual([]);
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
@@ -1007,7 +1015,7 @@ describe("Prewalk extension harness", () => {
 			"Build an end-to-end feature across multiple concerns",
 		);
 		await cancelled.commands.get("prewalk")?.("cancel", cancelled.context);
-		expect(cancelled.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(cancelled.activeTools()).toEqual(["read", "edit"]);
 		await expect(
 			cancelled.tools.get("prewalk_assess")?.execute("assessment-1", { decision: "continue" }),
 		).rejects.toThrow("inactive");
@@ -1021,7 +1029,7 @@ describe("Prewalk extension harness", () => {
 		restored.setBranch(auditBranch(first));
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
-		expect(restored.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(restored.activeTools()).toEqual(["read", "edit"]);
 		expect(restored.messages).toEqual([]);
 	});
 
@@ -1153,7 +1161,7 @@ describe("Prewalk extension harness", () => {
 				systemPromptOptions: {},
 			});
 		}
-		expect(harness.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
 		expect(harness.messages).toEqual([]);
 	});
 
@@ -1172,7 +1180,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.tools.has("prewalk_todo")).toBe(true);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		expect(harness.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
 
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
@@ -1217,7 +1225,7 @@ describe("Prewalk extension harness", () => {
 		).toBe(false);
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
-		expect(harness.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.activeTools()).toEqual(["read", "todo", "edit"]);
 	});
 
 	it("restores a foreign todo slate after a same-session reload", async () => {
@@ -1243,7 +1251,7 @@ describe("Prewalk extension harness", () => {
 		expect(restored.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
 
 		await restored.commands.get("prewalk")?.("cancel", restored.context);
-		expect(restored.activeTools()).toEqual(["read", "todo", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(restored.activeTools()).toEqual(["read", "todo", "edit"]);
 	});
 
 	it("refuses to arm when Conversion native Responses compaction is enabled", async () => {
@@ -4471,7 +4479,7 @@ describe("Prewalk extension harness", () => {
 			source: "user",
 			model: evaluation.executor,
 		});
-		expect(evaluation.activeTools()).toEqual(["read", "edit", PREWALK_TODO_TOOL_NAME]);
+		expect(evaluation.activeTools()).toEqual(["read", "edit"]);
 		expect(evaluation.statuses.at(-1)).toBe("prewalk: auto-ready");
 		await evaluation.emit("input", {
 			type: "input",
@@ -4501,7 +4509,7 @@ describe("Prewalk extension harness", () => {
 			model: active.executor,
 		});
 		expect(active.providerConfig()?.streamSimple).toBe(active.baseStream);
-		expect(active.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
+		expect(active.activeTools()).toEqual(["edit", "write", "bash"]);
 		expect(active.statuses.at(-1)).toBe("prewalk: auto-ready");
 		await active.emit("input", {
 			type: "input",
@@ -4593,6 +4601,216 @@ describe("Prewalk extension harness", () => {
 			expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 		},
 	);
+
+	it("compacts and resumes planning before an oversized planner request reaches transport", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const pressureMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
+			} as never)
+			.result();
+
+		expect(harness.delegated).toEqual([]);
+		expect(pressureMessage).toMatchObject({
+			provider: harness.planner.provider,
+			model: harness.planner.id,
+			stopReason: "stop",
+			content: [],
+		});
+		const beforeResume = harness.messages.length;
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: pressureMessage,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toHaveLength(1);
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "manual",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "planner-pressure" },
+			reason: "manual",
+			willRetry: false,
+		});
+		harness.completeCompaction();
+
+		expect(harness.messages).toHaveLength(beforeResume + 1);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+		expect(
+			harness.entries.some(
+				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
+			),
+		).toBe(false);
+	});
+
+	it("fails closed when planner pressure remains after one compaction retry", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const oversized = {
+			messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
+		} as never;
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const firstPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: firstPressure,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "manual",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "planner-pressure-retry" },
+			reason: "manual",
+			willRetry: false,
+		});
+		harness.completeCompaction();
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const secondPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: secondPressure,
+			toolResults: [],
+		});
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "native-planner-pressure-retry" },
+			fromExtension: false,
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.delegated).toEqual([]);
+		expect(harness.compactionCalls).toHaveLength(1);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: planner-compaction-failed.");
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+	});
+
+	it("fails closed before planner transport when automatic compaction is disabled", async () => {
+		await writeFile(
+			path.join(agentDir, "settings.json"),
+			JSON.stringify({ compaction: { enabled: false, reserveTokens: 32_768 } }),
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("agent_start", { type: "agent_start" });
+		const pressureMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: pressureMessage,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.delegated).toEqual([]);
+		expect(harness.compactionCalls).toEqual([]);
+		expect(harness.notifications).toContain(
+			"Prewalk stopped before an oversized planner request because Pi automatic compaction is disabled.",
+		);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: planner-compaction-failed.");
+	});
+
+	it("accepts Pi's planner compaction without starting another retry cycle", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const oversized = {
+			messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
+		} as never;
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const firstPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: firstPressure,
+			toolResults: [],
+		});
+		const beforeResume = harness.messages.length;
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "native-planner-pressure" },
+			fromExtension: false,
+			reason: "threshold",
+			willRetry: false,
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toEqual([]);
+		expect(harness.messages).toHaveLength(beforeResume + 1);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const secondPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: secondPressure,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toEqual([]);
+		expect(harness.notifications.at(-1)).toBe("Prewalk failed: planner-compaction-failed.");
+	});
 
 	it("uses the executor window for threshold compaction", async () => {
 		const harness = createHarness();

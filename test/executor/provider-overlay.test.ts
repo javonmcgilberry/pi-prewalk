@@ -162,13 +162,17 @@ function setup() {
 	};
 	let route = false;
 	let primary = false;
-	let executorReserveTokens: number | undefined;
+	let guardPlannerContext = false;
+	let compactionReserveTokens: number | undefined;
 	const state: ProviderOverlayState = {
 		shouldRouteToExecutor: () => route,
+		shouldGuardPlannerContext: () => guardPlannerContext,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
-		getExecutorCompactionReserveTokens: () => executorReserveTokens,
+		getCompactionReserveTokens: () => compactionReserveTokens,
 		prepareExecutorContext: (context) => removeExactUserPrompt(context, "deep planner guidance"),
+		onPlannerContextPressure: vi.fn(),
+		onPlannerContextSafe: vi.fn(),
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
@@ -225,8 +229,11 @@ function setup() {
 		setPrimary: (value: boolean) => {
 			primary = value;
 		},
+		setPlannerGuard: (value: boolean) => {
+			guardPlannerContext = value;
+		},
 		setExecutorReserve: (value: number | undefined) => {
-			executorReserveTokens = value;
+			compactionReserveTokens = value;
 		},
 		setConfig: (value: ProviderConfig | undefined) => {
 			config = value;
@@ -288,9 +295,12 @@ function setupCrossProvider() {
 	let primary = false;
 	const state: ProviderOverlayState = {
 		shouldRouteToExecutor: () => route,
+		shouldGuardPlannerContext: () => false,
 		isPrimaryAgentStream: () => primary,
 		currentRunId: () => "run-1",
 		prepareExecutorContext: (context) => context,
+		onPlannerContextPressure: vi.fn(),
+		onPlannerContextSafe: vi.fn(),
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),
@@ -377,6 +387,43 @@ describe("provider overlay", () => {
 
 		expect(fixture.delegatedModels).toEqual([fixture.planner]);
 		expect(fixture.state.onExecutorStreamStarted).not.toHaveBeenCalled();
+	});
+
+	it("prevents an oversized primary planner request and asks the extension to compact", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setPlannerGuard(true);
+		fixture.setPrimary(true);
+		fixture.setExecutorReserve(32_768);
+		const oversized: Context = {
+			messages: [{ role: "user", content: "x".repeat(280_000), timestamp: 1 }],
+		};
+
+		const result = await fixture.config()?.streamSimple?.(fixture.planner, oversized).result();
+
+		expect(fixture.delegatedModels).toEqual([]);
+		expect(fixture.state.onPlannerContextPressure).toHaveBeenCalledWith("run-1");
+		expect(fixture.state.onPlannerContextSafe).not.toHaveBeenCalled();
+		expect(fixture.state.onExecutorContextPressure).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			provider: fixture.planner.provider,
+			model: fixture.planner.id,
+			stopReason: "stop",
+			content: [],
+		});
+	});
+
+	it("clears a planner retry after the compacted request fits", async () => {
+		const fixture = setup();
+		fixture.overlay.install();
+		fixture.setPlannerGuard(true);
+		fixture.setPrimary(true);
+
+		await fixture.config()?.streamSimple?.(fixture.planner, fixture.context).result();
+
+		expect(fixture.delegatedModels).toEqual([fixture.planner]);
+		expect(fixture.state.onPlannerContextSafe).toHaveBeenCalledWith("run-1");
+		expect(fixture.state.onPlannerContextPressure).not.toHaveBeenCalled();
 	});
 
 	it("routes only a primary Agent-loop Sol request to Luna at low reasoning", async () => {

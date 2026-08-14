@@ -22,8 +22,11 @@ export interface TemporaryModelPlan {
 export interface TemporaryModelCallbacks {
 	isCurrent(): boolean;
 	shouldRouteToExecutor(): boolean;
+	shouldGuardPlannerContext(): boolean;
 	isPrimaryAgentStream(): boolean;
-	getExecutorCompactionReserveTokens?(): number | undefined;
+	getCompactionReserveTokens?(): number | undefined;
+	onPlannerContextPressure(): void | Promise<void>;
+	onPlannerContextSafe(): void;
 	onExecutorStreamStarted(): void | Promise<void>;
 	onExecutorStreamSucceeded(): void | Promise<void>;
 	onExecutorStreamFailed(): void | Promise<void>;
@@ -79,14 +82,25 @@ class StockPiTemporaryModelRuntime implements TemporaryModelRuntime {
 			{
 				shouldRouteToExecutor: () =>
 					lease.isActive() && callbacks.isCurrent() && callbacks.shouldRouteToExecutor(),
+				shouldGuardPlannerContext: () =>
+					lease.isActive() && callbacks.isCurrent() && callbacks.shouldGuardPlannerContext(),
 				isPrimaryAgentStream: () =>
 					lease.isActive() && callbacks.isCurrent() && callbacks.isPrimaryAgentStream(),
 				currentRunId: () =>
 					lease.isActive() && callbacks.isCurrent() ? plan.runId : undefined,
-				getExecutorCompactionReserveTokens: () =>
-					callbacks.getExecutorCompactionReserveTokens?.(),
+				getCompactionReserveTokens: () => callbacks.getCompactionReserveTokens?.(),
 				prepareExecutorContext: (context) =>
 					removeExactUserPrompt(context, plan.hiddenPlanPrompt),
+				onPlannerContextPressure: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						return callbacks.onPlannerContextPressure();
+					}
+				},
+				onPlannerContextSafe: (runId) => {
+					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
+						callbacks.onPlannerContextSafe();
+					}
+				},
 				onExecutorStreamStarted: (runId) => {
 					if (runId === plan.runId && lease.isActive() && callbacks.isCurrent()) {
 						return callbacks.onExecutorStreamStarted();

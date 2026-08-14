@@ -76,7 +76,9 @@ A normal manual run works like this.
    the flow directly. Setting `enabled: true` in `prewalk.json` turns on
    automatic mode when a fresh top-level session starts. `/prewalk auto` does
    the same for only the current session. Prewalk still limits automatic runs
-   to larger implementation requests.
+   to larger implementation requests. Until a run or automatic assessment
+   starts, Prewalk keeps `prewalk_todo` and `prewalk_assess` out of Pi's active
+   tool list.
 3. **The planner gets a planning instruction.** In the normal top-level flow,
    it must use Prewalk's namespaced `prewalk_todo` checklist before handoff is
    possible. An independently configured mutation-capable child receives the
@@ -169,7 +171,7 @@ important rows below in user-facing language.
 | # | Behavior | OMP | This extension | What it means in practice |
 | --- | --- | --- | --- | --- |
 | 13 | Executor must have a context window at least as large as the planner | No such startup rule | No startup floor; a request-time size check protects the executor | A smaller executor can be configured, but requests can still be stopped safely. |
-| 14 | Automatic compaction for executor work | Sized against the model OMP switched to | Uses Pi's configured safety reserve, waits for settlement, and reuses Pi's built-in compaction when it already ran | The extension works around the fact that Pi still thinks the planner is selected. |
+| 14 | Automatic compaction during an active Prewalk run | Sized against the model OMP switched to | Checks planner and executor requests with Pi's configured safety reserve, waits for settlement, and reuses Pi's compaction when it already ran | Oversized Prewalk requests stop before transport; ordinary Pi sessions are unchanged. |
 | 14b | Overflow recovery | Native recovery covers the executor | A check before the request or a detected failed request can compact and retry; a completed over-window response can compact without replay | Unknown provider-specific overflow still may not recover automatically. |
 | 15 | Same model and same effective effort | Graceful no-op with a notice | Graceful no-op with a notice | There is no point in routing a turn to an identical target at the same thinking level. |
 | 16 | Effort-only downgrade on the same model | Supported | Supported | A lower requested effort can still be a useful handoff. |
@@ -241,10 +243,10 @@ extension is better at everything.
   OMP's `smol` patterns, and offer cross-provider choices through
   `/prewalk configure`.
 - It does not impose a startup rule that the executor's context window must be
-  at least as large as the planner's. Instead, it checks each outgoing request
-  and asks Pi's public compaction API for help when the agent has settled.
-  That closes a practical gap, but it is not a replacement for every provider's
-  native overflow recovery.
+  at least as large as the planner's. During an active run, it checks each
+  outgoing planner or executor request and asks Pi's public compaction API for
+  help after the agent settles. This does not replace every provider's native
+  overflow recovery.
 - It adds `/prewalk release`, local receipts, and a check that another
   extension has not replaced the temporary provider route. Those features make
   the route easier to stop, inspect, and protect.

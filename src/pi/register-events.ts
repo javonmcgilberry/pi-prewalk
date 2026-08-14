@@ -13,9 +13,9 @@ import { DEFAULT_ANALYTICS_CONFIG, type RunOutcome } from "../analytics/index.js
 import { PrewalkAnalytics } from "../analytics/run-accounting.js";
 import { configurePrewalk, readPrewalkConfig } from "../config/prewalk-config.js";
 import {
+	type ContextCompactionPolicy,
 	ContextPressureController,
-	DEFAULT_EXECUTOR_COMPACTION_POLICY,
-	type ExecutorCompactionPolicy,
+	DEFAULT_CONTEXT_COMPACTION_POLICY,
 } from "../executor/context-pressure.js";
 import {
 	type ExecutorChainResolution,
@@ -75,7 +75,7 @@ const PROMPT_TYPES = new Set([
 	PREWALK_ASSESS_MESSAGE_TYPE,
 ]);
 
-function readExecutorCompactionPolicy(ctx: ExtensionContext): ExecutorCompactionPolicy {
+function readContextCompactionPolicy(ctx: ExtensionContext): ContextCompactionPolicy {
 	try {
 		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
 			projectTrusted: ctx.isProjectTrusted(),
@@ -85,12 +85,12 @@ function readExecutorCompactionPolicy(ctx: ExtensionContext): ExecutorCompaction
 			reserveTokens:
 				Number.isFinite(settings.reserveTokens) && settings.reserveTokens >= 0
 					? settings.reserveTokens
-					: DEFAULT_EXECUTOR_COMPACTION_POLICY.reserveTokens,
+					: DEFAULT_CONTEXT_COMPACTION_POLICY.reserveTokens,
 		};
 	} catch {
 		// A settings read must not prevent the extension from loading. The stock
-		// reserve is safer than sending an unguarded executor request.
-		return DEFAULT_EXECUTOR_COMPACTION_POLICY;
+		// reserve is safer than sending an unguarded Prewalk request.
+		return DEFAULT_CONTEXT_COMPACTION_POLICY;
 	}
 }
 
@@ -372,37 +372,29 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let delegation: DelegationStatus | undefined;
 	const contextPressure = new ContextPressureController();
 	let removeTerminalInputListener: (() => void) | undefined;
-	const refreshExecutorCompactionPolicy = (ctx: ExtensionContext): ExecutorCompactionPolicy => {
-		const policy = readExecutorCompactionPolicy(ctx);
+	const refreshContextCompactionPolicy = (ctx: ExtensionContext): ContextCompactionPolicy => {
+		const policy = readContextCompactionPolicy(ctx);
 		contextPressure.setPolicy(policy);
 		return policy;
 	};
 	const deactivatePrewalkTools = (): void => {
 		const capturedSlate = prewalkToolSlate;
-		const baseline =
-			capturedSlate ?? pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		const baseline = capturedSlate ?? pi.getActiveTools();
 		prewalkToolSlate = undefined;
-		const restoreCapturedChildSlate =
-			process.env.PI_SUBAGENT_CHILD === "1" && capturedSlate !== undefined;
-		const next = restoreCapturedChildSlate
-			? [...baseline]
-			: baseline.filter((name) => name !== PREWALK_TODO_TOOL_NAME);
-		if (
-			!restoreCapturedChildSlate &&
-			(process.env.PI_SUBAGENT_CHILD !== "1" ||
-				baseline.includes(PREWALK_TODO_TOOL_NAME) ||
-				application.run?.todoActive)
-		)
-			next.push(PREWALK_TODO_TOOL_NAME);
+		const next = baseline.filter(
+			(name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME,
+		);
 		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
 	const activatePlanningTools = (toolSlate = pi.getActiveTools(), requireTodo = false): void => {
-		const baseline = toolSlate.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
-		prewalkToolSlate ??= baseline;
 		const todoWasActive =
 			requireTodo ||
-			baseline.includes(PREWALK_TODO_TOOL_NAME) ||
+			toolSlate.includes(PREWALK_TODO_TOOL_NAME) ||
 			application.run?.todoActive === true;
+		const baseline = toolSlate.filter(
+			(name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME,
+		);
+		prewalkToolSlate ??= baseline;
 		const next = todoWasActive
 			? [
 					...baseline.filter((name) => name !== "todo" && name !== PREWALK_TODO_TOOL_NAME),
@@ -412,7 +404,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
 	const beginEvaluation = (): EvaluationState => {
-		const toolSlate = pi.getActiveTools().filter((name) => name !== PREWALK_ASSESS_TOOL_NAME);
+		const toolSlate = pi
+			.getActiveTools()
+			.filter((name) => name !== PREWALK_ASSESS_TOOL_NAME && name !== PREWALK_TODO_TOOL_NAME);
 		const state: EvaluationState = { id: randomUUID(), toolSlate, invalid: false };
 		evaluation = state;
 		turnGate.resetEvaluation();
@@ -482,7 +476,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			createAutoModeRecord(ctx.sessionManager.getSessionId(), enabled),
 		);
 	};
-	const resetExecutorCompactionState = (): void => {
+	const resetContextPressureState = (): void => {
 		contextPressure.reset();
 	};
 	type DelegationInvocation = {
@@ -537,7 +531,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (expectedRun !== undefined && !sameRunIdentity(expectedRun, failedRun)) return;
 		const failedIdentity = identityOf(failedRun);
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
-		resetExecutorCompactionState();
+		resetContextPressureState();
 		if (!application.run) {
 			if (!ctx.model) {
 				ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
@@ -577,7 +571,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (!run) return;
 		const runIdentity = identityOf(run);
 		hostCorrelation.discardPendingForRun(runIdentity);
-		resetExecutorCompactionState();
+		resetContextPressureState();
 		application.cancel(selectedModelIsPlanner);
 		primaryAgentStream = false;
 		turnGate.resetMutationEvidence();
@@ -599,7 +593,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		const runIdentity = identityOf(run);
-		resetExecutorCompactionState();
+		resetContextPressureState();
 		application.release();
 		audit("manual-release", ctx);
 		getRuntimeController(ctx).restore(runIdentity);
@@ -632,8 +626,19 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				shouldRouteToExecutor: () =>
 					application.run?.phase === "handoff-pending" ||
 					application.run?.effectiveRoute === "executor",
+				shouldGuardPlannerContext: () =>
+					application.run?.effectiveRoute === "planner" &&
+					(application.run.phase === "planning" || application.run.phase === "ready"),
 				isPrimaryAgentStream: () => primaryAgentStream,
-				getExecutorCompactionReserveTokens: () => contextPressure.reserveTokens(),
+				getCompactionReserveTokens: () => contextPressure.reserveTokens(),
+				onPlannerContextPressure: () => {
+					if (!sameRunIdentity(runIdentity, application.run)) return;
+					contextPressure.onPlannerContextPressure(runIdentity);
+				},
+				onPlannerContextSafe: () => {
+					if (!sameRunIdentity(runIdentity, application.run)) return;
+					contextPressure.onPlannerContextSafe(runIdentity);
+				},
 				onExecutorStreamStarted: async () => {
 					if (!sameRunIdentity(runIdentity, application.run)) return;
 					contextPressure.onExecutorStreamStarted(runIdentity);
@@ -739,6 +744,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		notify: (message: string, level: "error" | "warning") => ctx.ui.notify(message, level),
 		fail: (reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity) =>
 			fail(reason, holdExecutorRoute, ctx, expected),
+		sendRetryPlanning: async (expected: HostRunIdentity) => {
+			if (!sameRunIdentity(expected, application.run)) return;
+			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
+		},
 		sendRetryChecklist: async (expected: HostRunIdentity) => {
 			if (!sameRunIdentity(expected, application.run)) return;
 			await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true);
@@ -834,7 +843,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					tools: [...prewalkToolSlate],
 				});
 			}
-			refreshExecutorCompactionPolicy(ctx);
+			refreshContextCompactionPolicy(ctx);
 			ensureModelRuntime(ctx);
 			if (armedRun) {
 				await analytics.open(armedRun, analyticsHost(ctx)).catch(() => {
@@ -1004,7 +1013,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		},
 		onRelease: release,
 		startManual: async (ctx) => {
-			await startRun("manual", ctx);
+			await startRun("manual", ctx, false, undefined, undefined, true);
 		},
 		onConfigure: configurePrewalk,
 		loadSessionTitles,
@@ -1012,9 +1021,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
-		resetExecutorCompactionState();
+		resetContextPressureState();
 		retainedCancelledRun = undefined;
-		refreshExecutorCompactionPolicy(ctx);
+		refreshContextCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
 		primaryAgentStream = false;
 		hostCorrelation.resetSession();
@@ -1219,7 +1228,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		resetExecutorCompactionState();
+		resetContextPressureState();
 		activeSessionId = undefined;
 		primaryAgentStream = false;
 		delegation = undefined;
@@ -1264,7 +1273,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		);
 		if (correlation.decision === "ignore") return;
 		if (!verifyModelRuntimeOwnership(ctx)) return;
-		refreshExecutorCompactionPolicy(ctx);
+		refreshContextCompactionPolicy(ctx);
 		primaryAgentStream = true;
 	});
 
@@ -1324,7 +1333,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			if (current.decision === "continue" && !current.invalid) {
 				activatePlanningTools(current.toolSlate);
 				evaluation = undefined;
-				const startResult = await startRun("automatic", ctx, true, undefined, null);
+				const startResult = await startRun("automatic", ctx, true, undefined, null, true);
 				if (startResult !== "armed") return;
 				if (settledIdentity !== undefined && !sameRunIdentity(settledIdentity, application.run))
 					return;
@@ -1353,7 +1362,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			primaryAgentStream = false;
 			return;
 		}
-		refreshExecutorCompactionPolicy(ctx);
+		refreshContextCompactionPolicy(ctx);
 		const pressureObservation = contextPressure.settle(run, contextPressureHost(ctx));
 		if (
 			pressureObservation === "host-compacted" ||
@@ -1552,10 +1561,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
-		refreshExecutorCompactionPolicy(ctx);
+		refreshContextCompactionPolicy(ctx);
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
+		if (contextPressure.hasPlannerPressure(run)) {
+			updateStatus(ctx);
+			return;
+		}
 		if (acceptsMutationEvidence(run)) {
 			const evidence = turnGate.finishTurn(event.message, {
 				todoActive: run.todoActive,

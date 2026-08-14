@@ -1,22 +1,20 @@
-import type { AssistantMessage, Context, Message, Model, Usage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Message, Model, Usage } from "@earendil-works/pi-ai";
 
 /** Stock Pi's default reserveTokens value (see core/compaction/compaction.ts). */
-export const EXECUTOR_CONTEXT_RESERVE_TOKENS = 16_384;
+export const CONTEXT_RESERVE_TOKENS = 16_384;
 
 /**
- * Return the executor request budget using the same reserve Pi uses for its
+ * Return the request budget using the same reserve Pi uses for its
  * own compaction checks. Callers supply the effective reserve when the host
  * exposes it; this value remains the safe fallback for older hosts.
  */
-export function executorContextThreshold(
-	model: Pick<Model<any>, "contextWindow">,
-	reserveTokens = EXECUTOR_CONTEXT_RESERVE_TOKENS,
+export function contextThreshold(
+	model: Pick<Model<Api>, "contextWindow">,
+	reserveTokens = CONTEXT_RESERVE_TOKENS,
 ): number {
 	if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0) return 0;
 	const reserve =
-		Number.isFinite(reserveTokens) && reserveTokens >= 0
-			? reserveTokens
-			: EXECUTOR_CONTEXT_RESERVE_TOKENS;
+		Number.isFinite(reserveTokens) && reserveTokens >= 0 ? reserveTokens : CONTEXT_RESERVE_TOKENS;
 	return Math.max(0, model.contextWindow - reserve);
 }
 
@@ -25,19 +23,19 @@ export function executorContextThreshold(
  * context usage is treated as pressure rather than risking an oversized
  * request.
  */
-export function needsExecutorCompaction(
+export function needsContextCompaction(
 	contextTokens: number | null | undefined,
-	model: Pick<Model<any>, "contextWindow">,
-	reserveTokens = EXECUTOR_CONTEXT_RESERVE_TOKENS,
+	model: Pick<Model<Api>, "contextWindow">,
+	reserveTokens = CONTEXT_RESERVE_TOKENS,
 ): boolean {
-	const threshold = executorContextThreshold(model, reserveTokens);
+	const threshold = contextThreshold(model, reserveTokens);
 	if (threshold <= 0 || contextTokens === null || contextTokens === undefined) return true;
 	if (!Number.isFinite(contextTokens) || contextTokens < 0) return true;
 	return contextTokens > threshold;
 }
 
 /**
- * Estimate the context that will be sent to the executor.
+ * Estimate the context that will be sent in the next provider request.
  *
  * A valid assistant usage block accounts for the prefix before that response,
  * so trailing messages can be estimated from it. The current whole request is
@@ -45,7 +43,7 @@ export function needsExecutorCompaction(
  * estimator intentionally mirrors Pi's conservative four-characters-per-token
  * heuristic rather than pretending to know a provider-specific tokenizer.
  */
-export function estimateExecutorRequestTokens(context: Context): number {
+export function estimateRequestTokens(context: Context): number {
 	const messages = context.messages;
 	const usageIndex = lastApplicableAssistantUsageIndex(messages);
 	if (usageIndex === null) return estimateWholeRequest(context);

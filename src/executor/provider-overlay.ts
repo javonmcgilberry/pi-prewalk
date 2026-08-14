@@ -14,7 +14,7 @@ import {
 import { streamSimple as builtinStreamSimple } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import type { ExecutorConfig, PlannerProfile } from "../orchestration/coordinator.js";
-import { estimateExecutorRequestTokens, needsExecutorCompaction } from "./context.js";
+import { estimateRequestTokens, needsContextCompaction } from "./context.js";
 
 type StreamSimple = NonNullable<ProviderConfig["streamSimple"]>;
 type ExecutorRouteConfig = Pick<ExecutorConfig, "provider" | "model" | "reasoning">;
@@ -31,11 +31,14 @@ class ProviderOverlayCancelledError extends Error {}
 
 export interface ProviderOverlayState {
 	shouldRouteToExecutor(): boolean;
+	shouldGuardPlannerContext(): boolean;
 	isPrimaryAgentStream(): boolean;
 	currentRunId(): string | undefined;
 	/** Effective Pi compaction reserve, when the host can provide it. */
-	getExecutorCompactionReserveTokens?(): number | undefined;
+	getCompactionReserveTokens?(): number | undefined;
 	prepareExecutorContext(context: Context): Context;
+	onPlannerContextPressure(runId: string): void | Promise<void>;
+	onPlannerContextSafe(runId: string): void;
 	onExecutorStreamStarted(runId: string): void | Promise<void>;
 	onExecutorStreamSucceeded(runId: string): void | Promise<void>;
 	onExecutorStreamFailed(runId: string): void | Promise<void>;
@@ -249,16 +252,16 @@ function executorContextPressureMessage(executor: Model<Api>): AssistantMessage 
 	};
 }
 
-function executorCompactionPendingMessage(executor: Model<Api>): AssistantMessage {
+function compactionPendingMessage(model: Model<Api>): AssistantMessage {
 	return {
-		...failedAssistantMessage(executor),
+		...failedAssistantMessage(model),
 		stopReason: "stop",
 		errorMessage: undefined,
 	};
 }
 
 function contextPressureStream(
-	executor: Model<Api>,
+	model: Model<Api>,
 	onPressure: () => void | Promise<void>,
 	isCurrent: () => boolean,
 ): AssistantMessageEventStream {
@@ -266,10 +269,10 @@ function contextPressureStream(
 	void (async () => {
 		await settleCallback(onPressure);
 		if (!isCurrent()) {
-			stream.end(abortedAssistantMessage(executor));
+			stream.end(abortedAssistantMessage(model));
 			return;
 		}
-		const message = executorCompactionPendingMessage(executor);
+		const message = compactionPendingMessage(model);
 		stream.push({ type: "start", partial: message });
 		stream.push({ type: "done", reason: "stop", message });
 		stream.end();
@@ -396,7 +399,6 @@ export function createProviderOverlay(
 			if (
 				model.provider !== plannerProfile.provider ||
 				model.id !== plannerProfile.model ||
-				!state.shouldRouteToExecutor() ||
 				!state.isPrimaryAgentStream()
 			) {
 				return delegate(model, context, options);
@@ -404,6 +406,29 @@ export function createProviderOverlay(
 
 			const runId = state.currentRunId();
 			if (!runId || runId !== installedRunId) return delegate(model, context, options);
+			if (!state.shouldRouteToExecutor()) {
+				if (!state.shouldGuardPlannerContext()) return delegate(model, context, options);
+				if (
+					!needsContextCompaction(
+						estimateRequestTokens(context),
+						model,
+						state.getCompactionReserveTokens?.(),
+					)
+				) {
+					state.onPlannerContextSafe(runId);
+					return delegate(model, context, options);
+				}
+				return contextPressureStream(
+					model,
+					() => state.onPlannerContextPressure(runId),
+					() =>
+						state.currentRunId() === runId &&
+						state.shouldGuardPlannerContext() &&
+						!state.shouldRouteToExecutor() &&
+						modelRegistry.getRegisteredProviderConfig(plannerProfile.provider)
+							?.streamSimple === stream,
+				);
+			}
 			const resolved = resolveExecutor();
 			if (!resolved.ok) {
 				// The executor disappeared from the registry mid-run. Treat it the same
@@ -414,12 +439,12 @@ export function createProviderOverlay(
 			}
 			const { model: executorModel } = resolved;
 			const executorContext = state.prepareExecutorContext(context);
-			const executorContextTokens = estimateExecutorRequestTokens(executorContext);
+			const executorContextTokens = estimateRequestTokens(executorContext);
 			if (
-				needsExecutorCompaction(
+				needsContextCompaction(
 					executorContextTokens,
 					executorModel,
-					state.getExecutorCompactionReserveTokens?.(),
+					state.getCompactionReserveTokens?.(),
 				)
 			) {
 				return contextPressureStream(

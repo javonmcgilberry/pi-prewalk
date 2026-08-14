@@ -100,7 +100,10 @@ function setup(crossProvider = false) {
 	const callbacks = {
 		isCurrent: () => current,
 		shouldRouteToExecutor: () => route,
+		shouldGuardPlannerContext: () => false,
 		isPrimaryAgentStream: () => primary,
+		onPlannerContextPressure: vi.fn(),
+		onPlannerContextSafe: vi.fn(),
 		onExecutorStreamStarted: vi.fn(),
 		onExecutorStreamSucceeded: vi.fn(),
 		onExecutorStreamFailed: vi.fn(),

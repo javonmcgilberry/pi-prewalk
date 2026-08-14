@@ -1,10 +1,10 @@
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
-	EXECUTOR_CONTEXT_RESERVE_TOKENS,
-	estimateExecutorRequestTokens,
-	executorContextThreshold,
-	needsExecutorCompaction,
+	CONTEXT_RESERVE_TOKENS,
+	contextThreshold,
+	estimateRequestTokens,
+	needsContextCompaction,
 } from "../../src/executor/context.js";
 
 function executor(contextWindow = 100_000): Pick<Model<any>, "contextWindow"> {
@@ -13,22 +13,22 @@ function executor(contextWindow = 100_000): Pick<Model<any>, "contextWindow"> {
 
 describe("executor context watchdog", () => {
 	it("uses stock Pi's default reserve", () => {
-		expect(EXECUTOR_CONTEXT_RESERVE_TOKENS).toBe(16_384);
-		expect(executorContextThreshold(executor())).toBe(83_616);
+		expect(CONTEXT_RESERVE_TOKENS).toBe(16_384);
+		expect(contextThreshold(executor())).toBe(83_616);
 	});
 
 	it("uses the effective Pi reserve instead of always using the stock default", () => {
-		expect(executorContextThreshold(executor(), 32_768)).toBe(67_232);
-		expect(needsExecutorCompaction(67_233, executor(), 32_768)).toBe(true);
+		expect(contextThreshold(executor(), 32_768)).toBe(67_232);
+		expect(needsContextCompaction(67_233, executor(), 32_768)).toBe(true);
 	});
 
 	it("compacts only after the executor threshold is crossed", () => {
-		expect(needsExecutorCompaction(83_616, executor())).toBe(false);
-		expect(needsExecutorCompaction(83_617, executor())).toBe(true);
+		expect(needsContextCompaction(83_616, executor())).toBe(false);
+		expect(needsContextCompaction(83_617, executor())).toBe(true);
 	});
 
 	it("fails closed for an invalid executor window", () => {
-		expect(needsExecutorCompaction(1, executor(0))).toBe(true);
+		expect(needsContextCompaction(1, executor(0))).toBe(true);
 	});
 
 	it("prefers the last assistant usage and adds trailing messages", () => {
@@ -57,8 +57,8 @@ describe("executor context watchdog", () => {
 			],
 		} as Context;
 
-		expect(estimateExecutorRequestTokens(context)).toBeGreaterThan(5_100);
-		expect(estimateExecutorRequestTokens(context)).toBeLessThan(6_000);
+		expect(estimateRequestTokens(context)).toBeGreaterThan(5_100);
+		expect(estimateRequestTokens(context)).toBeLessThan(6_000);
 	});
 
 	it("falls back to a conservative whole-request estimate without valid usage", () => {
@@ -67,7 +67,7 @@ describe("executor context watchdog", () => {
 			messages: [{ role: "user", content: "u".repeat(400), timestamp: 1 }],
 		} as Context;
 
-		expect(estimateExecutorRequestTokens(context)).toBeGreaterThanOrEqual(200);
+		expect(estimateRequestTokens(context)).toBeGreaterThanOrEqual(200);
 	});
 
 	it("does not trust stale usage when the current prompt or tools grew", () => {
@@ -101,6 +101,6 @@ describe("executor context watchdog", () => {
 			],
 		} as Context;
 
-		expect(estimateExecutorRequestTokens(context)).toBeGreaterThan(20_000);
+		expect(estimateRequestTokens(context)).toBeGreaterThan(20_000);
 	});
 });

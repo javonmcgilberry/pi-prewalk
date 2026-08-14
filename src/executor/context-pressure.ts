@@ -1,20 +1,21 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
-import { needsExecutorCompaction } from "./context.js";
+import { needsContextCompaction } from "./context.js";
 
-export type ExecutorCompactionPolicy = {
+export type ContextCompactionPolicy = {
 	enabled: boolean;
 	reserveTokens: number;
 };
 
-export const DEFAULT_EXECUTOR_COMPACTION_POLICY: ExecutorCompactionPolicy = {
+export const DEFAULT_CONTEXT_COMPACTION_POLICY: ContextCompactionPolicy = {
 	enabled: true,
 	reserveTokens: 16_384,
 };
 
-type PressureState = HostRunIdentity & { retry: boolean };
-type RetryState = HostRunIdentity & { count: number };
+type PressureRoute = "planner" | "executor";
+type PressureState = HostRunIdentity & { route: PressureRoute; retry: boolean };
+type RetryState = HostRunIdentity & { route: PressureRoute; count: number };
 type CompactionRequest = PressureState;
 
 type CompactCallbacks = {
@@ -23,7 +24,7 @@ type CompactCallbacks = {
 };
 
 /**
- * Host capabilities used by the executor-pressure transaction. The adapter
+ * Host capabilities used by the primary-route pressure transaction. The adapter
  * supplies Pi's compactor and notices; this module owns the ordering between
  * pressure, settlement, native compaction, retry, and stale-run checks.
  */
@@ -32,6 +33,7 @@ export interface ContextPressureHost {
 	compact(callbacks: CompactCallbacks): void;
 	notify(message: string, level: "error" | "warning"): void;
 	fail(reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity): void;
+	sendRetryPlanning(expected: HostRunIdentity): Promise<void>;
 	sendRetryChecklist(expected: HostRunIdentity): Promise<void>;
 	sendNextTurnChecklist(expected: HostRunIdentity): void;
 }
@@ -56,12 +58,24 @@ function sameValue(left: HostRunIdentity | undefined, right: HostRunIdentity): b
 	return left !== undefined && left.runId === right.runId && left.epoch === right.epoch;
 }
 
-function pressureEligibleRun(run: PrewalkRun | undefined): boolean {
+function samePressure(left: RetryState | undefined, right: PressureState): boolean {
+	return sameValue(left, right) && left?.route === right.route;
+}
+
+function compactionFailureReason(route: PressureRoute): string {
+	return route === "planner" ? "planner-compaction-failed" : "executor-compaction-failed";
+}
+
+function pressureEligibleRun(run: PrewalkRun | undefined, route: PressureRoute): boolean {
+	if (!run) return false;
+	if (route === "planner") {
+		return (
+			run.effectiveRoute === "planner" && (run.phase === "planning" || run.phase === "ready")
+		);
+	}
 	return (
-		run !== undefined &&
-		(run.phase === "handoff-pending" ||
-			(run.effectiveRoute === "executor" &&
-				(run.phase === "active" || run.phase === "completed")))
+		run.phase === "handoff-pending" ||
+		(run.effectiveRoute === "executor" && (run.phase === "active" || run.phase === "completed"))
 	);
 }
 
@@ -73,9 +87,9 @@ function activeExecutorRun(run: PrewalkRun | undefined): boolean {
 	);
 }
 
-/** Owns all mutable executor pressure and compaction transaction state. */
+/** Owns all mutable planner/executor pressure and compaction transaction state. */
 export class ContextPressureController {
-	#policy: ExecutorCompactionPolicy = DEFAULT_EXECUTOR_COMPACTION_POLICY;
+	#policy: ContextCompactionPolicy = DEFAULT_CONTEXT_COMPACTION_POLICY;
 	#pressure: PressureState | undefined;
 	#hostCompaction: PressureState | undefined;
 	#pending: CompactionRequest | undefined;
@@ -84,11 +98,11 @@ export class ContextPressureController {
 	#pendingFailure: HostRunIdentity | undefined;
 	#checklistRun: HostRunIdentity | undefined;
 
-	setPolicy(policy: ExecutorCompactionPolicy): void {
+	setPolicy(policy: ContextCompactionPolicy): void {
 		this.#policy = policy;
 	}
 
-	policy(): ExecutorCompactionPolicy {
+	policy(): ContextCompactionPolicy {
 		return this.#policy;
 	}
 
@@ -112,20 +126,41 @@ export class ContextPressureController {
 
 	onExecutorStreamSucceeded(identity: HostRunIdentity): void {
 		if (sameValue(this.#pendingFailure ?? undefined, identity)) this.#pendingFailure = undefined;
-		if (sameValue(this.#retry ?? undefined, identity)) this.#retry = undefined;
+		if (sameValue(this.#retry ?? undefined, identity) && this.#retry?.route === "executor") {
+			this.#retry = undefined;
+		}
 	}
 
 	onExecutorStreamFailed(identity: HostRunIdentity): void {
 		this.#pendingFailure = { ...identity };
 	}
 
+	onPlannerContextPressure(identity: HostRunIdentity): void {
+		this.#pendingFailure = undefined;
+		this.#pressure = { ...identity, route: "planner", retry: true };
+	}
+
+	onPlannerContextSafe(identity: HostRunIdentity): void {
+		if (sameValue(this.#retry ?? undefined, identity) && this.#retry?.route === "planner") {
+			this.#retry = undefined;
+		}
+	}
+
 	onExecutorContextPressure(identity: HostRunIdentity, retry: boolean): void {
 		this.#pendingFailure = undefined;
-		this.#pressure = { ...identity, retry };
+		this.#pressure = { ...identity, route: "executor", retry };
+	}
+
+	hasPlannerPressure(run: PrewalkRun): boolean {
+		return sameIdentity(this.#pressure, run) && this.#pressure?.route === "planner";
 	}
 
 	hasRetryPressure(run: PrewalkRun): boolean {
-		return sameIdentity(this.#pressure, run) && this.#pressure?.retry === true;
+		return (
+			sameIdentity(this.#pressure, run) &&
+			this.#pressure?.route === "executor" &&
+			this.#pressure.retry
+		);
 	}
 
 	takePendingFailure(run: PrewalkRun): boolean {
@@ -137,7 +172,7 @@ export class ContextPressureController {
 	observeContextUsage(
 		run: PrewalkRun,
 		usageTokens: number | null | undefined,
-		executor: Pick<Model<any>, "contextWindow">,
+		executor: Pick<Model<Api>, "contextWindow">,
 		messageProvider: string,
 		messageModel: string,
 		stopReason: string,
@@ -149,19 +184,17 @@ export class ContextPressureController {
 		) {
 			return;
 		}
-		if (needsExecutorCompaction(usageTokens, executor, this.#policy.reserveTokens)) {
+		if (needsContextCompaction(usageTokens, executor, this.#policy.reserveTokens)) {
 			this.#pressure = {
 				runId: run.id,
 				epoch: run.epoch,
+				route: "executor",
 				retry: stopReason !== "stop",
 			};
 		}
 	}
 
-	/**
-	 * Handles the settlement boundary after an executor stream. At most one
-	 * compaction request can be issued for a pressure observation.
-	 */
+	/** Handles the settled boundary after a guarded stream. */
 	settle(run: PrewalkRun, host: ContextPressureHost): SettlementObservation {
 		if (run.phase === "cancelled") return "none";
 		if (sameIdentity(this.#hostCompaction, run)) {
@@ -171,7 +204,7 @@ export class ContextPressureController {
 		}
 		const pressure = this.#pressure;
 		if (pressure !== undefined && sameIdentity(pressure, run)) {
-			this.requestCompaction(run, pressure.retry, host);
+			this.requestCompaction(run, pressure, host);
 			return "compaction-requested";
 		}
 		if (this.#pending !== undefined) return "compaction-pending";
@@ -179,44 +212,55 @@ export class ContextPressureController {
 		return "none";
 	}
 
-	private requestCompaction(run: PrewalkRun, retry: boolean, host: ContextPressureHost): void {
-		if (!pressureEligibleRun(run) || this.#pending !== undefined) return;
+	private requestCompaction(
+		run: PrewalkRun,
+		pressure: PressureState,
+		host: ContextPressureHost,
+	): void {
+		if (!pressureEligibleRun(run, pressure.route) || this.#pending !== undefined) return;
 		const identity: HostRunIdentity = { runId: run.id, epoch: run.epoch };
+		const routeLabel = pressure.route === "planner" ? "planner" : "executor";
+		const failureReason = compactionFailureReason(pressure.route);
 		if (!this.#policy.enabled) {
 			this.#pressure = undefined;
 			host.notify(
-				"Prewalk stopped before an oversized executor request because Pi automatic compaction is disabled.",
+				`Prewalk stopped before an oversized ${routeLabel} request because Pi automatic compaction is disabled.`,
 				"error",
 			);
-			host.fail("executor-compaction-failed", false, identity);
+			host.fail(failureReason, false, identity);
 			return;
 		}
 		const previousRetry = this.#retry;
 		if (
-			retry &&
+			pressure.retry &&
 			previousRetry !== undefined &&
-			sameValue(previousRetry, identity) &&
+			samePressure(previousRetry, pressure) &&
 			previousRetry.count >= 1
 		) {
-			host.fail("executor-compaction-failed", false, identity);
+			host.fail(failureReason, false, identity);
 			return;
 		}
-		const request: CompactionRequest = { ...identity, retry };
-		if (retry) {
+		const request: CompactionRequest = { ...pressure };
+		if (pressure.retry) {
 			this.#retry = {
 				...identity,
+				route: pressure.route,
 				count:
-					(previousRetry !== undefined && sameValue(previousRetry, identity)
+					(previousRetry !== undefined && samePressure(previousRetry, pressure)
 						? previousRetry.count
 						: 0) + 1,
 			};
 		}
 		this.#pending = request;
 		this.#committed = undefined;
-		const retryChecklist = (): void => {
-			void host.sendRetryChecklist(identity).catch(() => {
+		const resume = (): void => {
+			const resumed =
+				request.route === "planner"
+					? host.sendRetryPlanning(identity)
+					: host.sendRetryChecklist(identity);
+			void resumed.catch(() => {
 				if (sameIdentity(identity, host.currentRun())) {
-					host.fail("executor-compaction-failed", false, identity);
+					host.fail(failureReason, false, identity);
 				}
 			});
 		};
@@ -227,8 +271,9 @@ export class ContextPressureController {
 					this.#pending = undefined;
 					this.#pressure = undefined;
 					const current = host.currentRun();
-					if (!sameIdentity(request, current) || !pressureEligibleRun(current)) return;
-					if (request.retry) retryChecklist();
+					if (!sameIdentity(request, current) || !pressureEligibleRun(current, request.route))
+						return;
+					if (request.retry) resume();
 				},
 				onError: (error) => {
 					if (this.#pending !== request) return;
@@ -237,19 +282,23 @@ export class ContextPressureController {
 						this.#committed = undefined;
 						this.#pressure = undefined;
 						const current = host.currentRun();
-						if (!sameIdentity(request, current) || !pressureEligibleRun(current)) return;
+						if (
+							!sameIdentity(request, current) ||
+							!pressureEligibleRun(current, request.route)
+						)
+							return;
 						host.notify(
-							`Prewalk executor compaction committed before the host reported an observer error (${error.message}); continuing from the compacted context.`,
+							`Prewalk ${routeLabel} compaction committed before the host reported an observer error (${error.message}); continuing from the compacted context.`,
 							"warning",
 						);
-						if (request.retry) retryChecklist();
+						if (request.retry) resume();
 						return;
 					}
 					this.#pending = undefined;
 					this.#pressure = undefined;
 					if (!sameIdentity(request, host.currentRun())) return;
-					host.notify(`Prewalk executor compaction failed: ${error.message}.`, "error");
-					host.fail("executor-compaction-failed", false, identity);
+					host.notify(`Prewalk ${routeLabel} compaction failed: ${error.message}.`, "error");
+					host.fail(failureReason, false, identity);
 				},
 			});
 		} catch (error) {
@@ -258,10 +307,10 @@ export class ContextPressureController {
 			this.#committed = undefined;
 			this.#pressure = undefined;
 			host.notify(
-				`Prewalk executor compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
+				`Prewalk ${routeLabel} compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
 				"error",
 			);
-			host.fail("executor-compaction-failed", false, identity);
+			host.fail(failureReason, false, identity);
 		}
 	}
 
@@ -289,10 +338,35 @@ export class ContextPressureController {
 		} else {
 			const pressure = this.#pressure;
 			if (run && pressure !== undefined && sameIdentity(pressure, run)) {
-				this.#hostCompaction = pressure;
 				this.#pressure = undefined;
-				if (pressure.retry && !sameIdentity(this.#checklistRun, run)) {
-					await host.sendRetryChecklist({ runId: run.id, epoch: run.epoch });
+				const identity = { runId: run.id, epoch: run.epoch };
+				if (pressure.retry) {
+					const previousRetry = this.#retry;
+					if (
+						previousRetry !== undefined &&
+						samePressure(previousRetry, pressure) &&
+						previousRetry.count >= 1
+					) {
+						this.#checklistRun = undefined;
+						host.fail(compactionFailureReason(pressure.route), false, identity);
+						return;
+					}
+					this.#retry = {
+						...identity,
+						route: pressure.route,
+						count:
+							(previousRetry !== undefined && samePressure(previousRetry, pressure)
+								? previousRetry.count
+								: 0) + 1,
+					};
+				}
+				this.#hostCompaction = pressure;
+				if (pressure.retry) {
+					if (pressure.route === "planner") {
+						await host.sendRetryPlanning(identity);
+					} else if (!sameIdentity(this.#checklistRun, run)) {
+						await host.sendRetryChecklist(identity);
+					}
 				}
 			}
 		}

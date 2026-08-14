@@ -70,6 +70,8 @@ pi install .
 | `/prewalk stats` | View cost and model-switch estimates. |
 | `/prewalk todos` | Show the current implementation checklist. |
 
+Installing Prewalk does not add its tools to ordinary Pi turns. `prewalk_todo` and `prewalk_assess` enter the active tool list only while a manual run, automatic assessment, or opted-in child run is active. Prewalk removes them again after bypass, cancellation, failure, completion, or release. Enabling `/prewalk auto` by itself does not expose either tool.
+
 ## How the handoff works
 
 A normal plan produces prose, then the implementer starts at a new seam and rereads the repository. Prewalk keeps one trajectory:
@@ -95,7 +97,9 @@ Requirements:
 - No other extension registered as `prewalk_todo`.
 - Pi Codex Conversion native Responses compaction disabled when installed.
 
-The executor may have a smaller context window. Prewalk uses Pi's effective `compaction.reserveTokens` setting, defaulting to 16,384 when unset, to block oversized requests. It compacts after settlement and retries the hidden executor checklist once when replay is needed. It reuses compaction Pi already performed. With automatic compaction disabled, it fails closed. A second unchanged pressure failure, or failed/cancelled compaction, leaves the session on the planner instead of looping. This estimate is not a tokenizer; provider serialization can differ, and prompt-cache reads may not survive a model switch. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md).
+During an active run, Prewalk estimates each primary planner request before transport using the planner's context window and Pi's effective `compaction.reserveTokens` setting. When the request is too large, Prewalk stops it before the provider call and waits for the agent to settle. It then accepts a compaction Pi already completed or calls Pi's public compactor. Planning resumes once from the compacted context.
+
+The same guard protects executor requests, including executors with a smaller context window. The reserve defaults to 16,384 when Pi does not supply one. With automatic compaction disabled, failed or cancelled compaction, or a second unchanged pressure result, Prewalk fails closed and restores the planner instead of looping. The estimate is not a tokenizer; provider serialization can differ, and prompt-cache reads may not survive a model switch. These checks exist only while Prewalk owns an active route. They do not patch Pi or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md).
 
 Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is installed. The legacy top-level `responsesCompaction` setting is recognized too. Prewalk refuses to arm, including while restoring an active run, when native Responses compaction is explicitly enabled; otherwise hook order could compact planning-only context before Prewalk filters it.
 
@@ -160,7 +164,7 @@ Analytics live under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`
 - A failed pre-handoff run or explicit cancellation releases the provider overlay before another run starts. After handoff, use `/prewalk release`.
 - Planner/provider mismatch, missing authorization, invalid config, todo conflict, and unsupported native compaction fail before executor use.
 - If an executor provider fails outside context pressure, Prewalk restores the planner, preserves the transcript and receipt, and does not replay a possibly partial tool turn automatically.
-- Hidden planning prompts stay out of normal model context and compaction input; mid-turn threshold enforcement remains Pi-core behavior.
+- Hidden planning prompts stay out of normal model context and compaction input. While a Prewalk run is active, its provider overlay checks planner and executor requests before transport; inactive Pi sessions are not wrapped.
 
 Use `/prewalk status` for the stable failure reason. To start over, run `/prewalk cancel`, then `/prewalk run`.
 

@@ -119,10 +119,12 @@ describe("installed Codex conversion composition", () => {
 		});
 
 		await session.bindExtensions({});
-		expect(session.getActiveToolNames()).toContain("prewalk_todo");
+		expect(session.getActiveToolNames()).not.toContain("prewalk_todo");
+		expect(session.getActiveToolNames()).not.toContain("prewalk_assess");
 		await session.prompt("/prewalk run");
 		await session.waitForIdle();
 		expect(session.getActiveToolNames()).toContain("prewalk_todo");
+		expect(session.getActiveToolNames()).not.toContain("prewalk_assess");
 
 		const wrapped = runtime.getRegisteredProviderConfig("openai-codex");
 		expect(conversionApi).toBe("openai-codex-responses");
