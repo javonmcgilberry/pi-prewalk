@@ -4,14 +4,15 @@ import {
 	parseAnalyticsConfig,
 } from "../analytics/index.js";
 import { isRecord } from "../guards.js";
-import type {
-	EffectiveRoute,
-	ExecutorConfig,
-	ModelConfig,
-	PlannerProfile,
-	PrewalkRun,
-	RunMode,
-	RunPhase,
+import {
+	type EffectiveRoute,
+	type ExecutorConfig,
+	type ModelConfig,
+	MUTATION_TOOLS_UNAVAILABLE_REASON,
+	type PlannerProfile,
+	type PrewalkRun,
+	type RunMode,
+	type RunPhase,
 } from "../orchestration/coordinator.js";
 
 export const PREWALK_AUDIT_TYPE = "prewalk-audit";
@@ -104,6 +105,7 @@ const REASON_CODES = new Set([
 	"planner-compaction-failed",
 	"executor-compaction-failed",
 	"native-compaction-unsupported",
+	MUTATION_TOOLS_UNAVAILABLE_REASON,
 	"manual-release",
 ]);
 const AUDIT_KEYS = new Set([

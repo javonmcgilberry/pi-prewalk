@@ -560,6 +560,14 @@ describe("Prewalk extension harness", () => {
 		expect([...harness.commands.keys()]).toEqual(["prewalk"]);
 		expect(harness.commands.has("todos")).toBe(false);
 		expect(harness.tools.get(PREWALK_TODO_TOOL_NAME)?.promptSnippet).toBeUndefined();
+		expect(harness.tools.get(PREWALK_TODO_TOOL_NAME)?.constrainedSampling).toEqual({
+			type: "json_schema",
+			strict: "prefer",
+		});
+		expect(harness.tools.get("prewalk_assess")?.constrainedSampling).toEqual({
+			type: "json_schema",
+			strict: "prefer",
+		});
 		const todoSchema = harness.tools.get(PREWALK_TODO_TOOL_NAME)?.parameters as {
 			type: string;
 			required?: string[];
@@ -603,6 +611,7 @@ describe("Prewalk extension harness", () => {
 		).rejects.toThrow("inactive");
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
+		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "steer" });
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
 		expect(harness.handlers.has("session_start")).toBe(true);
@@ -610,6 +619,39 @@ describe("Prewalk extension harness", () => {
 		expect(harness.handlers.has("session_before_compact")).toBe(true);
 		expect("setModel" in harness.pi).toBe(false);
 	});
+
+	it("fails before planning when the active default tool slate cannot prove an edit", async () => {
+		const harness = createHarness({ activeTools: ["read", "grep"] });
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		expect(harness.messages).toEqual([]);
+		expect(harness.activeTools()).toEqual(["read", "grep"]);
+		expect(harness.notifications.at(-1)).toBe(
+			"Prewalk failed: no active mutation-capable tool can prove the first edit. Enable edit, write, apply_patch, bash, exec_command, or exec.",
+		);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			reasonCode: "mutation-tools-unavailable",
+		});
+	});
+
+	it.each(["edit", "write", "apply_patch", "bash", "exec_command", "exec"])(
+		"arms with the %s proving path available",
+		async (toolName) => {
+			const harness = createHarness({ activeTools: ["read", toolName] });
+			prewalkExtension(harness.pi);
+			await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+			await harness.commands.get("prewalk")?.("run", harness.context);
+
+			expect(harness.activeTools()).toEqual(["read", toolName, PREWALK_TODO_TOOL_NAME]);
+			expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+			expect(harness.notifications).toEqual([]);
+		},
+	);
 
 	it("refuses to arm manual Prewalk during an active agent turn", async () => {
 		const harness = createHarness({ idle: false });

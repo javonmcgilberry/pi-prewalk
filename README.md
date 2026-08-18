@@ -89,7 +89,9 @@ Pi keeps the planner selected while the executor routes requests. A handoff repl
 
 ## Limits and safety
 
-Prewalk is experimental and uses Pi's current public extension APIs. It does not promise compatibility with specific Pi versions. There is no completed paid benchmark, so these docs make no claim about measured quality or savings.
+Prewalk is experimental and uses Pi's current public extension APIs. The current test target is Pi **0.84.2**, but Prewalk does not promise compatibility with every Pi version. There is no completed paid benchmark, so these docs make no claim about measured quality or savings.
+
+Prewalk respects Pi's active tool list, including `defaultTools`, and never turns a disabled tool back on. Before planning starts, the list must include a tool that can prove the first edit: `edit`, `write`, `apply_patch`, `bash`, `exec_command`, or Code Mode's `exec`. If it does not, Prewalk stops early and tells you what to enable. Its two tools ask providers to prefer strict JSON-schema arguments. Providers that do not support that option still use normal validation.
 
 Requirements:
 

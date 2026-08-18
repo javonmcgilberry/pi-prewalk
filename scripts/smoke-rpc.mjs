@@ -49,7 +49,7 @@ try {
 	console.log(
 		JSON.stringify({
 			ok: true,
-			pi: "0.84.1",
+			pi: "0.84.2",
 			conversionExtension: "not-loaded",
 			plannerModel: plannerRef,
 			executorModel,

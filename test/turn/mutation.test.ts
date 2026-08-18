@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	hasRecognizedMutationPath,
 	type MutationEvidenceAdapter,
 	type MutationToolResult,
 	MutationTurnBuffer,
@@ -42,6 +43,22 @@ function finish(
 		todoSeen,
 	});
 }
+
+describe("mutation path availability", () => {
+	it.each(["edit", "write", "apply_patch", "bash", "exec_command", "exec"])(
+		"accepts %s as a potential proving path",
+		(toolName) => {
+			expect(hasRecognizedMutationPath(["read", toolName])).toBe(true);
+		},
+	);
+
+	it.each(["read", "grep", "find", "ls", PREWALK_TODO_TOOL_NAME, "wait", "write_stdin"])(
+		"rejects %s without an initiating mutation tool",
+		(toolName) => {
+			expect(hasRecognizedMutationPath([toolName])).toBe(false);
+		},
+	);
+});
 
 describe("direct mutation results", () => {
 	it("accepts only positive evidence from an optional adapter with canonical identity", () => {

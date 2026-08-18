@@ -49,6 +49,11 @@ export interface PrewalkToolRegistration {
 	setAssessmentDecision(decision: "continue" | "bypass"): void;
 }
 
+const PREFERRED_CONSTRAINED_SAMPLING = {
+	type: "json_schema",
+	strict: "prefer",
+} as const;
+
 /** Registers the two namespaced tools and keeps their schemas at the Pi seam. */
 export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistration): void {
 	pi.registerTool({
@@ -56,6 +61,7 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 		label: "Prewalk Todo",
 		description: "Create and maintain the phased implementation checklist required by Prewalk.",
 		parameters: TodoParameters,
+		constrainedSampling: PREFERRED_CONSTRAINED_SAMPLING,
 		async execute(toolCallId, params) {
 			deps.assertCurrentToolExecution(toolCallId);
 			const run = deps.application.run;
@@ -85,6 +91,7 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 		description:
 			"Record whether substantial implementation work remains after bounded inspection.",
 		parameters: AssessmentParameters,
+		constrainedSampling: PREFERRED_CONSTRAINED_SAMPLING,
 		async execute(toolCallId, params) {
 			deps.assertCurrentToolExecution(toolCallId);
 			const evaluation = deps.getAssessment();

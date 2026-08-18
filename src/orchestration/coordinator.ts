@@ -19,6 +19,7 @@ export const EXECUTOR_THINKING_LEVEL = DEFAULT_EXECUTOR.reasoning;
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
+export const MUTATION_TOOLS_UNAVAILABLE_REASON = "mutation-tools-unavailable";
 
 export interface PrewalkConfig {
 	/**

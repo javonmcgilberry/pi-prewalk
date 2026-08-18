@@ -55,6 +55,21 @@ export interface MutationEvidenceAdapter {
 	kindFor(result: Readonly<MutationToolResult>): MutationKind | undefined;
 }
 
+export const RECOGNIZED_MUTATION_TOOL_NAMES = [
+	"edit",
+	"write",
+	"apply_patch",
+	"bash",
+	"exec_command",
+	"exec",
+] as const;
+const RECOGNIZED_MUTATION_TOOL_SET = new Set<string>(RECOGNIZED_MUTATION_TOOL_NAMES);
+
+/** Returns whether the active tool slate can produce a recognized proving edit. */
+export function hasRecognizedMutationPath(toolNames: readonly string[]): boolean {
+	return toolNames.some((toolName) => RECOGNIZED_MUTATION_TOOL_SET.has(toolName));
+}
+
 interface CodeModeTrace {
 	id: string;
 	name: string;

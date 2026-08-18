@@ -35,6 +35,7 @@ import { admitAutomaticPrewalk } from "../orchestration/admission.js";
 import {
 	DEFAULT_EXECUTOR,
 	isPlannerSelected,
+	MUTATION_TOOLS_UNAVAILABLE_REASON,
 	type PlannerProfile,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
@@ -58,6 +59,7 @@ import {
 	latestPrewalkToolSlate,
 	SessionRecovery,
 } from "../session/recovery.js";
+import { hasRecognizedMutationPath, RECOGNIZED_MUTATION_TOOL_NAMES } from "../turn/mutation.js";
 import { PREWALK_TODO_TOOL_NAME } from "../turn/todo.js";
 import { TurnGate } from "../turn/turn-gate.js";
 import { compactStatus, type DelegationStatus } from "../ui/status.js";
@@ -74,6 +76,15 @@ const PROMPT_TYPES = new Set([
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_ASSESS_MESSAGE_TYPE,
 ]);
+
+function failureNotice(reasonCode: string): string {
+	if (reasonCode === MUTATION_TOOLS_UNAVAILABLE_REASON) {
+		const toolNames = RECOGNIZED_MUTATION_TOOL_NAMES;
+		const options = `${toolNames.slice(0, -1).join(", ")}, or ${toolNames[toolNames.length - 1]}`;
+		return `Prewalk failed: no active mutation-capable tool can prove the first edit. Enable ${options}.`;
+	}
+	return `Prewalk failed: ${reasonCode}.`;
+}
 
 function readContextCompactionPolicy(ctx: ExtensionContext): ContextCompactionPolicy {
 	try {
@@ -127,7 +138,6 @@ interface EvaluationState {
 }
 
 const ASSESSMENT_READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
-const CHILD_MUTATION_TOOLS = new Set(["edit", "write", "bash", "exec", "apply_patch"]);
 
 function childIdentity(): { agent: string; runId: string } | undefined {
 	if (process.env.PI_SUBAGENT_CHILD !== "1") return undefined;
@@ -534,7 +544,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		resetContextPressureState();
 		if (!application.run) {
 			if (!ctx.model) {
-				ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
+				ctx.ui.notify(failureNotice(reasonCode), "error");
 				return;
 			}
 			application.start(
@@ -563,7 +573,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			});
 		}
 		deactivatePrewalkTools();
-		ctx.ui.notify(`Prewalk failed: ${reasonCode}.`, "error");
+		ctx.ui.notify(failureNotice(reasonCode), "error");
 	};
 
 	const cancel = async (selectedModelIsPlanner: boolean, ctx: ExtensionContext): Promise<void> => {
@@ -798,6 +808,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			}
 			activatePlanningTools(undefined, requireTodo);
 			if (!ctx.model) throw new Error("model-unavailable");
+			if (!hasRecognizedMutationPath(pi.getActiveTools())) {
+				throw new Error(MUTATION_TOOLS_UNAVAILABLE_REASON);
+			}
 			const planner: PlannerProfile = {
 				provider: ctx.model.provider,
 				model: ctx.model.id,
@@ -898,6 +911,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					"provider-unavailable",
 					"provider-drift",
 					"native-compaction-unsupported",
+					MUTATION_TOOLS_UNAVAILABLE_REASON,
 				].includes(error.message)
 					? error.message
 					: "provider-unavailable";
@@ -928,7 +942,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
-		if (!pi.getActiveTools().some((tool) => CHILD_MUTATION_TOOLS.has(tool))) {
+		if (!hasRecognizedMutationPath(pi.getActiveTools())) {
 			childDiagnostic = "read-only";
 			updateStatus(ctx);
 			return;
