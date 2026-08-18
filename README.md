@@ -29,6 +29,9 @@ Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
     "model": "gpt-5.6-luna",
     "reasoning": "low"
   },
+  "handoff": {
+    "ignoreExtensions": [".md"]
+  },
   "analytics": {
     "enabled": true,
     "catalogFallbackEnabled": false,
@@ -45,7 +48,7 @@ Select a planner, wait for Pi to become idle, then run:
 /prewalk status
 ```
 
-The config is strict: unknown fields fail closed. In an interactive terminal, `/prewalk configure` keeps edits in a draft and writes nothing until you choose **Save changes**. `enabled` is `false` when omitted. Set it to `true` for automatic evaluation in `startup`, `new`, and `fork` sessions; `resume` stays manual. `/prewalk auto` and `/prewalk cancel` override that default for the current session, and `/reload` keeps the choice.
+The config rejects unknown fields. `handoff.ignoreExtensions` defaults to `[".md"]`, so a Markdown-only edit does not start the handoff. Prewalk keeps the planner active until a successful edit reaches another file extension. Matching is case-insensitive, and a patch that changes both docs and code still hands off. Set the list to `[]` to make any proven mutation count. If the tool result does not identify the changed paths, Prewalk treats the edit as the trigger instead of guessing. In an interactive terminal, `/prewalk configure` keeps edits in a draft and writes nothing until you choose **Save changes**. `enabled` is `false` when omitted. Set it to `true` for automatic evaluation in `startup`, `new`, and `fork` sessions; `resume` stays manual. `/prewalk auto` and `/prewalk cancel` override that default for the current session, and `/reload` keeps the choice.
 
 For local development:
 

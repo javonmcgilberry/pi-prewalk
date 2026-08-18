@@ -19,10 +19,11 @@ import type {
 	ExecutorConfig,
 	ExperimentalChildConfig,
 	ExperimentalChildTarget,
+	HandoffConfig,
 	ModelConfig,
 	PrewalkConfig,
 } from "../orchestration/coordinator.js";
-import { DEFAULT_EXECUTOR } from "../orchestration/coordinator.js";
+import { DEFAULT_EXECUTOR, DEFAULT_HANDOFF_CONFIG } from "../orchestration/coordinator.js";
 import { showPrewalkConfigureMenu } from "./prewalk-dashboard.js";
 import { selectPaged } from "./ui.js";
 
@@ -68,10 +69,12 @@ const CONFIG_KEYS = new Set([
 	"enabled",
 	"executor",
 	"executorFallbacks",
+	"handoff",
 	"analytics",
 	"children",
 	"experimentalChild",
 ]);
+const HANDOFF_KEYS = new Set(["ignoreExtensions"]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
 const CHILDREN_KEYS = new Set(["agents"]);
 const CHILD_POLICY_KEYS = new Set(["executor"]);
@@ -95,6 +98,7 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	}
 	const executor = parseExecutorConfig(value.executor, "executor");
 	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
+	const handoff = parseHandoffConfig(value.handoff);
 	const analytics =
 		value.analytics === undefined
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
@@ -114,9 +118,31 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 		enabled: value.enabled ?? false,
 		executor,
 		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
+		handoff,
 		analytics,
 		...(children === undefined ? {} : { children }),
 	};
+}
+
+function parseHandoffConfig(value: unknown): HandoffConfig {
+	if (value === undefined) return structuredClone(DEFAULT_HANDOFF_CONFIG);
+	if (!isRecord(value)) throw new Error("Prewalk config handoff must be a JSON object.");
+	const unknownKeys = Object.keys(value).filter((key) => !HANDOFF_KEYS.has(key));
+	if (unknownKeys.length > 0) {
+		throw new Error(`Unknown Prewalk config handoff field: ${unknownKeys.join(", ")}.`);
+	}
+	if (!Array.isArray(value.ignoreExtensions)) {
+		throw new Error("Prewalk config handoff.ignoreExtensions must be an array.");
+	}
+	const extensions = value.ignoreExtensions.map((extension) => {
+		if (typeof extension !== "string" || !/^\.[a-z0-9_-]+$/i.test(extension)) {
+			throw new Error(
+				"Prewalk config handoff.ignoreExtensions entries must be file extensions such as .md.",
+			);
+		}
+		return extension.toLowerCase();
+	});
+	return { ignoreExtensions: [...new Set(extensions)] };
 }
 
 function parseExecutorConfig(value: unknown, name: string): ExecutorConfig {
@@ -259,6 +285,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 			initial: savedConfig ?? {
 				enabled: false,
 				executor: { ...DEFAULT_EXECUTOR },
+				handoff: structuredClone(DEFAULT_HANDOFF_CONFIG),
 				analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 			},
 			models: ctx.modelRegistry.getAvailable(),
@@ -365,6 +392,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		...(savedConfig?.executorFallbacks === undefined
 			? {}
 			: { executorFallbacks: savedConfig.executorFallbacks }),
+		handoff: structuredClone(savedConfig?.handoff ?? DEFAULT_HANDOFF_CONFIG),
 		...(savedConfig?.children === undefined ? {} : { children: savedConfig.children }),
 	};
 	const confirmed = await ctx.ui.confirm(

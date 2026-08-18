@@ -12,6 +12,9 @@
       "reasoning": "low"
     }
   ],
+  "handoff": {
+    "ignoreExtensions": [".md"]
+  },
   "analytics": {
     "enabled": true,
     "catalogFallbackEnabled": false,

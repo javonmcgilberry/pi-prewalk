@@ -21,6 +21,15 @@ export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 export const MUTATION_TOOLS_UNAVAILABLE_REASON = "mutation-tools-unavailable";
 
+export interface HandoffConfig {
+	/** File extensions that do not count as the implementation-starting edit. */
+	ignoreExtensions: string[];
+}
+
+export const DEFAULT_HANDOFF_CONFIG: HandoffConfig = {
+	ignoreExtensions: [".md"],
+};
+
 export interface PrewalkConfig {
 	/**
 	 * Persisted opt-in for automatic admission in fresh top-level sessions.
@@ -33,6 +42,7 @@ export interface PrewalkConfig {
 	 * planner change or a lapsed credential degrades instead of stranding the run.
 	 */
 	executorFallbacks?: ExecutorConfig[];
+	handoff?: HandoffConfig;
 	analytics?: AnalyticsConfig;
 	/**
 	 * Child Prewalk is opt-in per agent. A boolean uses the main executor; an

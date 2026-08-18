@@ -1,3 +1,4 @@
+import path from "node:path";
 import { isRecord } from "../guards.js";
 import { PREWALK_TODO_TOOL_NAME } from "./todo.js";
 
@@ -18,6 +19,7 @@ export interface MutationCandidate {
 	cellId?: string;
 	traceId?: string;
 	sessionId?: number;
+	paths?: string[];
 }
 
 export interface MutationToolResult {
@@ -38,6 +40,7 @@ export interface MutationExecutionUpdate {
 export interface MutationTurnOptions {
 	todoActive: boolean;
 	todoSeen: boolean;
+	ignoreExtensions?: readonly string[];
 }
 
 export interface MutationTurnEvidence {
@@ -138,6 +141,51 @@ function successfulExit(details: unknown): boolean {
 
 function successfulPatchDetails(details: unknown): boolean {
 	return stringField(details, "status") === "success";
+}
+
+function stringArrayField(value: unknown, field: string): string[] | undefined {
+	if (!isRecord(value) || !Array.isArray(value[field])) return undefined;
+	const entries = value[field];
+	return entries.every((entry) => typeof entry === "string") ? entries : undefined;
+}
+
+function changedFilesFromDetails(details: unknown): string[] | undefined {
+	if (!isRecord(details)) return undefined;
+	return (
+		stringArrayField(details, "changedFiles") ??
+		stringArrayField(isRecord(details.result) ? details.result : undefined, "changedFiles")
+	);
+}
+
+function patchPaths(value: unknown): string[] | undefined {
+	if (typeof value !== "string") return undefined;
+	const paths: string[] = [];
+	for (const line of value.split(/\r?\n/)) {
+		const match = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
+		const move = /^\*\*\* Move to: (.+)$/.exec(line);
+		const candidate = match?.[1] ?? move?.[1];
+		if (candidate) paths.push(candidate);
+	}
+	return paths.length > 0 ? [...new Set(paths)] : undefined;
+}
+
+function patchPathsFromInput(
+	input: unknown,
+	commandField?: "command" | "cmd",
+): string[] | undefined {
+	if (commandField) return patchPaths(commandFrom(input, commandField));
+	return patchPaths(stringField(input, "patch"));
+}
+
+function editPath(input: unknown): string[] | undefined {
+	const filePath = stringField(input, "path") ?? stringField(input, "file_path");
+	return filePath ? [filePath] : undefined;
+}
+
+function isIgnoredMutation(candidate: MutationCandidate, extensions: readonly string[]): boolean {
+	if (!candidate.paths || candidate.paths.length === 0 || extensions.length === 0) return false;
+	const ignored = new Set(extensions.map((extension) => extension.toLowerCase()));
+	return candidate.paths.every((filePath) => ignored.has(path.extname(filePath).toLowerCase()));
 }
 
 function stripHeredocBodies(command: string): string {
@@ -282,8 +330,8 @@ function assistantCalls(message: unknown): Array<{ id: string; name: string }> {
 export class MutationTurnBuffer {
 	private readonly results = new Map<string, MutationToolResult>();
 	private readonly cells = new Map<string, CodeModeCell>();
-	private readonly directSessions = new Set<number>();
-	private readonly codeModeSessions = new Set<number>();
+	private readonly directSessions = new Map<number, string[] | undefined>();
+	private readonly codeModeSessions = new Map<number, string[] | undefined>();
 	private readonly adapters: readonly MutationEvidenceAdapter[];
 	private triggerChosen = false;
 
@@ -312,7 +360,7 @@ export class MutationTurnBuffer {
 		const command = commandFrom(event.input, "cmd");
 		const sessionId = numberField(event.details, "session_id");
 		if (command && sessionId !== undefined && hasProvableApplyPatch(command)) {
-			this.directSessions.add(sessionId);
+			this.directSessions.set(sessionId, patchPaths(command));
 		}
 	}
 
@@ -326,17 +374,20 @@ export class MutationTurnBuffer {
 				const result = this.results.get(call.id);
 				if (!result || result.toolName !== call.name) continue;
 				mutation = this.candidateFor(result);
-				if (mutation) {
+				if (mutation && !isIgnoredMutation(mutation, options.ignoreExtensions ?? [])) {
 					this.triggerChosen = true;
 					break;
 				}
+				mutation = undefined;
 			}
 		}
 		this.cleanupTurn();
-		return {
-			todoSucceeded,
-			...(mutation ? { mutation } : {}),
-		};
+		const publicMutation = mutation
+			? (({ paths: _paths, ...candidate }) => candidate)(mutation)
+			: undefined;
+		const evidence: MutationTurnEvidence = { todoSucceeded };
+		if (publicMutation) evidence.mutation = publicMutation;
+		return evidence;
 	}
 
 	private mergeCodeModeDetails(details: Record<string, unknown>): void {
@@ -355,7 +406,7 @@ export class MutationTurnBuffer {
 				const resultDetails = isRecord(trace.result) ? trace.result.details : undefined;
 				const sessionId = numberField(resultDetails, "session_id");
 				if (command && sessionId !== undefined && hasProvableApplyPatch(command)) {
-					this.codeModeSessions.add(sessionId);
+					this.codeModeSessions.set(sessionId, patchPaths(command));
 				}
 			}
 		}
@@ -370,15 +421,18 @@ export class MutationTurnBuffer {
 				toolName: result.toolName,
 				kind: result.toolName,
 				source: "builtin",
+				paths: editPath(result.input),
 			};
 		}
 		if (result.toolName === "apply_patch") {
+			const paths = changedFilesFromDetails(result.details) ?? patchPathsFromInput(result.input);
 			return successfulPatchDetails(result.details)
 				? {
 						toolCallId: result.toolCallId,
 						toolName: result.toolName,
 						kind: "apply_patch",
 						source: "direct",
+						paths,
 					}
 				: undefined;
 		}
@@ -390,6 +444,7 @@ export class MutationTurnBuffer {
 						toolName: result.toolName,
 						kind: "apply_patch",
 						source: "shell",
+						paths: patchPathsFromInput(result.input, "command"),
 					}
 				: undefined;
 		}
@@ -401,6 +456,7 @@ export class MutationTurnBuffer {
 						toolName: result.toolName,
 						kind: "apply_patch",
 						source: "exec_command",
+						paths: patchPathsFromInput(result.input, "cmd"),
 					}
 				: undefined;
 		}
@@ -415,6 +471,7 @@ export class MutationTurnBuffer {
 						kind: "apply_patch",
 						source: "exec_command",
 						sessionId,
+						paths: this.directSessions.get(sessionId),
 					}
 				: undefined;
 		}
@@ -451,6 +508,7 @@ export class MutationTurnBuffer {
 		if (trace.status !== "done") return undefined;
 		const resultDetails = isRecord(trace.result) ? trace.result.details : undefined;
 		if (trace.name === "apply_patch" && successfulPatchDetails(resultDetails)) {
+			const paths = changedFilesFromDetails(resultDetails) ?? patchPathsFromInput(trace.input);
 			return {
 				toolCallId: outer.toolCallId,
 				toolName: outer.toolName,
@@ -458,6 +516,7 @@ export class MutationTurnBuffer {
 				source: "code_mode",
 				cellId,
 				traceId: trace.id,
+				paths,
 			};
 		}
 		if (trace.name === "exec_command") {
@@ -471,6 +530,7 @@ export class MutationTurnBuffer {
 				source: "code_mode",
 				cellId,
 				traceId: trace.id,
+				paths: patchPathsFromInput(trace.input, "cmd"),
 			};
 		}
 		if (trace.name !== "write_stdin") return undefined;
@@ -490,6 +550,7 @@ export class MutationTurnBuffer {
 			cellId,
 			traceId: trace.id,
 			sessionId,
+			paths: this.codeModeSessions.get(sessionId),
 		};
 	}
 

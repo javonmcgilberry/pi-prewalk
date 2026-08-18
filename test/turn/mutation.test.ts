@@ -496,6 +496,62 @@ describe("Code Mode traces", () => {
 });
 
 describe("turn selection", () => {
+	it("keeps planning through ignored documentation edits", () => {
+		const buffer = new MutationTurnBuffer();
+		buffer.recordResult(
+			result("docs", "apply_patch", {
+				input: { patch: "*** Begin Patch\n*** Update File: README.MD\n*** End Patch" },
+				details: { status: "success", result: { changedFiles: ["README.MD"] } },
+			}),
+		);
+
+		expect(
+			buffer.finishTurn(assistant({ id: "docs", name: "apply_patch" }), {
+				todoActive: true,
+				todoSeen: true,
+				ignoreExtensions: [".md"],
+			}).mutation,
+		).toBeUndefined();
+
+		buffer.recordResult(result("code", "edit", { input: { path: "src/index.ts" } }));
+		expect(
+			buffer.finishTurn(assistant({ id: "code", name: "edit" }), {
+				todoActive: true,
+				todoSeen: true,
+				ignoreExtensions: [".md"],
+			}).mutation,
+		).toMatchObject({ toolCallId: "code", kind: "edit" });
+	});
+
+	it("hands off for mixed patches and unknown paths", () => {
+		const mixed = new MutationTurnBuffer();
+		mixed.recordResult(
+			result("mixed", "apply_patch", {
+				details: {
+					status: "success",
+					result: { changedFiles: ["README.md", "src/index.ts"] },
+				},
+			}),
+		);
+		expect(
+			mixed.finishTurn(assistant({ id: "mixed", name: "apply_patch" }), {
+				todoActive: true,
+				todoSeen: true,
+				ignoreExtensions: [".md"],
+			}).mutation,
+		).toMatchObject({ toolCallId: "mixed" });
+
+		const unknown = new MutationTurnBuffer();
+		unknown.recordResult(result("unknown", "write"));
+		expect(
+			unknown.finishTurn(assistant({ id: "unknown", name: "write" }), {
+				todoActive: true,
+				todoSeen: true,
+				ignoreExtensions: [".md"],
+			}).mutation,
+		).toMatchObject({ toolCallId: "unknown" });
+	});
+
 	it("uses assistant-authored order instead of result arrival order", () => {
 		const first = new MutationTurnBuffer();
 		first.recordResult(result("second", "write"));

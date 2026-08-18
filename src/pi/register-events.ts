@@ -34,6 +34,7 @@ import { type HostRunIdentity, PiHostEventCorrelation } from "../host-event-corr
 import { admitAutomaticPrewalk } from "../orchestration/admission.js";
 import {
 	DEFAULT_EXECUTOR,
+	DEFAULT_HANDOFF_CONFIG,
 	isPlannerSelected,
 	MUTATION_TOOLS_UNAVAILABLE_REASON,
 	type PlannerProfile,
@@ -1587,6 +1588,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			const evidence = turnGate.finishTurn(event.message, {
 				todoActive: run.todoActive,
 				todoSeen: run.todoSeen,
+				ignoreExtensions:
+					run.config.handoff?.ignoreExtensions ?? DEFAULT_HANDOFF_CONFIG.ignoreExtensions,
 			});
 			const wasTodoReady = run.todoSeen;
 			const wasContinuePending = run.continuePending;

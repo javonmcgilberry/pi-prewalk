@@ -17,6 +17,7 @@ import prewalkExtension from "../../extensions/prewalk.js";
 import { AnalyticsStore } from "../../src/analytics/store.js";
 import {
 	DEFAULT_EXECUTOR,
+	DEFAULT_HANDOFF_CONFIG,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
@@ -1404,6 +1405,72 @@ describe("Prewalk extension harness", () => {
 		expect(harness.statuses.at(-1)).toContain("switching after this turn");
 	});
 
+	it("keeps the planner through Markdown-only edits before handing off for code", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "todo-docs",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			input: { op: "init" },
+			content: [],
+			isError: false,
+			details: { phases: [] },
+		});
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-docs",
+			toolName: "edit",
+			input: { path: "README.MD" },
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 0,
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "todo-docs", name: PREWALK_TODO_TOOL_NAME, arguments: {} },
+					{ type: "toolCall", id: "edit-docs", name: "edit", arguments: {} },
+				],
+			},
+			toolResults: [],
+		});
+
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(
+			harness.entries.some(
+				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
+			),
+		).toBe(false);
+
+		await harness.emit("tool_result", {
+			type: "tool_result",
+			toolCallId: "edit-code",
+			toolName: "edit",
+			input: { path: "src/index.ts" },
+			content: [],
+			isError: false,
+			details: {},
+		});
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "edit-code", name: "edit", arguments: {} }],
+			},
+			toolResults: [],
+		});
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({ event: "handoff-triggered" });
+	});
+
 	it("keeps delegation progress in explicit status instead of the compact footer", async () => {
 		const parent = createHarness();
 		prewalkExtension(parent.pi);
@@ -2118,6 +2185,7 @@ describe("Prewalk extension harness", () => {
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toEqual({
 			enabled: false,
 			executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
+			handoff: DEFAULT_HANDOFF_CONFIG,
 			analytics: {
 				enabled: true,
 				catalogFallbackEnabled: false,

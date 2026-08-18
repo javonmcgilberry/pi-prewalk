@@ -3,6 +3,7 @@ import { DEFAULT_ANALYTICS_CONFIG } from "../../src/analytics/index.js";
 import { parseConfig } from "../../src/config/prewalk-config.js";
 import {
 	DEFAULT_EXECUTOR,
+	DEFAULT_HANDOFF_CONFIG,
 	DEFAULT_PLANNER,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
@@ -19,6 +20,7 @@ describe("provider-neutral configuration", () => {
 		expect(parseConfig(config)).toEqual({
 			...config,
 			enabled: false,
+			handoff: DEFAULT_HANDOFF_CONFIG,
 			analytics: DEFAULT_ANALYTICS_CONFIG,
 		});
 		expect(parseConfig({ ...config, enabled: true })).toMatchObject({ enabled: true });
@@ -30,6 +32,24 @@ describe("provider-neutral configuration", () => {
 		);
 		expect(PLANNER_MODEL_ID).toBe("gpt-5.6-sol");
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");
+	});
+
+	it("normalizes handoff extension exclusions", () => {
+		expect(
+			parseConfig({
+				...config,
+				handoff: { ignoreExtensions: [".MD", ".txt", ".md"] },
+			}),
+		).toMatchObject({ handoff: { ignoreExtensions: [".md", ".txt"] } });
+		expect(parseConfig({ ...config, handoff: { ignoreExtensions: [] } }).handoff).toEqual({
+			ignoreExtensions: [],
+		});
+		expect(() => parseConfig({ ...config, handoff: { ignoreExtensions: ["md"] } })).toThrow(
+			"entries must be file extensions such as .md",
+		);
+		expect(() =>
+			parseConfig({ ...config, handoff: { ignoreExtensions: [".md"], paths: [] } }),
+		).toThrow("Unknown Prewalk config handoff field: paths.");
 	});
 
 	it("keeps an ordered executor fallback chain", () => {
