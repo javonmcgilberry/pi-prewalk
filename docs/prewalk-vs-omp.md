@@ -9,6 +9,9 @@ Those things depend on the models, the task, and the provider. This guide
 separates what the code does from what would still need a paid benchmark to
 prove.
 
+The current compatibility target is Pi **0.84.2**. Other Pi versions may work,
+but they are not the version this release is tested against.
+
 ## The three names you need
 
 - **Pi** is the coding-agent application that owns the conversation, tools,
@@ -35,8 +38,8 @@ planner setting. It is also for maintainers comparing this extension with OMP,
 or checking whether a reported behavior matches OMP, comes from a stock-Pi
 limitation, or is an intentional difference.
 
-If you only want to use it, start with [the command and configuration section
-in the main README](../README.md#use-it). If you want to understand the
+If you only want to use it, start with [Quick start in the main
+README](../README.md#quick-start). If you want to understand the
 architecture, read [the technical host-event guide](architecture/host-event-correlation.md)
 after this page.
 
@@ -85,10 +88,14 @@ A normal manual run works like this.
    same namespaced tool in its own session and must open its own local gate;
    Prewalk does not consume another extension's todo list.
 4. **The planner makes a real change.** A successful `edit`, `write`, direct
-   or shell `apply_patch` can provide the positive evidence Prewalk needs. A
+   or shell `apply_patch` can provide the proof Prewalk needs. A
    narrowly configured integration can recognize a successful patch result too.
    A printed or quoted patch, failed or partial call, or guessed result does not
-   count.
+   count. By default, a Markdown-only change does not count either. The
+   `handoff.ignoreExtensions` setting controls that list, and `[]` restores the
+   first-proven-mutation behavior. A patch that changes both docs and code still
+   counts. If Prewalk cannot identify the changed paths, it treats the edit as
+   the trigger instead of guessing.
 5. **The full turn finishes.** Handoff happens after the assistant turn, not
    halfway through parallel tool results. Before the executor's first request,
    Prewalk removes the planning-only instruction but keeps the conversation,
@@ -99,11 +106,16 @@ A normal manual run works like this.
    provider call uses the executor.
 7. **The route stays with the executor.** Later regular model turns continue there
    until you use `/prewalk release`, the run is cancelled, or the session is
-   cleaned up. `/prewalk status` shows the route and the reason for a failure.
+   cleaned up. In `/prewalk status`, `completed` means the executor finished its
+   first response successfully; it does not mean Prewalk knows the task is done.
+   `/prewalk status` also shows the route and the reason for a failure.
 8. **Cleanup is explicit.** A failed pre-handoff run or `/prewalk cancel`
    releases the temporary route before another run can start. After handoff,
    `/prewalk release` returns the conversation to the planner without changing
-   Pi's saved model. Closing Pi normally finalizes the run as `session-ended`.
+   Pi's saved model, closes the run, and allows another Prewalk pass in the same
+   conversation. With automatic mode enabled, the next substantial prompt can
+   start that pass without another `/prewalk run`. Closing Pi normally finalizes
+   the run as `session-ended`.
    If recovery later finds an unfinished journal entry after an unclean or
    stale exit, that recovery is recorded as `interrupted`. Reopening starts on
    the planner and does not silently restore the route.
@@ -149,7 +161,7 @@ important rows below in user-facing language.
 | 1 | Handoff mechanism | Native, temporary session model switch | Run-scoped provider overlay; Pi's selected model stays the planner | The flow is the same, but stock Pi forces a different mechanism. |
 | 2 | Saved default model | Not changed | Not changed | A Prewalk run does not rewrite Pi's saved model. |
 | 2a | Persistent automatic startup | Opt-in `prewalk.enabled`, off by default, applied to fresh sessions | Opt-in `enabled` in `prewalk.json`, off by default, applied to fresh top-level sessions | Both remember the preference without silently restoring a prior executor route; this extension still runs its conservative admission check. |
-| 3 | What starts handoff | First `edit` or `write` after the todo gate | First positively proven mutation after the gate; patch surfaces and narrowly configured integrations can count too | Prewalk waits for evidence that code actually changed. |
+| 3 | What starts handoff | First `edit` or `write` after the todo gate | First positively proven mutation after the gate; patch surfaces and narrowly configured integrations can count too; ignored extensions default to `.md` | Prewalk waits for evidence that code actually changed, not a Markdown-only planning note. |
 | 4 | Todo gate | Required | Required | Planning alone does not switch models. |
 | 5 | Planning nudge | Injected once | Injected once | Both give the planner a hidden instruction to plan deeply. |
 | 6 | Continuation nudge | Used when the planner stops too early | Used in the same situation | A text-only planning reply does not silently end the run. |
@@ -286,8 +298,11 @@ session.
 
 - In the normal top-level flow and every opted-in mutation-capable child, the
   namespaced `prewalk_todo` tool must be active and successfully called before
-  handoff, along with positive mutation evidence. Failed, cancelled, partial,
+  handoff, along with proof of a successful edit. Failed, cancelled, partial,
   still-running, quoted, or dynamically assembled patches do not qualify.
+  Markdown-only edits are ignored by default; mixed code-and-doc edits still
+  qualify. If Prewalk cannot identify the changed paths, the successful edit
+  still counts and starts the handoff.
 - Missing authorization, invalid configuration, a todo conflict, an unusable
   executor, or unsupported native Responses compaction leaves the run unarmed
   or restores the planner.
