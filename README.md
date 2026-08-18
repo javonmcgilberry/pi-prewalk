@@ -2,41 +2,46 @@
 
 **Let the expensive model find the path. Let the fast model walk it.**
 
-Prewalk asks a frontier model to explore the repository and prove its direction with the first successful code change. A cheaper or faster executor then picks up the same live Pi trajectory, with its context, checklist, assumptions, and working edit. It does not restart from a prose plan.
+Prewalk starts a coding task on a strong planner model. The planner explores the repository, works through the problem, creates a checklist, and proves the approach with the first successful code edit. A cheaper or faster executor then continues from that same Pi conversation.
 
-Pi still shows the planner as the selected model. After handoff, Prewalk routes primary turns through a temporary provider overlay until you release it, cancel the run, or close the session. It uses Pi's public extension API. It does not patch Pi, call `setModel()`, import private Pi modules, or hide a second model behind a fake router.
+This is not traditional plan mode. The planning phase is the conversation itself.
 
-Read [`Prewalk in plain English`](docs/prewalk-vs-omp.md) for a one-run walkthrough and the practical differences from OMP.
+## Why not hand the executor a plan document?
+
+A plan document keeps the conclusion but loses much of the work that produced it: files read, tool results, rejected ideas, repository conventions, and decisions made along the way. The executor often has to read the same files and resolve the same details again.
+
+```text
+Traditional plan mode
+strong model → explores the repo → writes plan.md
+cheap model  → rereads the repo → reconstructs the details → implements
+
+Prewalk
+strong model → explores the repo → creates a checklist → makes the first edit
+cheap model  → continues the same working trajectory → finishes and validates
+```
+
+The executor gets the conversation and tool history Pi can replay, the checklist, the explored context, and the working edit. It starts from an approach that has already touched the code instead of a summary of what might work.
+
+Prewalk automates a switch you could make by hand. The checklist and first successful edit provide a repeatable handoff point: late enough for the planner to prove the direction, but early enough to avoid paying planner prices for the rest of the implementation.
+
+This technique comes from Oh My Pi and is explained in the original [Stencil Prewalk post](https://stencil.so/blog/prewalk). This repository packages the core idea as a standalone Pi extension.
 
 ## Quick start
 
-Install Prewalk and the recommended child-agent launcher:
+Install Prewalk:
 
 ```sh
 pi install git:github.com/javonmcgilberry/pi-prewalk
-pi install npm:pi-subagents
 ```
-
-Prewalk works without `pi-subagents`, but install the unmodified upstream package for the full workflow. Its child agents make parallel research, review, and implementation practical. The launcher still owns child definitions, tools, permissions, scheduling, and filesystem isolation. Prewalk does not launch children or change those decisions.
 
 Create `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk.json`:
 
 ```json
 {
-  "enabled": false,
   "executor": {
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
     "reasoning": "low"
-  },
-  "handoff": {
-    "ignoreExtensions": [".md"]
-  },
-  "analytics": {
-    "enabled": true,
-    "catalogFallbackEnabled": false,
-    "recentReceiptCount": 10,
-    "schemaVersion": 1
   }
 }
 ```
@@ -48,7 +53,9 @@ Select a planner, wait for Pi to become idle, then run:
 /prewalk status
 ```
 
-The config rejects unknown fields. `handoff.ignoreExtensions` defaults to `[".md"]`, so a Markdown-only edit does not start the handoff. Prewalk keeps the planner active until a successful edit reaches another file extension. Matching is case-insensitive, and a patch that changes both docs and code still hands off. Set the list to `[]` to make any proven mutation count. If the tool result does not identify the changed paths, Prewalk treats the edit as the trigger instead of guessing. In an interactive terminal, `/prewalk configure` keeps edits in a draft and writes nothing until you choose **Save changes**. `enabled` is `false` when omitted. Set it to `true` for automatic evaluation in `startup`, `new`, and `fork` sessions; `resume` stays manual. `/prewalk auto` and `/prewalk cancel` override that default for the current session, and `/reload` keeps the choice.
+That is the smallest valid config. [`prewalk.example.json`](prewalk.example.json) shows executor fallbacks, analytics, child agents, and all common settings. You can also use `/prewalk configure`; it keeps changes in a draft until you choose **Save changes**.
+
+Automatic mode is off by default. Set `enabled` to `true` for automatic assessment in new sessions, or use `/prewalk auto` for the current session. Resumed sessions stay manual. `/reload` keeps the current session choice.
 
 For local development:
 
@@ -58,6 +65,24 @@ cd pi-prewalk
 npm install
 pi install .
 ```
+
+## A typical workflow
+
+1. Put the task in the conversation with the planner selected. Once Pi is idle, run `/prewalk run`.
+2. The planner investigates, creates the checklist, and makes the first qualifying code edit.
+3. Prewalk routes the next turn to the executor. The executor finishes the checklist and runs validation.
+4. Follow-up messages remain on the executor. When that task is done, run `/prewalk release` to return to the planner.
+5. For another planning pass in the same conversation, run `/prewalk run` again. A common second pass is to have the planner review and simplify the implementation, then let the executor make the cleanup edits.
+
+If automatic mode is enabled, step 5 does not need `/prewalk run`; after release, the next qualifying prompt is assessed automatically. Use `/prewalk status` whenever you are unsure which route is active.
+
+## Local usage estimates
+
+A local snapshot from **2026-08-13** contains 112 receipts, including 92 finished runs and 40 runs with enough data for a comparison. Those compared runs recorded **$197.89** in provider-reported cost. The ledger estimates **$831.06** if the planner had continued with the same observed token mix, a difference of **$647.26**.
+
+One Sol → Luna session recorded **$1.47** in actual cost versus a **$12.15** planner-only estimate. That is an estimated **$10.68 difference (88%)** for that session.
+
+These are real-usage estimates, not a control group or billing claim. They assume the planner would have used the executor's observed tokens at planner prices, which can overstate savings. This implementation has not yet completed a paid quality benchmark. The [Stencil post](https://stencil.so/blog/prewalk) has a controlled benchmark of the original technique.
 
 ## Commands
 
@@ -77,22 +102,22 @@ Installing Prewalk does not add its tools to ordinary Pi turns. `prewalk_todo` a
 
 ## How the handoff works
 
-A normal plan produces prose, then the implementer starts at a new seam and rereads the repository. Prewalk keeps one trajectory:
-
 1. The planner receives a hidden planning instruction and explores the repo.
 2. It must successfully initialize the namespaced `prewalk_todo` checklist.
-3. It must make a real code change. Successful `edit`, `write`, direct or shell `apply_patch`, and Code Mode patch results count.
+3. It must make a real code change. Successful `edit`, `write`, direct or shell `apply_patch`, and Code Mode patch results can count.
 4. After the full assistant turn settles, Prewalk removes planning-only instructions and routes the next primary turn to the executor.
 
-Failed, cancelled, partial, still-running, printed, quoted, or dynamically assembled patch attempts do not trigger the handoff. Unknown tools do not count unless an integration translates their terminal result into positive mutation evidence. If the result is unclear, Prewalk stays on the planner.
+By default, Markdown-only changes do not trigger the switch. Configure this with `handoff.ignoreExtensions`; matching is case-insensitive, a mixed code-and-doc patch still counts, and `[]` makes any proven mutation count. If Prewalk cannot identify the changed paths, it treats the edit as the trigger rather than guessing.
 
-The executor inherits the transcript, checklist, explored context, and edit that proved the approach. Later primary turns stay on the executor, including after `/reload` in the same live session. `/prewalk release` restores the planner in that transcript. A new Pi session starts on the planner and never restores an old executor route.
+Failed, cancelled, partial, still-running, printed, quoted, or dynamically assembled patch attempts do not trigger the handoff. Unknown tools do not count unless an integration translates their terminal result into positive mutation evidence. If the mutation itself is unclear, Prewalk stays on the planner.
 
-Pi keeps the planner selected while the executor routes requests. A handoff replays history for the receiving model; signed reasoning is retained only for an exact model match. Cross-provider execution uses the executor provider's resolved credentials. A planner-resolved API key is never forwarded, though a distinct request-level override remains available.
+Later primary turns stay on the executor, including after `/reload` in the same live session. In Prewalk status, `completed` means the first executor response completed successfully; it does not mean Prewalk detected that your task was finished. Use `/prewalk release` when the task is done. Release restores the planner, finalizes that run, and allows a new run in the same conversation. A new Pi session always starts on the planner and never restores an old executor route.
+
+Pi continues to display the planner as the selected model while Prewalk routes requests to the executor. The receiving model gets the history Pi can replay, but signed reasoning is retained only for an exact model match. Cross-provider execution uses the executor provider's own resolved credentials; Prewalk never forwards a planner-resolved API key.
 
 ## Limits and safety
 
-Prewalk is experimental and uses Pi's current public extension APIs. The current test target is Pi **0.84.2**, but Prewalk does not promise compatibility with every Pi version. There is no completed paid benchmark, so these docs make no claim about measured quality or savings.
+Prewalk is experimental and uses Pi's public extension APIs. The current test target is Pi **0.84.2**, but compatibility with every Pi version is not guaranteed. This standalone implementation has not completed a paid controlled benchmark, so the local figures below are estimates rather than measured quality or savings claims.
 
 Prewalk respects Pi's active tool list, including `defaultTools`, and never turns a disabled tool back on. Before planning starts, the list must include a tool that can prove the first edit: `edit`, `write`, `apply_patch`, `bash`, `exec_command`, or Code Mode's `exec`. If it does not, Prewalk stops early and tells you what to enable. Its two tools ask providers to prefer strict JSON-schema arguments. Providers that do not support that option still use normal validation.
 
@@ -102,19 +127,21 @@ Requirements:
 - No other extension registered as `prewalk_todo`.
 - Pi Codex Conversion native Responses compaction disabled when installed.
 
-During an active run, Prewalk estimates each primary planner request before transport using the planner's context window and Pi's effective `compaction.reserveTokens` setting. When the request is too large, Prewalk stops it before the provider call and waits for the agent to settle. It then accepts a compaction Pi already completed or calls Pi's public compactor. Planning resumes once from the compacted context.
-
-The same guard protects executor requests, including executors with a smaller context window. The reserve defaults to 16,384 when Pi does not supply one. With automatic compaction disabled, failed or cancelled compaction, or a second unchanged pressure result, Prewalk fails closed and restores the planner instead of looping. The estimate is not a tokenizer; provider serialization can differ, and prompt-cache reads may not survive a model switch. These checks exist only while Prewalk owns an active route. They do not patch Pi or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md).
+Prewalk checks planner and executor context pressure before provider requests. It uses each model's context window and Pi's effective `compaction.reserveTokens`, defaulting the reserve to 16,384 when Pi does not provide one. It can ask Pi to compact once; if pressure remains or compaction is unavailable, it restores the planner instead of looping. This estimate is not a tokenizer, provider serialization can differ, and prompt-cache reads may not survive a model switch.
 
 Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is installed. The legacy top-level `responsesCompaction` setting is recognized too. Prewalk refuses to arm, including while restoring an active run, when native Responses compaction is explicitly enabled; otherwise hook order could compact planning-only context before Prewalk filters it.
 
-An optional `executorFallbacks` array lists alternate executors in order. If the field is omitted, Prewalk infers a chain from registered models and Oh My Pi's built-in `smol` preference patterns. An explicit empty array disables inference; a non-empty array is used exactly as written. Candidates must be registered, authorized, able to produce output, and different from the current model at effective reasoning. If none qualifies, Prewalk stays on the planner and names the candidates it skipped.
+An optional `executorFallbacks` array lists alternate executors in order. If omitted, Prewalk infers a chain from registered models and Oh My Pi's built-in `smol` preferences. An empty array disables inference. Candidates must be registered, authorized, able to produce output, and different from the planner at effective reasoning.
 
-Pi's public host events do not carry a stable Prewalk run identity. A small facts-only layer records ownership, rejects stale observations, and never treats `apply/unknown` as proof of run ownership or mutation. The orchestration, mutation, analytics, and compaction modules decide policy. See the [host-event architecture](docs/architecture/host-event-correlation.md). `TemporaryModelRuntime` remains a replaceable provider-routing adapter with a run-scoped lease; it is not correlation policy.
+Prewalk uses a run-scoped provider route and rejects stale host events. It does not patch Pi, call `setModel()`, import private Pi modules, or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
 
 ## Child agents
 
 Prewalk works in a parent session without `pi-subagents`. Install it for the full workflow: child agents can handle parallel research, review, and implementation while the parent keeps its main trajectory. An opted-in mutation-capable child gets its own namespaced `prewalk_todo` gate and model handoff.
+
+```sh
+pi install npm:pi-subagents
+```
 
 Prewalk does not discover, define, or launch child agents. It does not rewrite their models, thinking levels, fallback models, permissions, tools, scheduling, or descendants. The child launcher owns those decisions. A child executor override selects a route; it does not grant write access.
 
@@ -150,12 +177,6 @@ Child Prewalk is off by default and is not enabled by the portable setup. A chil
 ```
 
 Use `/prewalk children`, `/prewalk children on worker`, `/prewalk children off reviewer`, or `/prewalk children target specialist openai-codex/gpt-5.6-luna low`. The older `experimentalChild` shape is normalized for compatibility; new settings use `children`.
-
-## Local results (estimate, not a benchmark)
-
-A local ledger snapshot from **2026-08-13** contains 112 receipts, including 92 finished runs and 40 compared runs. Those compared runs recorded **$197.89** in cost. The ledger estimates a **$647.26 difference** against **$831.06** if the starting planner had continued.
-
-One recent completed Sol → Luna session recorded **$1.47** actual cost versus a **$12.15** planner-only estimate: an estimated **$10.68 difference (88%)**. These figures reprice the observed token mix at planner rates and assume the planner would have used those same tokens. They are not measured savings, a control run, or a billing statement, and they can overstate savings. Your ledger will differ.
 
 ## Local analytics and privacy
 
