@@ -35,7 +35,6 @@ export interface ContextPressureHost {
 	fail(reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity): void;
 	sendRetryPlanning(expected: HostRunIdentity): Promise<void>;
 	sendRetryChecklist(expected: HostRunIdentity): Promise<void>;
-	sendNextTurnChecklist(expected: HostRunIdentity): void;
 }
 
 export type SettlementObservation =
@@ -371,7 +370,7 @@ export class ContextPressureController {
 			}
 		}
 		if (run && sameIdentity(this.#checklistRun, run) && activeExecutorRun(run)) {
-			host.sendNextTurnChecklist({ runId: run.id, epoch: run.epoch });
+			await host.sendRetryChecklist({ runId: run.id, epoch: run.epoch });
 		}
 		this.#checklistRun = undefined;
 	}

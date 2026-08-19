@@ -815,19 +815,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			if (!sameRunIdentity(expected, application.run)) return;
 			await sendPrompt(PREWALK_CHECKLIST_MESSAGE_TYPE, ctx, true);
 		},
-		sendNextTurnChecklist: (expected: HostRunIdentity) => {
-			const run = application.run;
-			if (!run || !sameRunIdentity(expected, run)) return;
-			pi.sendMessage(
-				{
-					customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
-					content: prompts.checklist,
-					display: false,
-					details: { runId: run.id },
-				},
-				{ deliverAs: "nextTurn" },
-			);
-		},
 	});
 
 	/**

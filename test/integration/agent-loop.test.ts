@@ -330,7 +330,6 @@ describe("stock Pi Agent-loop integration", () => {
 		});
 		await session.compact();
 		expect(compactionReasons).toEqual(["manual"]);
-		await session.prompt("Continue after compaction.");
 		await session.waitForIdle();
 		expect(calls.at(-1)).toBe(EXECUTOR_MODEL_ID);
 

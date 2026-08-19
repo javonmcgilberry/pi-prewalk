@@ -5202,7 +5202,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toBe("Prewalk failed: executor-compaction-failed.");
 	});
 
-	it("does not start a second compaction when Pi compacts after turn_end", async () => {
+	it("resumes unfinished executor work after Pi compacts at turn_end", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
@@ -5248,7 +5248,14 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.compactionCalls).toHaveLength(0);
 		expect(harness.messages).toHaveLength(beforeMessages + 1);
-		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "duplicate-host-threshold" },
+			reason: "threshold",
+			willRetry: false,
+		});
+		expect(harness.messages).toHaveLength(beforeMessages + 1);
 	});
 
 	it("does not retry a completed executor stop after threshold compaction", async () => {
