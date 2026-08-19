@@ -17,6 +17,7 @@ export const EXECUTOR_MODEL_ID = DEFAULT_EXECUTOR.model;
 export const EXECUTOR_THINKING_LEVEL = DEFAULT_EXECUTOR.reasoning;
 
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
+export const PREWALK_RECOVER_MESSAGE_TYPE = "prewalk-recover";
 export const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 export const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 export const MUTATION_TOOLS_UNAVAILABLE_REASON = "mutation-tools-unavailable";
@@ -28,6 +29,15 @@ export interface HandoffConfig {
 
 export const DEFAULT_HANDOFF_CONFIG: HandoffConfig = {
 	ignoreExtensions: [".md"],
+};
+
+export interface PlannerRecoveryConfig {
+	/** Automatic retries after an interrupted or checkpoint-free planner turn. */
+	maxRetries: number;
+}
+
+export const DEFAULT_PLANNER_RECOVERY_CONFIG: PlannerRecoveryConfig = {
+	maxRetries: 5,
 };
 
 export interface PrewalkConfig {
@@ -43,6 +53,7 @@ export interface PrewalkConfig {
 	 */
 	executorFallbacks?: ExecutorConfig[];
 	handoff?: HandoffConfig;
+	plannerRecovery?: PlannerRecoveryConfig;
 	analytics?: AnalyticsConfig;
 	/**
 	 * Child Prewalk is opt-in per agent. A boolean uses the main executor; an
@@ -55,6 +66,7 @@ export interface PrewalkConfig {
 
 export type ParsedPrewalkConfig = PrewalkConfig & {
 	enabled: boolean;
+	plannerRecovery: PlannerRecoveryConfig;
 	analytics: AnalyticsConfig;
 };
 

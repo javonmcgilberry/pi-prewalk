@@ -152,6 +152,7 @@ describe("shipped package contract", () => {
 				"benchmark/extensions/benchmark-attestation.ts",
 				"src/orchestration/coordinator.ts",
 				"prompts/prewalk-plan.md",
+				"prompts/prewalk-recover.md",
 				"README.md",
 			]),
 		);

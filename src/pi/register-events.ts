@@ -35,12 +35,14 @@ import { admitAutomaticPrewalk } from "../orchestration/admission.js";
 import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_HANDOFF_CONFIG,
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	isPlannerSelected,
 	MUTATION_TOOLS_UNAVAILABLE_REASON,
 	type PlannerProfile,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_PLAN_MESSAGE_TYPE,
+	PREWALK_RECOVER_MESSAGE_TYPE,
 	type PrewalkConfig,
 	type PrewalkRun,
 	REASONING_LEVELS,
@@ -73,6 +75,7 @@ const PREWALK_ASSESS_MESSAGE_TYPE = "prewalk-assess";
 const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
 const PROMPT_TYPES = new Set([
 	PREWALK_PLAN_MESSAGE_TYPE,
+	PREWALK_RECOVER_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_ASSESS_MESSAGE_TYPE,
@@ -86,6 +89,9 @@ function failureNotice(reasonCode: string): string {
 	}
 	if (reasonCode === "host-correlation-retry-failed") {
 		return "Prewalk could not recover its planning checkpoint after a stale host event. Run /prewalk run to retry safely.";
+	}
+	if (reasonCode === "planner-recovery-exhausted") {
+		return "Prewalk failed: planner recovery reached its configured retry limit.";
 	}
 	return `Prewalk failed: ${reasonCode}.`;
 }
@@ -111,6 +117,7 @@ function readContextCompactionPolicy(ctx: ExtensionContext): ContextCompactionPo
 
 interface PromptSet {
 	plan: string;
+	recover: string;
 	assess: string;
 	continue: string;
 	checklist: string;
@@ -127,6 +134,7 @@ function loadPrompts(): PromptSet {
 			"the todo tool",
 			`the ${PREWALK_TODO_TOOL_NAME} tool`,
 		),
+		recover: readFileSync(promptFile("prewalk-recover.md"), "utf8"),
 		assess: readFileSync(promptFile("prewalk-assess.md"), "utf8"),
 		continue: readFileSync(promptFile("prewalk-continue.md"), "utf8"),
 		checklist: readFileSync(promptFile("prewalk-checklist.md"), "utf8"),
@@ -187,6 +195,7 @@ function defaultConfig(): PrewalkConfig {
 		enabled: false,
 		executor: { ...DEFAULT_EXECUTOR },
 		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
+		plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
 	};
 }
 
@@ -225,6 +234,16 @@ function isPrewalkPrompt(
 function runIdFromMessage(message: AgentMessage): string | undefined {
 	if (!isPrewalkPrompt(message) || !isRecord(message.details)) return undefined;
 	return typeof message.details.runId === "string" ? message.details.runId : undefined;
+}
+
+function lastAssistantMessage(
+	messages: readonly AgentMessage[],
+): Extract<AgentMessage, { role: "assistant" }> | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message?.role === "assistant") return message;
+	}
+	return undefined;
 }
 
 function assessmentIdFromMessage(message: AgentMessage): string | undefined {
@@ -270,6 +289,7 @@ function isEphemeralPrewalkPrompt(message: AgentMessage): boolean {
 	return (
 		message.role === "custom" &&
 		(message.customType === PREWALK_PLAN_MESSAGE_TYPE ||
+			message.customType === PREWALK_RECOVER_MESSAGE_TYPE ||
 			message.customType === PREWALK_ASSESS_MESSAGE_TYPE)
 	);
 }
@@ -384,8 +404,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let retainedCancelledRun: PrewalkRun | undefined;
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
-	let stalePlanningRetry: HostRunIdentity | undefined;
-	let stalePlanningRetryStarted = false;
+	let planningRetry: HostRunIdentity | undefined;
+	let planningRetryStarted = false;
+	let planningRecoveryAttempts = 0;
 	const contextPressure = new ContextPressureController();
 	let removeTerminalInputListener: (() => void) | undefined;
 	const refreshContextCompactionPolicy = (ctx: ExtensionContext): ContextCompactionPolicy => {
@@ -453,7 +474,13 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			correlationIdentity(),
 		);
 		if (correlation.decision !== "ignore") return;
-		if (retryPlanning && ctx) queueStalePlanningRetry(ctx);
+		if (retryPlanning && ctx) {
+			queuePlanningRetry(
+				ctx,
+				"next-turn",
+				"Prewalk rejected a stale planning tool call; the preserved planning checkpoint was queued for recovery.",
+			);
+		}
 		throw new Error("Prewalk tool execution is stale.");
 	};
 	const analytics = new PrewalkAnalytics(getAgentDir());
@@ -489,11 +516,15 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		lastAuditKey = key;
 		updateStatus(ctx);
 	};
-	const clearStalePlanningRetry = (): void => {
-		if (stalePlanningRetry && sameRunIdentity(stalePlanningRetry, application.run)) {
-			stalePlanningRetry = undefined;
-			stalePlanningRetryStarted = false;
+	const clearPlanningRetry = (): void => {
+		if (planningRetry && sameRunIdentity(planningRetry, application.run)) {
+			planningRetry = undefined;
+			planningRetryStarted = false;
 		}
+	};
+	const resetPlanningRecovery = (): void => {
+		clearPlanningRetry();
+		planningRecoveryAttempts = 0;
 	};
 	const setAutoEnabled = (enabled: boolean, ctx: ExtensionContext): void => {
 		autoEnabled = enabled;
@@ -556,7 +587,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const failedRun = application.run;
 		if (expectedRun !== undefined && !sameRunIdentity(expectedRun, failedRun)) return;
 		const failedIdentity = identityOf(failedRun);
-		clearStalePlanningRetry();
+		resetPlanningRecovery();
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
 		resetContextPressureState();
 		if (!application.run) {
@@ -597,7 +628,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
-		clearStalePlanningRetry();
+		resetPlanningRecovery();
 		hostCorrelation.discardPendingForRun(runIdentity);
 		resetContextPressureState();
 		application.cancel(selectedModelIsPlanner);
@@ -734,6 +765,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	const sendPrompt = async (
 		type:
 			| typeof PREWALK_PLAN_MESSAGE_TYPE
+			| typeof PREWALK_RECOVER_MESSAGE_TYPE
 			| typeof PREWALK_CONTINUE_MESSAGE_TYPE
 			| typeof PREWALK_CHECKLIST_MESSAGE_TYPE,
 		ctx: ExtensionContext,
@@ -745,6 +777,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		switch (type) {
 			case PREWALK_PLAN_MESSAGE_TYPE:
 				prompt = { content: prompts.plan, event: "plan-injected" };
+				break;
+			case PREWALK_RECOVER_MESSAGE_TYPE:
+				prompt = { content: prompts.recover, event: "planning-retry" };
 				break;
 			case PREWALK_CONTINUE_MESSAGE_TYPE:
 				prompt = { content: prompts.continue, event: "continuation" };
@@ -765,33 +800,53 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		audit(prompt.event, ctx);
 	};
 
-	const queueStalePlanningRetry = (ctx: ExtensionContext): void => {
+	const plannerCanRecover = (run: PrewalkRun | undefined): boolean =>
+		Boolean(
+			run &&
+				run.effectiveRoute === "planner" &&
+				(run.phase === "planning" || run.phase === "ready"),
+		);
+	const planningNeedsCheckpoint = (run: PrewalkRun | undefined): boolean =>
+		Boolean(plannerCanRecover(run) && run?.todoActive && !run.todoSeen);
+
+	const queuePlanningRetry = (
+		ctx: ExtensionContext,
+		delivery: "next-turn" | "trigger-turn",
+		notice?: string,
+	): void => {
 		const run = application.run;
 		const identity = identityOf(run);
 		if (
 			!run ||
+			!plannerCanRecover(run) ||
 			!identity ||
-			run.effectiveRoute !== "planner" ||
-			(run.phase !== "planning" && run.phase !== "ready") ||
-			(stalePlanningRetry !== undefined && sameRunIdentity(stalePlanningRetry, run))
+			(planningRetry !== undefined && sameRunIdentity(planningRetry, run))
 		)
 			return;
-		stalePlanningRetry = identity;
-		stalePlanningRetryStarted = false;
+		const maxRetries =
+			run.config.plannerRecovery?.maxRetries ?? DEFAULT_PLANNER_RECOVERY_CONFIG.maxRetries;
+		if (planningRecoveryAttempts >= maxRetries) {
+			resetPlanningRecovery();
+			fail("planner-recovery-exhausted", false, ctx, identity);
+			return;
+		}
+		planningRecoveryAttempts += 1;
+		planningRetry = identity;
+		planningRetryStarted = false;
 		audit("planning-retry", ctx);
+		const prompt = run.todoSeen
+			? { type: PREWALK_CONTINUE_MESSAGE_TYPE, content: prompts.continue }
+			: { type: PREWALK_RECOVER_MESSAGE_TYPE, content: prompts.recover };
 		pi.sendMessage(
 			{
-				customType: PREWALK_PLAN_MESSAGE_TYPE,
-				content: prompts.plan,
+				customType: prompt.type,
+				content: prompt.content,
 				display: false,
 				details: { runId: run.id },
 			},
-			{ deliverAs: "nextTurn" },
+			delivery === "next-turn" ? { deliverAs: "nextTurn" } : { triggerTurn: true },
 		);
-		ctx.ui.notify(
-			"Prewalk rejected a stale planning tool call; the active planning checkpoint was queued for retry.",
-			"warning",
-		);
+		if (notice) ctx.ui.notify(notice, "warning");
 		updateStatus(ctx);
 	};
 
@@ -806,7 +861,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			const run = application.run;
 			if (!run || !sameRunIdentity(expected, run)) return;
 			await sendPrompt(
-				run.phase === "planning" ? PREWALK_PLAN_MESSAGE_TYPE : PREWALK_CONTINUE_MESSAGE_TYPE,
+				run.todoSeen ? PREWALK_CONTINUE_MESSAGE_TYPE : PREWALK_RECOVER_MESSAGE_TYPE,
 				ctx,
 				true,
 			);
@@ -1040,7 +1095,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		application,
 		turnGate,
 		assertCurrentToolExecution,
-		onTodoInitialized: clearStalePlanningRetry,
+		onTodoInitialized: resetPlanningRecovery,
 		getAssessment: () => evaluation,
 		setAssessmentDecision: (decision) => {
 			if (evaluation) evaluation.decision = decision;
@@ -1336,21 +1391,35 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
-		if (stalePlanningRetry && sameRunIdentity(stalePlanningRetry, application.run)) {
-			stalePlanningRetryStarted = true;
+		if (planningRetry && sameRunIdentity(planningRetry, application.run)) {
+			planningRetryStarted = true;
 		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshContextCompactionPolicy(ctx);
 		primaryAgentStream = true;
 	});
 
-	pi.on("agent_end", (event) => {
+	pi.on("agent_end", (event, ctx) => {
 		const correlation = hostCorrelation.observe(
 			{ type: "agent-end", messages: event.messages },
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
 		primaryAgentStream = false;
+		const lastAssistant = lastAssistantMessage(event.messages);
+		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
+		if (
+			planningRetryStarted &&
+			planningRetry !== undefined &&
+			sameRunIdentity(planningRetry, application.run)
+		) {
+			clearPlanningRetry();
+		}
+		queuePlanningRetry(
+			ctx,
+			"next-turn",
+			"Prewalk planning was interrupted; the preserved planner trace was queued for automatic recovery.",
+		);
 	});
 
 	pi.on("message_start", (event) => {
@@ -1425,15 +1494,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
-		if (
-			stalePlanningRetryStarted &&
-			stalePlanningRetry !== undefined &&
-			sameRunIdentity(stalePlanningRetry, run)
-		) {
-			clearStalePlanningRetry();
-			fail("host-correlation-retry-failed", false, ctx, runIdentity);
-			return;
-		}
 		if (run.phase === "cancelled") {
 			primaryAgentStream = false;
 			return;
@@ -1451,6 +1511,17 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			return;
 		}
+		const retrySettled =
+			planningRetryStarted && planningRetry !== undefined && sameRunIdentity(planningRetry, run);
+		if (
+			planningNeedsCheckpoint(run) ||
+			(retrySettled && plannerCanRecover(run) && turnGate.hasActionableTodo())
+		) {
+			clearPlanningRetry();
+			queuePlanningRetry(ctx, "trigger-turn");
+			return;
+		}
+		if (retrySettled) clearPlanningRetry();
 		if (pressureObservation === "executor-failure") {
 			fail("executor-stream-failed", run.effectiveRoute === "executor", ctx, runIdentity);
 			if (!sameRunIdentity(runIdentity, application.run)) return;

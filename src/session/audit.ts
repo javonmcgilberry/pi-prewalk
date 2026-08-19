@@ -5,11 +5,13 @@ import {
 } from "../analytics/index.js";
 import { isRecord } from "../guards.js";
 import {
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	type EffectiveRoute,
 	type ExecutorConfig,
 	type ModelConfig,
 	MUTATION_TOOLS_UNAVAILABLE_REASON,
 	type PlannerProfile,
+	type PlannerRecoveryConfig,
 	type PrewalkRun,
 	type RunMode,
 	type RunPhase,
@@ -17,8 +19,9 @@ import {
 
 export const PREWALK_AUDIT_TYPE = "prewalk-audit";
 export const PREWALK_AUTO_MODE_TYPE = "prewalk-auto-mode";
-const PREWALK_AUDIT_VERSION = 3;
+const PREWALK_AUDIT_VERSION = 4;
 const LEGACY_PREWALK_AUDIT_VERSION = 2;
+const PREVIOUS_PREWALK_AUDIT_VERSION = 3;
 const PREWALK_AUTO_MODE_VERSION = 1;
 
 export interface PrewalkAutoModeRecord {
@@ -54,6 +57,7 @@ export interface PrewalkAuditRecord {
 	mode: RunMode;
 	planner: PlannerProfile;
 	executor: ExecutorConfig;
+	plannerRecovery: PlannerRecoveryConfig;
 	analytics?: AnalyticsConfig;
 	overlay: string;
 	planningPromptInjected: boolean;
@@ -103,6 +107,7 @@ const REASON_CODES = new Set([
 	"provider-unavailable",
 	"provider-drift",
 	"todo-conflict",
+	"planner-recovery-exhausted",
 	"executor-stream-failed",
 	"planner-compaction-failed",
 	"executor-compaction-failed",
@@ -120,6 +125,7 @@ const AUDIT_KEYS = new Set([
 	"mode",
 	"planner",
 	"executor",
+	"plannerRecovery",
 	"analytics",
 	"overlay",
 	"planningPromptInjected",
@@ -198,7 +204,30 @@ function overlayMatchesVersion(
 	if (version === LEGACY_PREWALK_AUDIT_VERSION) {
 		return overlay === legacyOverlayFingerprint(planner, executor);
 	}
-	return version === PREWALK_AUDIT_VERSION && overlay === overlayFingerprint(planner, executor);
+	return (
+		(version === PREVIOUS_PREWALK_AUDIT_VERSION || version === PREWALK_AUDIT_VERSION) &&
+		overlay === overlayFingerprint(planner, executor)
+	);
+}
+
+function parsePlannerRecoveryAudit(
+	value: unknown,
+	version: unknown,
+): PlannerRecoveryConfig | undefined {
+	if (value === undefined) {
+		return version === PREWALK_AUDIT_VERSION
+			? undefined
+			: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG);
+	}
+	if (
+		!isRecord(value) ||
+		Object.keys(value).some((key) => key !== "maxRetries") ||
+		!Number.isSafeInteger(value.maxRetries) ||
+		Number(value.maxRetries) <= 0
+	) {
+		return undefined;
+	}
+	return { maxRetries: Number(value.maxRetries) };
 }
 
 export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): PrewalkAuditRecord {
@@ -212,6 +241,9 @@ export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): Prewa
 		mode: run.mode,
 		planner: structuredClone(run.planner),
 		executor: structuredClone(run.config.executor),
+		plannerRecovery: structuredClone(
+			run.config.plannerRecovery ?? DEFAULT_PLANNER_RECOVERY_CONFIG,
+		),
 		analytics: structuredClone(run.config.analytics ?? DEFAULT_ANALYTICS_CONFIG),
 		overlay: overlayFingerprint(run.planner, run.config.executor),
 		planningPromptInjected: run.planningPromptInjected,
@@ -235,6 +267,7 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		!isRecord(value) ||
 		Object.keys(value).some((key) => !AUDIT_KEYS.has(key)) ||
 		(value.schemaVersion !== LEGACY_PREWALK_AUDIT_VERSION &&
+			value.schemaVersion !== PREVIOUS_PREWALK_AUDIT_VERSION &&
 			value.schemaVersion !== PREWALK_AUDIT_VERSION) ||
 		typeof value.runId !== "string" ||
 		typeof value.epoch !== "string" ||
@@ -255,6 +288,8 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		return undefined;
 	}
 	if (value.trigger !== undefined && !isTrigger(value.trigger)) return undefined;
+	const plannerRecovery = parsePlannerRecoveryAudit(value.plannerRecovery, value.schemaVersion);
+	if (!plannerRecovery) return undefined;
 	let analytics: AnalyticsConfig | undefined;
 	if (value.analytics !== undefined) {
 		try {
@@ -279,6 +314,7 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		mode: value.mode,
 		planner: value.planner,
 		executor: value.executor,
+		plannerRecovery,
 		...(analytics ? { analytics } : {}),
 		overlay: overlayFingerprint(value.planner, value.executor),
 		planningPromptInjected: value.planningPromptInjected,
@@ -304,6 +340,7 @@ export function runFromAudit(record: PrewalkAuditRecord): PrewalkRun {
 		todoSeen: record.todoSeen,
 		config: {
 			executor: structuredClone(record.executor),
+			plannerRecovery: structuredClone(record.plannerRecovery),
 			...(record.analytics ? { analytics: structuredClone(record.analytics) } : {}),
 		},
 		...(record.trigger ? { trigger: { ...record.trigger } } : {}),

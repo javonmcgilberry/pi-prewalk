@@ -18,11 +18,13 @@ import { AnalyticsStore } from "../../src/analytics/store.js";
 import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_HANDOFF_CONFIG,
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 	PREWALK_CONTINUE_MESSAGE_TYPE,
 	PREWALK_PLAN_MESSAGE_TYPE,
+	PREWALK_RECOVER_MESSAGE_TYPE,
 } from "../../src/orchestration/coordinator.js";
 import { PREWALK_TODO_TOOL_NAME } from "../../src/turn/todo.js";
 
@@ -435,6 +437,44 @@ async function emitSuccessfulToolResult(
 		isError: false,
 		details: toolName === PREWALK_TODO_TOOL_NAME ? { phases: [] } : {},
 	});
+}
+
+async function completePlanningOnlyRun(
+	harness: ReturnType<typeof createHarness>,
+	suffix: string,
+): Promise<void> {
+	const toolCallId = `planning-only-${suffix}`;
+	const task = `finish planning-only ${suffix}`;
+	await harness.emit("tool_call", {
+		type: "tool_call",
+		toolCallId,
+		toolName: PREWALK_TODO_TOOL_NAME,
+		args: { op: "init" },
+	});
+	await harness.tools
+		.get(PREWALK_TODO_TOOL_NAME)
+		?.execute(
+			toolCallId,
+			{ op: "init", list: [{ phase: "Plan", items: [task] }] },
+			undefined,
+			undefined,
+			harness.context,
+		);
+	await harness.tools
+		.get(PREWALK_TODO_TOOL_NAME)
+		?.execute(`${toolCallId}-done`, { op: "done", task }, undefined, undefined, harness.context);
+	await emitSuccessfulToolResult(harness, toolCallId, PREWALK_TODO_TOOL_NAME);
+	await harness.emit("turn_end", {
+		type: "turn_end",
+		turnIndex: 0,
+		message: assistantWithToolCalls(
+			harness.planner,
+			[{ id: toolCallId, name: PREWALK_TODO_TOOL_NAME }],
+			9_000,
+		),
+		toolResults: [],
+	});
+	await harness.emit("agent_settled", { type: "agent_settled" });
 }
 
 async function beginAutomaticAssessment(harness: ReturnType<typeof createHarness>, text: string) {
@@ -1255,7 +1295,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 	});
 
-	it("classifies an unowned todo as recoverable, replays the plan once, and fails visibly if the retry omits the todo", async () => {
+	it("keeps replaying the same planning checkpoint until a stale todo is replaced", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -1280,9 +1320,9 @@ describe("Prewalk extension harness", () => {
 				),
 		).rejects.toThrow("stale");
 		expect(harness.messages).toHaveLength(beforeRetry + 1);
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
 		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
-		expect(harness.notifications.at(-1)).toContain("planning checkpoint was queued for retry");
+		expect(harness.notifications.at(-1)).toContain("planning checkpoint was queued for recovery");
 
 		await expect(
 			harness.tools
@@ -1300,12 +1340,226 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("agent_start", { type: "agent_start" });
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
+		expect(harness.messages).toHaveLength(beforeRetry + 2);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "planning-retry",
+			phase: "planning",
+			todoSeen: false,
+		});
+		expect(
+			harness.entries.some((entry) =>
+				["failed", "completed"].includes((entry.data as { event?: string }).event ?? ""),
+			),
+		).toBe(false);
+	});
+
+	it("replays persisted planner reasoning after every abort without replacing the run", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const initialMessageCount = harness.messages.length;
+		const runId = (harness.messages.at(-1)?.details as { runId?: string } | undefined)?.runId;
+
+		for (const timestamp of [9_101, 9_102]) {
+			await harness.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "continue the current planning trajectory",
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			});
+			await harness.emit("agent_start", { type: "agent_start" });
+			const aborted = {
+				...assistant(harness.planner),
+				content: [
+					{
+						type: "thinking" as const,
+						thinking: "preserved partial planning trace",
+						thinkingSignature: '{"type":"reasoning","encrypted_content":"checkpoint"}',
+					},
+				],
+				stopReason: "aborted" as const,
+				errorMessage: "Operation aborted",
+				timestamp,
+			};
+			await harness.emit("message_start", { type: "message_start", message: aborted });
+			await harness.emit("message_end", { type: "message_end", message: aborted });
+			await harness.emit("agent_end", { type: "agent_end", messages: [aborted] });
+
+			expect(harness.messages).toHaveLength(initialMessageCount + (timestamp - 9_100));
+			expect(harness.messages.at(-1)).toMatchObject({
+				customType: PREWALK_RECOVER_MESSAGE_TYPE,
+				details: { runId },
+			});
+			expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
+		}
+
+		expect(
+			harness.entries.some((entry) =>
+				["failed", "completed"].includes((entry.data as { event?: string }).event ?? ""),
+			),
+		).toBe(false);
+		expect(
+			harness.entries.filter(
+				(entry) => (entry.data as { event?: string }).event === "planning-retry",
+			),
+		).toHaveLength(1);
+
+		const beforeCheckpoint = harness.messages.length;
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "finish the recovered checkpoint",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "recovered-planning-todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			args: { op: "init" },
+		});
+		await harness.tools
+			.get(PREWALK_TODO_TOOL_NAME)
+			?.execute(
+				"recovered-planning-todo",
+				{ op: "init", list: [{ phase: "Implement", items: ["ship the recovered plan"] }] },
+				undefined,
+				undefined,
+				harness.context,
+			);
+		await emitSuccessfulToolResult(harness, "recovered-planning-todo", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 3,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[{ id: "recovered-planning-todo", name: PREWALK_TODO_TOOL_NAME }],
+				9_103,
+			),
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.messages).toHaveLength(beforeCheckpoint + 1);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "continuation",
+			todoSeen: true,
+		});
+
+		const beforeContinuationAbort = harness.messages.length;
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "continue from the durable todo",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const continuationAbort = {
+			...assistant(harness.planner),
+			stopReason: "aborted" as const,
+			errorMessage: "Operation aborted",
+			timestamp: 9_105,
+		};
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: continuationAbort,
+		});
+		await harness.emit("agent_end", {
+			type: "agent_end",
+			messages: [continuationAbort],
+		});
+
+		expect(harness.messages).toHaveLength(beforeContinuationAbort + 1);
+		expect(harness.messages.at(-1)).toMatchObject({
+			customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+			details: { runId },
+		});
+		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
+		expect(
+			harness.entries.some((entry) => (entry.data as { event?: string }).event === "completed"),
+		).toBe(false);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "retry the durable todo continuation",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.messages).toHaveLength(beforeContinuationAbort + 2);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
+	});
+
+	it("honors explicit cancellation instead of reviving an aborted planner", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "begin planning",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		const messageCount = harness.messages.length;
+		const aborted = {
+			...assistant(harness.planner),
+			stopReason: "aborted" as const,
+			errorMessage: "Operation aborted",
+			timestamp: 9_104,
+		};
+		await harness.emit("message_end", { type: "message_end", message: aborted });
+		await harness.emit("agent_end", { type: "agent_end", messages: [aborted] });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.messages).toHaveLength(messageCount);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+	});
+
+	it("stops after the configured number of automatic planner recoveries", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ executor: DEFAULT_EXECUTOR, plannerRecovery: { maxRetries: 2 } })}\n`,
+		);
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const initialMessages = harness.messages.length;
+
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			await harness.emit("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "recover the planner",
+				systemPrompt: "system",
+				systemPromptOptions: {},
+			});
+			await harness.emit("agent_start", { type: "agent_start" });
+			const aborted = {
+				...assistant(harness.planner),
+				stopReason: "aborted" as const,
+				errorMessage: "Operation aborted",
+				timestamp: 9_200 + attempt,
+			};
+			await harness.emit("message_end", { type: "message_end", message: aborted });
+			await harness.emit("agent_end", { type: "agent_end", messages: [aborted] });
+		}
+
+		expect(harness.messages).toHaveLength(initialMessages + 2);
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
 			phase: "failed",
-			reasonCode: "host-correlation-retry-failed",
+			reasonCode: "planner-recovery-exhausted",
 		});
-		expect(harness.notifications.at(-1)).toContain("Run /prewalk run to retry safely");
+		expect(harness.notifications.at(-1)).toContain("configured retry limit");
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 	});
 
 	it("allows a direct registered-tool execution without a host claim via permissive unknown", async () => {
@@ -1941,7 +2195,7 @@ describe("Prewalk extension harness", () => {
 		});
 		const runId = (harness.entries[0]?.data as { runId: string }).runId;
 
-		await harness.emit("agent_settled", { type: "agent_settled" });
+		await completePlanningOnlyRun(harness, "receipt");
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
 
 		expect(harness.notifications.at(-1)).toContain("succeeded; never switched");
@@ -1958,7 +2212,7 @@ describe("Prewalk extension harness", () => {
 			type: "message_end",
 			message: assistant(first.planner),
 		});
-		await first.emit("agent_settled", { type: "agent_settled" });
+		await completePlanningOnlyRun(first, "reload");
 		expect(first.entries.at(-1)?.data).toMatchObject({ event: "completed" });
 
 		const restored = createHarness();
@@ -2067,7 +2321,7 @@ describe("Prewalk extension harness", () => {
 			message: assistant(harness.planner),
 		});
 		const runId = (harness.entries[0]?.data as { runId: string }).runId;
-		await harness.emit("agent_settled", { type: "agent_settled" });
+		await completePlanningOnlyRun(harness, "finalization");
 
 		const store = new AnalyticsStore(agentDir);
 		const [finalized] = await store.listReceipts();
@@ -2333,6 +2587,7 @@ describe("Prewalk extension harness", () => {
 			enabled: false,
 			executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
 			handoff: DEFAULT_HANDOFF_CONFIG,
+			plannerRecovery: DEFAULT_PLANNER_RECOVERY_CONFIG,
 			analytics: {
 				enabled: true,
 				catalogFallbackEnabled: false,
@@ -4904,7 +5159,7 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 
 		expect(harness.messages).toHaveLength(beforeResume + 1);
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
 		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		expect(
 			harness.entries.some(
@@ -5098,7 +5353,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.compactionCalls).toEqual([]);
 		expect(harness.messages).toHaveLength(beforeResume + 1);
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
 
 		await harness.emit("agent_start", { type: "agent_start" });
 		const secondPressure = await harness

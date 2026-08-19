@@ -15,6 +15,9 @@
   "handoff": {
     "ignoreExtensions": [".md"]
   },
+  "plannerRecovery": {
+    "maxRetries": 5
+  },
   "analytics": {
     "enabled": true,
     "catalogFallbackEnabled": false,

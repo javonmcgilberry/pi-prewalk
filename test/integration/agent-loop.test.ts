@@ -27,6 +27,7 @@ import {
 	DEFAULT_EXECUTOR,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
+	PREWALK_RECOVER_MESSAGE_TYPE,
 } from "../../src/orchestration/coordinator.js";
 import { PREWALK_TODO_TOOL_NAME } from "../../src/turn/todo.js";
 
@@ -85,6 +86,33 @@ function response(selected: Model<"openai-codex-responses">, content: AssistantM
 			reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
 			message,
 		});
+		stream.end();
+	});
+	return stream;
+}
+
+function abortedResponse(selected: Model<"openai-codex-responses">) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [
+			{
+				type: "thinking",
+				thinking: "preserved planning trace",
+				thinkingSignature: '{"type":"reasoning","encrypted_content":"checkpoint"}',
+			},
+		],
+		api: selected.api,
+		provider: selected.provider,
+		model: selected.id,
+		usage: usage(0),
+		stopReason: "aborted",
+		errorMessage: "Operation aborted",
+		timestamp: Date.now(),
+	};
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "error", reason: "aborted", error: message });
 		stream.end();
 	});
 	return stream;
@@ -197,11 +225,12 @@ function isolateTopLevelSubagentEnvironment(): () => void {
 }
 
 describe("stock Pi Agent-loop integration", () => {
-	it("keeps one stock-Pi route and receipt active through manual compaction and shutdown", async () => {
+	it("self-recovers an aborted planner and keeps one stock-Pi route through shutdown", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
 		let lunaContext: Context | undefined;
+		let recoveryContext: Context | undefined;
 		const compactionReasons: string[] = [];
 		const conversion: ExtensionFactory = (pi) => {
 			pi.registerProvider("openai-codex", {
@@ -227,6 +256,10 @@ describe("stock Pi Agent-loop integration", () => {
 					}
 					const solCall = calls.filter((id) => id === PLANNER_MODEL_ID).length;
 					if (solCall === 1) {
+						return abortedResponse(planner);
+					}
+					if (solCall === 2) {
+						recoveryContext = context;
 						return response(planner, [
 							toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
 								op: "init",
@@ -312,8 +345,16 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(calls, JSON.stringify(sessionManager.getEntries(), null, 2)).toEqual([
 			PLANNER_MODEL_ID,
 			PLANNER_MODEL_ID,
+			PLANNER_MODEL_ID,
 			EXECUTOR_MODEL_ID,
 		]);
+		const entries = JSON.stringify(sessionManager.getEntries());
+		expect(entries).toContain("preserved planning trace");
+		expect(entries).toContain(PREWALK_RECOVER_MESSAGE_TYPE);
+		const recoveryMessages = JSON.stringify(recoveryContext?.messages);
+		expect(recoveryMessages).toContain("preserved planning trace");
+		expect(recoveryMessages).toContain("encrypted_content");
+		expect(recoveryMessages).toContain("This is autonomous recovery");
 		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
 		const analyticsStore = new AnalyticsStore(agentDir);
@@ -626,6 +667,7 @@ describe("stock Pi Agent-loop integration", () => {
 			authPath: path.join(agentDir, "auth.json"),
 			modelsPath: null,
 		});
+		const sessionManager = SessionManager.inMemory(workDir);
 		const { session } = await createAgentSession({
 			cwd: workDir,
 			agentDir,
@@ -633,7 +675,7 @@ describe("stock Pi Agent-loop integration", () => {
 			model: planner,
 			resourceLoader: loader,
 			settingsManager: settings,
-			sessionManager: SessionManager.inMemory(workDir),
+			sessionManager,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
 		});
 		await session.bindExtensions({});
@@ -670,6 +712,14 @@ describe("stock Pi Agent-loop integration", () => {
 								toolCall("subagent-1", "subagent", {
 									agent: "reviewer",
 									task: "Review without an explicit profile",
+								}),
+								toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
+									op: "init",
+									list: [{ phase: "Review", items: ["Complete delegated review"] }],
+								}),
+								toolCall("todo-done-1", PREWALK_TODO_TOOL_NAME, {
+									op: "done",
+									task: "Complete delegated review",
 								}),
 							])
 						: response(planner, [{ type: "text", text: "Delegation complete." }]);

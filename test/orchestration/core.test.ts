@@ -5,6 +5,7 @@ import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_HANDOFF_CONFIG,
 	DEFAULT_PLANNER,
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
 } from "../../src/orchestration/coordinator.js";
@@ -21,6 +22,7 @@ describe("provider-neutral configuration", () => {
 			...config,
 			enabled: false,
 			handoff: DEFAULT_HANDOFF_CONFIG,
+			plannerRecovery: DEFAULT_PLANNER_RECOVERY_CONFIG,
 			analytics: DEFAULT_ANALYTICS_CONFIG,
 		});
 		expect(parseConfig({ ...config, enabled: true })).toMatchObject({ enabled: true });
@@ -32,6 +34,21 @@ describe("provider-neutral configuration", () => {
 		);
 		expect(PLANNER_MODEL_ID).toBe("gpt-5.6-sol");
 		expect(EXECUTOR_MODEL_ID).toBe("gpt-5.6-luna");
+	});
+
+	it("defaults planner recovery to five retries and validates overrides", () => {
+		expect(parseConfig(config).plannerRecovery).toEqual({ maxRetries: 5 });
+		expect(
+			parseConfig({ ...config, plannerRecovery: { maxRetries: 2 } }).plannerRecovery,
+		).toEqual({ maxRetries: 2 });
+		for (const maxRetries of [0, -1, 1.5, "5"]) {
+			expect(() => parseConfig({ ...config, plannerRecovery: { maxRetries } })).toThrow(
+				"Prewalk config plannerRecovery.maxRetries must be a positive integer.",
+			);
+		}
+		expect(() =>
+			parseConfig({ ...config, plannerRecovery: { maxRetries: 5, delayMs: 1000 } }),
+		).toThrow("Unknown Prewalk config plannerRecovery field: delayMs.");
 	});
 
 	it("normalizes handoff extension exclusions", () => {

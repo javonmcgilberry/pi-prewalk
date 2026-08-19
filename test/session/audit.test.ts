@@ -3,6 +3,7 @@ import { DEFAULT_ANALYTICS_CONFIG } from "../../src/analytics/index.js";
 import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_PLANNER,
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	type PrewalkRun,
 } from "../../src/orchestration/coordinator.js";
 import {
@@ -22,6 +23,7 @@ const run: PrewalkRun = {
 	planner: { ...DEFAULT_PLANNER, reasoning: "high" },
 	config: {
 		executor: { ...DEFAULT_EXECUTOR },
+		plannerRecovery: { maxRetries: 2 },
 		analytics: {
 			...DEFAULT_ANALYTICS_CONFIG,
 			catalogFallbackEnabled: true,
@@ -51,6 +53,7 @@ describe("Prewalk audit records", () => {
 			"overlay",
 			"phase",
 			"planner",
+			"plannerRecovery",
 			"planningPromptInjected",
 			"runId",
 			"schemaVersion",
@@ -58,6 +61,18 @@ describe("Prewalk audit records", () => {
 			"todoSeen",
 			"trigger",
 		]);
+	});
+
+	it("migrates version 3 recovery settings to the current default", () => {
+		const record = createAuditRecord(run, "planning-retry");
+		const { plannerRecovery: _plannerRecovery, ...previous } = record;
+		const migrated = parseAuditRecord({ ...previous, schemaVersion: 3 });
+
+		expect(migrated?.plannerRecovery).toEqual(DEFAULT_PLANNER_RECOVERY_CONFIG);
+		if (!migrated) throw new Error("Expected the version 3 audit record to migrate.");
+		expect(runFromAudit(migrated)).toMatchObject({
+			config: { plannerRecovery: DEFAULT_PLANNER_RECOVERY_CONFIG },
+		});
 	});
 
 	it("round-trips terminal lifecycle markers without changing run-state fields", () => {

@@ -21,9 +21,14 @@ import type {
 	ExperimentalChildTarget,
 	HandoffConfig,
 	ModelConfig,
+	PlannerRecoveryConfig,
 	PrewalkConfig,
 } from "../orchestration/coordinator.js";
-import { DEFAULT_EXECUTOR, DEFAULT_HANDOFF_CONFIG } from "../orchestration/coordinator.js";
+import {
+	DEFAULT_EXECUTOR,
+	DEFAULT_HANDOFF_CONFIG,
+	DEFAULT_PLANNER_RECOVERY_CONFIG,
+} from "../orchestration/coordinator.js";
 import { showPrewalkConfigureMenu } from "./prewalk-dashboard.js";
 import { selectPaged } from "./ui.js";
 
@@ -62,6 +67,7 @@ export async function writePrewalkConfig(config: PrewalkConfig): Promise<void> {
 
 export type ParsedPrewalkConfig = PrewalkConfig & {
 	enabled: boolean;
+	plannerRecovery: PlannerRecoveryConfig;
 	analytics: AnalyticsConfig;
 };
 
@@ -70,11 +76,13 @@ const CONFIG_KEYS = new Set([
 	"executor",
 	"executorFallbacks",
 	"handoff",
+	"plannerRecovery",
 	"analytics",
 	"children",
 	"experimentalChild",
 ]);
 const HANDOFF_KEYS = new Set(["ignoreExtensions"]);
+const PLANNER_RECOVERY_KEYS = new Set(["maxRetries"]);
 const EXECUTOR_KEYS = new Set(["provider", "model", "reasoning"]);
 const CHILDREN_KEYS = new Set(["agents"]);
 const CHILD_POLICY_KEYS = new Set(["executor"]);
@@ -99,6 +107,7 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	const executor = parseExecutorConfig(value.executor, "executor");
 	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
 	const handoff = parseHandoffConfig(value.handoff);
+	const plannerRecovery = parsePlannerRecoveryConfig(value.plannerRecovery);
 	const analytics =
 		value.analytics === undefined
 			? structuredClone(DEFAULT_ANALYTICS_CONFIG)
@@ -119,9 +128,25 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 		executor,
 		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
 		handoff,
+		plannerRecovery,
 		analytics,
 		...(children === undefined ? {} : { children }),
 	};
+}
+
+function parsePlannerRecoveryConfig(value: unknown): PlannerRecoveryConfig {
+	if (value === undefined) return structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG);
+	if (!isRecord(value)) {
+		throw new Error("Prewalk config plannerRecovery must be an object.");
+	}
+	const unknownKeys = Object.keys(value).filter((key) => !PLANNER_RECOVERY_KEYS.has(key));
+	if (unknownKeys.length > 0) {
+		throw new Error(`Unknown Prewalk config plannerRecovery field: ${unknownKeys.join(", ")}.`);
+	}
+	if (!Number.isSafeInteger(value.maxRetries) || Number(value.maxRetries) <= 0) {
+		throw new Error("Prewalk config plannerRecovery.maxRetries must be a positive integer.");
+	}
+	return { maxRetries: Number(value.maxRetries) };
 }
 
 function parseHandoffConfig(value: unknown): HandoffConfig {
@@ -286,6 +311,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 				enabled: false,
 				executor: { ...DEFAULT_EXECUTOR },
 				handoff: structuredClone(DEFAULT_HANDOFF_CONFIG),
+				plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
 				analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
 			},
 			models: ctx.modelRegistry.getAvailable(),
@@ -393,6 +419,9 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 			? {}
 			: { executorFallbacks: savedConfig.executorFallbacks }),
 		handoff: structuredClone(savedConfig?.handoff ?? DEFAULT_HANDOFF_CONFIG),
+		plannerRecovery: structuredClone(
+			savedConfig?.plannerRecovery ?? DEFAULT_PLANNER_RECOVERY_CONFIG,
+		),
 		...(savedConfig?.children === undefined ? {} : { children: savedConfig.children }),
 	};
 	const confirmed = await ctx.ui.confirm(
