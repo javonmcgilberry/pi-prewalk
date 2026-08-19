@@ -756,8 +756,13 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		fail: (reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity) =>
 			fail(reason, holdExecutorRoute, ctx, expected),
 		sendRetryPlanning: async (expected: HostRunIdentity) => {
-			if (!sameRunIdentity(expected, application.run)) return;
-			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
+			const run = application.run;
+			if (!run || !sameRunIdentity(expected, run)) return;
+			await sendPrompt(
+				run.phase === "planning" ? PREWALK_PLAN_MESSAGE_TYPE : PREWALK_CONTINUE_MESSAGE_TYPE,
+				ctx,
+				true,
+			);
 		},
 		sendRetryChecklist: async (expected: HostRunIdentity) => {
 			if (!sameRunIdentity(expected, application.run)) return;

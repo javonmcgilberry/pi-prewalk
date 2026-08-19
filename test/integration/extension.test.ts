@@ -4712,7 +4712,7 @@ describe("Prewalk extension harness", () => {
 		},
 	);
 
-	it("compacts and resumes planning before an oversized planner request reaches transport", async () => {
+	it("replays the planning checkpoint after compaction interrupts the initial planner request", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -4757,13 +4757,61 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 
 		expect(harness.messages).toHaveLength(beforeResume + 1);
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		expect(
 			harness.entries.some(
 				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
 			),
 		).toBe(false);
+	});
+
+	it("continues from the durable todo after planner compaction", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await emitSuccessfulToolResult(harness, "todo-1", PREWALK_TODO_TOOL_NAME);
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[{ id: "todo-1", name: PREWALK_TODO_TOOL_NAME }],
+				Date.now(),
+			),
+			toolResults: [],
+		});
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const pressureMessage = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, {
+				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
+			} as never)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: pressureMessage,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "manual",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "planner-ready" },
+			reason: "manual",
+			willRetry: false,
+		});
+		harness.completeCompaction();
+
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
 	});
 
 	it("fails closed when planner pressure remains after one compaction retry", async () => {
@@ -4865,7 +4913,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toBe("Prewalk failed: planner-compaction-failed.");
 	});
 
-	it("accepts Pi's planner compaction without starting another retry cycle", async () => {
+	it("replays the planning checkpoint after Pi compacts the initial planner request", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -4903,7 +4951,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.compactionCalls).toEqual([]);
 		expect(harness.messages).toHaveLength(beforeResume + 1);
-		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CONTINUE_MESSAGE_TYPE);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 
 		await harness.emit("agent_start", { type: "agent_start" });
 		const secondPressure = await harness
