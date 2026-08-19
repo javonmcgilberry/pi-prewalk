@@ -866,6 +866,63 @@ describe("PiHostEventCorrelation ordered retention", () => {
 });
 
 describe("PiHostEventCorrelation discard and compaction", () => {
+	it("clears only orphaned agent lifecycle state at a verified idle run boundary", () => {
+		const correlation = new PiHostEventCorrelation();
+		const owned = message(3_900);
+		correlation.observe({ type: "message-start", message: owned }, A);
+		correlation.observe({ type: "tool-claim", toolCallId: "owned-tool" }, A);
+		correlation.observe({ type: "before-compaction" }, A);
+
+		const aborted = { ...message(3_901), stopReason: "aborted" as const };
+		correlation.observe({ type: "message-start", message: aborted }, undefined);
+		correlation.observe({ type: "before-agent" }, undefined);
+		correlation.observe({ type: "agent-start" }, undefined);
+		correlation.observe({ type: "agent-end", messages: [aborted] }, undefined);
+		correlation.observe({ type: "agent-start" }, undefined);
+		correlation.observe({ type: "before-agent" }, undefined);
+
+		expectResult(correlation.observe({ type: "idle-boundary" }, undefined), {
+			decision: "apply",
+			kind: "unknown",
+			fallback: "preserve-current",
+		});
+
+		correlation.observe({ type: "before-agent" }, B);
+		expectResult(correlation.observe({ type: "agent-start" }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "pending-agent",
+			run: B,
+		});
+		expectResult(correlation.observe({ type: "tool-claim", toolCallId: "current-tool" }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "active-agent",
+			run: B,
+		});
+
+		// Direct ownership remains authoritative across the idle boundary.
+		expectResult(correlation.observe({ type: "message", message: owned }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "message-object",
+			run: A,
+		});
+		expectResult(correlation.observe({ type: "tool", toolCallId: "owned-tool" }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "tool-id",
+			run: A,
+		});
+		// Compaction ordering is not an idle-agent fact and is deliberately retained.
+		expectResult(correlation.observe({ type: "compaction" }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "compaction-order",
+			run: A,
+		});
+	});
+
 	it("discards all matching exact pending and compaction markers by ID and epoch", () => {
 		const correlation = new PiHostEventCorrelation();
 		for (const run of [A, A_NEW_EPOCH, A, B]) {
@@ -1244,6 +1301,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 				"agent-start",
 				"agent-end",
 				"agent-settled",
+				"idle-boundary",
 				"message-start",
 				"message",
 				"message",

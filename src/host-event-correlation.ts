@@ -10,6 +10,7 @@ export type HostObservation =
 	| { type: "agent-start" }
 	| { type: "agent-end"; messages: readonly AgentMessage[] }
 	| { type: "agent-settled" }
+	| { type: "idle-boundary" }
 	| { type: "message-start"; message: AgentMessage }
 	| { type: "message"; message: AgentMessage }
 	| { type: "tool-claim"; toolCallId: string }
@@ -65,6 +66,7 @@ interface CorrelationState {
 	readonly compactionMarkers: HostRunMarker[];
 	readonly activeAgentMarkers: HostRunMarker[];
 	suppressCompactionCycle: boolean;
+	hasAbortedUnownedAgent: boolean;
 }
 
 const KEYED_RETENTION_LIMIT = 512;
@@ -80,6 +82,7 @@ function createState(): CorrelationState {
 		compactionMarkers: [],
 		activeAgentMarkers: [],
 		suppressCompactionCycle: false,
+		hasAbortedUnownedAgent: false,
 	};
 }
 
@@ -118,6 +121,12 @@ function removeAllExact(markers: HostRunMarker[], run: HostRunIdentity): number 
 		}
 	}
 	return removed;
+}
+
+function removeAllUnowned(markers: HostRunMarker[]): void {
+	for (let index = markers.length - 1; index >= 0; index -= 1) {
+		if (markers[index] === null) markers.splice(index, 1);
+	}
 }
 
 function shiftMarker(
@@ -249,6 +258,12 @@ function observeAgentEnd(
 			attribution: { kind: "unknown", fallback: "ignore-agent-end" },
 		};
 	}
+	if (
+		selected.marker === null &&
+		messages.some((message) => message.role === "assistant" && message.stopReason === "aborted")
+	) {
+		state.hasAbortedUnownedAgent = true;
+	}
 	removeFirstMarker(state.activeAgentMarkers, selected.marker);
 	state.settlementMarkers.push(selected.marker);
 	return classify(selected.marker, currentRun, selected.evidence);
@@ -358,6 +373,26 @@ function observeCompaction(
 	return permissiveUnknown();
 }
 
+/**
+ * A manual run starts only after Pi has reported the session idle. An aborted,
+ * explicitly unowned stream can leave no-longer-live unowned lifecycle markers
+ * behind; they must not claim the next run's tools. Exact markers, direct
+ * message/tool facts, and compaction ordering deliberately survive because
+ * they can still identify a genuinely late host event.
+ */
+function observeIdleBoundary(
+	state: CorrelationState,
+	_currentRun: HostRunIdentity | undefined,
+): HostCorrelation {
+	if (!state.hasAbortedUnownedAgent) return permissiveUnknown();
+	removeAllUnowned(state.pendingAgentMarkers);
+	removeAllUnowned(state.agentEndMarkers);
+	removeAllUnowned(state.settlementMarkers);
+	removeAllUnowned(state.activeAgentMarkers);
+	state.hasAbortedUnownedAgent = false;
+	return permissiveUnknown();
+}
+
 function observeState(
 	state: CorrelationState,
 	observation: HostObservation,
@@ -372,6 +407,8 @@ function observeState(
 			return observeAgentEnd(state, observation.messages, currentRun);
 		case "agent-settled":
 			return observeAgentSettled(state, currentRun);
+		case "idle-boundary":
+			return observeIdleBoundary(state, currentRun);
 		case "message-start":
 			return observeMessageStart(state, observation.message, currentRun);
 		case "message":
@@ -402,6 +439,7 @@ function resetState(state: CorrelationState): void {
 	state.compactionMarkers.length = 0;
 	state.activeAgentMarkers.length = 0;
 	state.suppressCompactionCycle = false;
+	state.hasAbortedUnownedAgent = false;
 }
 
 function discardPending(state: CorrelationState, run: HostRunIdentity): PendingRunDiscard {

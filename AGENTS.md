@@ -43,6 +43,9 @@ Keep the stock-Pi adapters coherent:
   `tool_execution_update` or `tool_result` genuinely unknown.
 - `session_before_compact` records the cycle before semantic filtering.
   `session_compact` consumes the terminal observation.
+- An idle manual `/prewalk run` records `idle-boundary`; it may remove only
+  unowned lifecycle markers left by an aborted unowned agent, never exact
+  markers or compaction ordering.
 - Failure and cancellation call `discardPendingForRun()` with the exact ID and
   epoch before coordinator mutation.
 

@@ -133,7 +133,7 @@ Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is
 
 The optional `executorFallbacks` array lists backup executors in order. When it is missing, Prewalk builds a list from registered models and Oh My Pi's built-in `smol` preferences. An empty array turns that behavior off. A fallback must be registered, authorized, able to produce output, and different from the planner after reasoning-level limits are applied.
 
-Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. It does not patch Pi, call `setModel()`, import private Pi modules, or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
+Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. At an idle manual-run boundary, it removes only lifecycle facts left by an aborted, unowned agent; exact old-run facts remain stale. If a rejected planning tool call leaves the checklist uninitialized, Prewalk replays that run's planning checkpoint once. A second failed attempt ends the run with `/prewalk run` guidance rather than leaving it active on the planner. It does not patch Pi, call `setModel()`, import private Pi modules, or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
 
 ## Child agents
 

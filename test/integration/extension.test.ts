@@ -1161,6 +1161,153 @@ describe("Prewalk extension harness", () => {
 		expect(assessment.messages).toEqual([]);
 	});
 
+	it("recovers an aborted idle agent boundary before compaction and hands off after the valid todo and edit", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "ordinary work",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const aborted = {
+			...assistant(harness.planner),
+			stopReason: "aborted" as const,
+			timestamp: 9_001,
+		};
+		await harness.emit("message_start", { type: "message_start", message: aborted });
+		await harness.emit("agent_end", { type: "agent_end", messages: [aborted] });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		// Pi accepted another prompt but aborted before its agent_start, leaving an
+		// explicit-unowned pending marker even though the command surface is idle.
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "aborted before transport",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+
+		await harness.commands.get("prewalk")?.("run", harness.context);
+
+		await harness.emit("session_before_compact", {
+			type: "session_before_compact",
+			preparation: { messagesToSummarize: [], turnPrefixMessages: [] },
+			reason: "manual",
+			willRetry: false,
+		});
+		await harness.emit("session_compact", {
+			type: "session_compact",
+			compactionEntry: { type: "compaction", id: "after-abort" },
+			reason: "manual",
+			willRetry: false,
+		});
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "execute the plan",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "recovered-todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			args: { op: "init" },
+		});
+		await harness.tools
+			.get(PREWALK_TODO_TOOL_NAME)
+			?.execute(
+				"recovered-todo",
+				{ op: "init", list: [{ phase: "Implement", items: ["land the fix"] }] },
+				undefined,
+				undefined,
+				harness.context,
+			);
+		await emitSuccessfulToolResult(harness, "recovered-todo", PREWALK_TODO_TOOL_NAME);
+		await emitSuccessfulToolResult(harness, "recovered-edit", "edit");
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 1,
+			message: assistantWithToolCalls(
+				harness.planner,
+				[
+					{ id: "recovered-todo", name: PREWALK_TODO_TOOL_NAME },
+					{ id: "recovered-edit", name: "edit" },
+				],
+				9_002,
+			),
+			toolResults: [],
+		});
+
+		expect(
+			harness.entries.some((entry) => (entry.data as { event?: string }).event === "todo-ready"),
+		).toBe(true);
+		expect(
+			harness.entries.some(
+				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
+			),
+		).toBe(true);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
+	});
+
+	it("classifies an unowned todo as recoverable, replays the plan once, and fails visibly if the retry omits the todo", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "unowned-todo",
+			toolName: PREWALK_TODO_TOOL_NAME,
+			args: { op: "init" },
+		});
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		const beforeRetry = harness.messages.length;
+
+		await expect(
+			harness.tools
+				.get(PREWALK_TODO_TOOL_NAME)
+				?.execute(
+					"unowned-todo",
+					{ op: "init", list: [{ phase: "Old", items: ["must not apply"] }] },
+					undefined,
+					undefined,
+					harness.context,
+				),
+		).rejects.toThrow("stale");
+		expect(harness.messages).toHaveLength(beforeRetry + 1);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
+		expect(harness.notifications.at(-1)).toContain("planning checkpoint was queued for retry");
+
+		await expect(
+			harness.tools
+				.get(PREWALK_TODO_TOOL_NAME)
+				?.execute("unowned-todo", { op: "view" }, undefined, undefined, harness.context),
+		).rejects.toThrow("stale");
+		expect(harness.messages).toHaveLength(beforeRetry + 1);
+
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "retry the plan",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({
+			event: "failed",
+			phase: "failed",
+			reasonCode: "host-correlation-retry-failed",
+		});
+		expect(harness.notifications.at(-1)).toContain("Run /prewalk run to retry safely");
+	});
+
 	it("allows a direct registered-tool execution without a host claim via permissive unknown", async () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);

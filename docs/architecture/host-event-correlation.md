@@ -67,6 +67,8 @@ The correlation seam owns:
 - bounded insertion-order retention for keyed message and tool facts;
 - exact pending discard for a failed or cancelled run;
 - factual suppression of a compaction terminal after its marker was discarded;
+- selective removal of unowned lifecycle facts at an idle manual-run boundary,
+  but only after an aborted unowned agent end;
 - session reset of non-weak state;
 - classification as exact, stale, explicitly unowned, unknown, or suppressed.
 
@@ -112,6 +114,7 @@ decide whether the observation can change anything.
 | `agent_start` | `agent-start` | consume pending or capture current; append agent-end FIFO; set active |
 | `agent_end` | `agent-end` | prefer known message, otherwise agent-end FIFO; append settlement before classification |
 | `agent_settled` | `agent-settled` | consume settlement, then active, then current; clear matching active; discard matching compaction markers |
+| manual `/prewalk run` while idle | `idle-boundary` | after an aborted unowned agent end, remove only `null` lifecycle facts; retain every exact fact and compaction ordering |
 | `message_start` | `message-start` | select object, key, active, settlement, then current; store object and key facts |
 | `message_end`, `turn_end` | `message` | query object, key, active, then settlement without storing |
 | `tool_call`, `tool_execution_start` | `tool-claim` | select existing ID, active, settlement, then current; always store the ID |
@@ -152,6 +155,12 @@ agent and compaction FIFOs. It leaves message, tool, agent-end, settlement,
 active, null, and other-run facts alone. Removing a compaction marker arms
 suppression for the rest of that cycle. Failure and cancellation call discard
 with the exact identity before mutating the coordinator.
+
+`idle-boundary` is deliberately narrower than reset or discard. It does
+nothing unless an `agent-end` was both explicitly unowned and aborted. It then
+removes only `null` markers from the agent lifecycle FIFOs. Exact old-run
+markers, direct message and tool facts, and compaction markers survive, so a
+late owned event remains stale rather than becoming eligible for the new run.
 
 A settlement also removes matching compaction markers and arms suppression. A
 queued exact terminal is consumed before suppression. Suppression stays armed

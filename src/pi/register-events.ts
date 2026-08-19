@@ -84,6 +84,9 @@ function failureNotice(reasonCode: string): string {
 		const options = `${toolNames.slice(0, -1).join(", ")}, or ${toolNames[toolNames.length - 1]}`;
 		return `Prewalk failed: no active mutation-capable tool can prove the first edit. Enable ${options}.`;
 	}
+	if (reasonCode === "host-correlation-retry-failed") {
+		return "Prewalk could not recover its planning checkpoint after a stale host event. Run /prewalk run to retry safely.";
+	}
 	return `Prewalk failed: ${reasonCode}.`;
 }
 
@@ -381,6 +384,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let retainedCancelledRun: PrewalkRun | undefined;
 	let childDiagnostic: string | undefined;
 	let delegation: DelegationStatus | undefined;
+	let stalePlanningRetry: HostRunIdentity | undefined;
+	let stalePlanningRetryStarted = false;
 	const contextPressure = new ContextPressureController();
 	let removeTerminalInputListener: (() => void) | undefined;
 	const refreshContextCompactionPolicy = (ctx: ExtensionContext): ContextCompactionPolicy => {
@@ -438,14 +443,18 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			runIdentity ?? (evaluation ? { runId: evaluation.id, epoch: evaluation.id } : undefined)
 		);
 	};
-	const assertCurrentToolExecution = (toolCallId: string): void => {
+	const assertCurrentToolExecution = (
+		toolCallId: string,
+		ctx: ExtensionContext | undefined,
+		retryPlanning: boolean,
+	): void => {
 		const correlation = hostCorrelation.observe(
 			{ type: "tool", toolCallId },
 			correlationIdentity(),
 		);
-		if (correlation.decision === "ignore") {
-			throw new Error("Prewalk tool execution is stale.");
-		}
+		if (correlation.decision !== "ignore") return;
+		if (retryPlanning && ctx) queueStalePlanningRetry(ctx);
+		throw new Error("Prewalk tool execution is stale.");
 	};
 	const analytics = new PrewalkAnalytics(getAgentDir());
 	const analyticsHost = (ctx: ExtensionContext) => ({
@@ -479,6 +488,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		pi.appendEntry(PREWALK_AUDIT_TYPE, record);
 		lastAuditKey = key;
 		updateStatus(ctx);
+	};
+	const clearStalePlanningRetry = (): void => {
+		if (stalePlanningRetry && sameRunIdentity(stalePlanningRetry, application.run)) {
+			stalePlanningRetry = undefined;
+			stalePlanningRetryStarted = false;
+		}
 	};
 	const setAutoEnabled = (enabled: boolean, ctx: ExtensionContext): void => {
 		autoEnabled = enabled;
@@ -541,6 +556,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const failedRun = application.run;
 		if (expectedRun !== undefined && !sameRunIdentity(expectedRun, failedRun)) return;
 		const failedIdentity = identityOf(failedRun);
+		clearStalePlanningRetry();
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
 		resetContextPressureState();
 		if (!application.run) {
@@ -581,6 +597,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
+		clearStalePlanningRetry();
 		hostCorrelation.discardPendingForRun(runIdentity);
 		resetContextPressureState();
 		application.cancel(selectedModelIsPlanner);
@@ -748,6 +765,36 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		audit(prompt.event, ctx);
 	};
 
+	const queueStalePlanningRetry = (ctx: ExtensionContext): void => {
+		const run = application.run;
+		const identity = identityOf(run);
+		if (
+			!run ||
+			!identity ||
+			run.effectiveRoute !== "planner" ||
+			(run.phase !== "planning" && run.phase !== "ready") ||
+			(stalePlanningRetry !== undefined && sameRunIdentity(stalePlanningRetry, run))
+		)
+			return;
+		stalePlanningRetry = identity;
+		stalePlanningRetryStarted = false;
+		audit("planning-retry", ctx);
+		pi.sendMessage(
+			{
+				customType: PREWALK_PLAN_MESSAGE_TYPE,
+				content: prompts.plan,
+				display: false,
+				details: { runId: run.id },
+			},
+			{ deliverAs: "nextTurn" },
+		);
+		ctx.ui.notify(
+			"Prewalk rejected a stale planning tool call; the active planning checkpoint was queued for retry.",
+			"warning",
+		);
+		updateStatus(ctx);
+	};
+
 	const contextPressureHost = (ctx: ExtensionContext) => ({
 		currentRun: () => application.run,
 		compact: (callbacks: { onComplete: () => void; onError: (error: Error) => void }) =>
@@ -805,6 +852,15 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					: !sameRunIdentity(expectedRun, expectedCurrent))
 			) {
 				return "failed";
+			}
+			if (
+				mode === "manual" &&
+				ctx.isIdle() &&
+				(expectedCurrent === undefined ||
+					expectedCurrent.phase === "cancelled" ||
+					expectedCurrent.phase === "failed")
+			) {
+				hostCorrelation.observe({ type: "idle-boundary" }, undefined);
 			}
 			const config = configOverride ?? (await readPrewalkConfig());
 			const compactionState = nativeResponsesCompactionState();
@@ -997,6 +1053,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		application,
 		turnGate,
 		assertCurrentToolExecution,
+		onTodoInitialized: clearStalePlanningRetry,
 		getAssessment: () => evaluation,
 		setAssessmentDecision: (decision) => {
 			if (evaluation) evaluation.decision = decision;
@@ -1292,6 +1349,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
+		if (stalePlanningRetry && sameRunIdentity(stalePlanningRetry, application.run)) {
+			stalePlanningRetryStarted = true;
+		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshContextCompactionPolicy(ctx);
 		primaryAgentStream = true;
@@ -1378,6 +1438,15 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
+		if (
+			stalePlanningRetryStarted &&
+			stalePlanningRetry !== undefined &&
+			sameRunIdentity(stalePlanningRetry, run)
+		) {
+			clearStalePlanningRetry();
+			fail("host-correlation-retry-failed", false, ctx, runIdentity);
+			return;
+		}
 		if (run.phase === "cancelled") {
 			primaryAgentStream = false;
 			return;

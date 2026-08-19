@@ -30,6 +30,7 @@ export interface PrewalkAutoModeRecord {
 export type AuditEventKind =
 	| "armed"
 	| "plan-injected"
+	| "planning-retry"
 	| "continuation"
 	| "progress"
 	| "planner-reasoning-changed"
@@ -69,6 +70,7 @@ export interface PrewalkAuditRecord {
 const EVENTS = new Set<string>([
 	"armed",
 	"plan-injected",
+	"planning-retry",
 	"continuation",
 	"progress",
 	"planner-reasoning-changed",

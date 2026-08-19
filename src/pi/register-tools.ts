@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { PrewalkApplication } from "../orchestration/prewalk-application.js";
 import { PREWALK_TODO_TOOL_NAME, type TodoInput } from "../turn/todo.js";
@@ -44,7 +44,12 @@ export interface AssessmentState {
 export interface PrewalkToolRegistration {
 	application: PrewalkApplication;
 	turnGate: TurnGate;
-	assertCurrentToolExecution(toolCallId: string): void;
+	assertCurrentToolExecution(
+		toolCallId: string,
+		ctx: ExtensionContext | undefined,
+		retryPlanning: boolean,
+	): void;
+	onTodoInitialized(): void;
 	getAssessment(): AssessmentState | undefined;
 	setAssessmentDecision(decision: "continue" | "bypass"): void;
 }
@@ -62,8 +67,8 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 		description: "Create and maintain the phased implementation checklist required by Prewalk.",
 		parameters: TodoParameters,
 		constrainedSampling: PREFERRED_CONSTRAINED_SAMPLING,
-		async execute(toolCallId, params) {
-			deps.assertCurrentToolExecution(toolCallId);
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			deps.assertCurrentToolExecution(toolCallId, ctx, true);
 			const run = deps.application.run;
 			if (!run || run.phase === "cancelled" || run.phase === "failed") {
 				throw new Error("Prewalk todo is inactive.");
@@ -78,6 +83,7 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 			};
 			const result = deps.turnGate.applyTodo(input);
 			if (result.isError) throw new Error(result.text);
+			if (input.op === "init") deps.onTodoInitialized();
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: result.details,
@@ -92,8 +98,8 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 			"Record whether substantial implementation work remains after bounded inspection.",
 		parameters: AssessmentParameters,
 		constrainedSampling: PREFERRED_CONSTRAINED_SAMPLING,
-		async execute(toolCallId, params) {
-			deps.assertCurrentToolExecution(toolCallId);
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			deps.assertCurrentToolExecution(toolCallId, ctx, false);
 			const evaluation = deps.getAssessment();
 			if (!evaluation || evaluation.invalid || evaluation.decision) {
 				throw new Error("Prewalk assessment is inactive.");

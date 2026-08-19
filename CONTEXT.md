@@ -60,6 +60,9 @@ compaction event presented to the host-event correlation seam.
 An unowned host observation was captured when there was no current Prewalk run.
 It may apply only while no run is current.
 
+At an idle manual-run boundary, only unowned lifecycle observations from an
+aborted agent are discarded. Exact old-run observations remain stale.
+
 ## Unknown host observation
 
 An unknown host observation has no retained ownership fact. Only ordinary
