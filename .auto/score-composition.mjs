@@ -407,6 +407,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "multi-turn-assessment-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "evaluates substantial work across turns before queuing the full plan",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
