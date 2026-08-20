@@ -479,6 +479,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "analytics-failure-isolation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not block subagent execution when analytics generation lookup fails",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "automatic-source-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores extension and streaming input while automatic mode is ready",
