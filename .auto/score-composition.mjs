@@ -173,6 +173,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "foreign-todo-ownership-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a foreign todo outside the Prewalk lifecycle",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
