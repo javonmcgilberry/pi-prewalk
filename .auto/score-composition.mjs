@@ -197,6 +197,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "completed-executor-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores a completed Luna run on reload without adding an arm or request",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
