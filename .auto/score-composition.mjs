@@ -437,6 +437,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "mutation-tools-unavailable-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails before planning when the active default tool slate cannot prove an edit",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
