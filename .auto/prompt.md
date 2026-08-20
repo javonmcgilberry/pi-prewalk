@@ -10,9 +10,17 @@ changes that improve a frozen score without weakening correctness or safety:
 3. Characterize the boundary between Prewalk and an extension that behaves like
    Autoresearch, especially extension-sourced messages and continuation ownership.
 
-The campaign has a hard cumulative ceiling of 20 logged experiments. The
-allocation is 8 context experiments, 6 admission experiments, and 6
-composition experiments, including each segment's baseline.
+The campaign has a hard cumulative ceiling of 100 logged experiments. The
+first 20 records are preserved as the initial campaign. The remaining budget
+is available for a cleaner second campaign; it is a ceiling, not a quota, and
+must not be spent on meaningless repetitions.
+
+For the second campaign, search candidates on train only, compare finalists on
+validation, and reveal holdout once after selecting a candidate. Run the
+segment-specific checks explicitly in the benchmark command because the
+Autoresearch wrapper's separate checks process does not inherit `AR_SEGMENT`.
+Do not mutate production merely to compare fixed-margin candidates, and do not
+change labels, tests, scorers, or checks in response to a candidate result.
 
 ## Metrics
 
