@@ -227,6 +227,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "model-selection-source-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "cancels on an explicit model selection but ignores restore selection",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
