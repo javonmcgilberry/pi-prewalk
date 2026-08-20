@@ -57,6 +57,12 @@ That is the smallest valid config. [`prewalk.example.json`](prewalk.example.json
 
 Automatic mode is off by default. Set `enabled` to `true` to check new sessions automatically, or use `/prewalk auto` for the current session. Resumed sessions stay manual. `/reload` keeps the current session choice.
 
+Automatic admission is deliberately conservative: it looks for clearly
+substantial implementation work and bypasses research, setup, operations,
+negated or quoted examples, and small isolated edits. Messages sent by another
+extension are not admitted automatically, so an extension such as an
+Autoresearch loop cannot accidentally start a second Prewalk trajectory.
+
 For local development:
 
 ```sh
@@ -128,6 +134,12 @@ Requirements:
 - Pi Codex Conversion native Responses compaction disabled when installed.
 
 Before each provider request, Prewalk checks whether the planner or executor is running out of context space. It uses that model's context window and Pi's effective `compaction.reserveTokens`; the reserve defaults to 16,384 when Pi does not provide one. Prewalk can ask Pi to compact once. If compaction happens before the planner creates its checklist, Prewalk sends a recovery instruction that continues the same planning trajectory from the preserved session history. Once the checklist exists, it sends a continuation instead, so the planner keeps working from that saved checkpoint. If the request is still too large, or compaction is unavailable, it restores the planner instead of looping. This check is only an estimate: providers may serialize the request differently, and prompt-cache reads may not survive a model switch.
+
+When it estimates a request, Prewalk adds 384 tokens to cover small differences
+in how providers count and serialize requests. That number came from a local
+calibration corpus with no prompt text. It is a watchdog margin, not a provider
+tokenizer guarantee; the paid efficacy benchmark remains separate and has not
+been run.
 
 Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is installed. The legacy top-level `responsesCompaction` setting is recognized too. Prewalk refuses to arm, including while restoring an active run, when native Responses compaction is explicitly enabled; otherwise hook order could compact planning-only context before Prewalk filters it.
 

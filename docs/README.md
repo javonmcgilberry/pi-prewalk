@@ -18,6 +18,9 @@
   records the exact technical rules for delayed Pi events and run isolation.
 - [`../benchmark/README.md`](../benchmark/README.md) describes the opt-in paid
   benchmark and its safety boundary.
+- [`research/2026-08-20-prewalk-autoresearch.md`](research/2026-08-20-prewalk-autoresearch.md)
+  records the bounded offline Autoresearch campaign for context estimation,
+  automatic admission, and extension composition.
 
 The guide and current architecture files are included in packed installs. The
 files under `plans/`, `research/`, and `archive/` are historical engineering
