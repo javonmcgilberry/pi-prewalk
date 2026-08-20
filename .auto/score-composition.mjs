@@ -395,6 +395,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "automatic-default-opt-in-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "defaults persistent automatic admission off and preserves a session opt-in on reload",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
