@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "wizard-fallback-chain-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a hand-written executor fallback chain through the wizard",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "analytics-disabled-routing-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "keeps routing active and stats readable when future analytics collection is disabled",
