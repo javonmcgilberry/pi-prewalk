@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "executor-window-threshold-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "uses the executor window for threshold compaction",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "conversion-legacy-compaction-conflict-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses legacy Conversion native compaction settings",
