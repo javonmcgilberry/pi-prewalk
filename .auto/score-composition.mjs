@@ -101,6 +101,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "planner-pressure-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails closed when planner pressure remains after one compaction retry",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
