@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "same-model-reasoning-difference-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "still arms a same-model executor when the reasoning level differs",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "same-model-executor-noop-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses a session executor identical to the planner without sending the plan nudge",
