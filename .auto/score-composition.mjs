@@ -293,6 +293,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "repaired-startup-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "retries a repaired startup configuration on reload",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
