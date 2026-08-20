@@ -467,6 +467,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "permissive-direct-tool-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "allows a direct registered-tool execution without a host claim via permissive unknown",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "automatic-source-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores extension and streaming input while automatic mode is ready",
