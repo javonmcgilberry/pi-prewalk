@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "conversion-native-compaction-conflict-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refuses to arm when Conversion native Responses compaction is enabled",
+		metric: "unfinished_run",
+	},
+	{
 		id: "planner-compaction-checkpoint-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "replays the planning checkpoint after Pi compacts the initial planner request",
