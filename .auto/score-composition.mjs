@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "runtime-profile-epoch-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "derives a new epoch planner from Pi's selected runtime profile",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-upstream-input-isolation-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "leaves upstream child model, thinking, fallback, and scheduling inputs unchanged",
