@@ -155,6 +155,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "child-proven-mutation-handoff-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "hands an opted-in child to a lower-effort same-model executor only after proven mutation",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
