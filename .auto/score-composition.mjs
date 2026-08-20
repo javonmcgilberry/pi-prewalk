@@ -455,6 +455,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "cancellation-settlement-race-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores settlement that races cancellation finalization",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "planner-abort-recovery-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "replays persisted planner reasoning after every abort without replacing the run",
