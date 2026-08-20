@@ -461,6 +461,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "planner-recovery-limit-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "stops after the configured number of automatic planner recoveries",
+		metric: "unfinished_run",
+	},
+	{
 		id: "automatic-source-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores extension and streaming input while automatic mode is ready",
