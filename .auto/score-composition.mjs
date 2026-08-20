@@ -95,6 +95,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "planner-compaction-replay-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "replays the planning checkpoint after compaction interrupts the initial planner request",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
