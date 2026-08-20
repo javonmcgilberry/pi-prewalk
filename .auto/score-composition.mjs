@@ -479,6 +479,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "serial-delegation-tree-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps evidence from serial delegation invocations in one task tree",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "analytics-failure-isolation-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "does not block subagent execution when analytics generation lookup fails",
