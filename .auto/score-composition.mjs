@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-target-fail-closed-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails closed for equal and unavailable child targets",
+		metric: "unfinished_run",
+	},
+	{
 		id: "analytics-reset-confirmation-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "requires reset confirmation and excludes an active run only after confirmation",
