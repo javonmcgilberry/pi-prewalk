@@ -419,6 +419,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "assessment-inspection-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "allows read-only exec inspection but ignores failed mutation attempts during assessment",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
