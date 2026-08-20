@@ -515,6 +515,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "oldest-settlement-replacement-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "captures oldest-settlement message and tool fallbacks before replacement",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
