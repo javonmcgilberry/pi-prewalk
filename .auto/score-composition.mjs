@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "conversion-legacy-compaction-conflict-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refuses legacy Conversion native compaction settings",
+		metric: "unfinished_run",
+	},
+	{
 		id: "conversion-native-compaction-conflict-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses to arm when Conversion native Responses compaction is enabled",
