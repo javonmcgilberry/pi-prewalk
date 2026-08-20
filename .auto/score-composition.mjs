@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "export-existing-destination-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refuses an existing export destination without changing its bytes",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "configure-no-ui-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "explains why configure cannot run without an interactive UI",
