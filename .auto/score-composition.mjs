@@ -41,6 +41,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "compaction-suppression",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a disowned compaction cycle suppressed across repeated terminals",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
