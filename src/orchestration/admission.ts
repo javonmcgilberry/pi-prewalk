@@ -15,7 +15,7 @@ const IMPLEMENTATION_PATTERN =
 	/\b(implement|build|fix|refactor|migrate|migration|feature|execute)\b/i;
 const SUBSTANTIAL_PATTERNS = [
 	/\b(approved|exact)\b.*\bplan\b/i,
-	/\b(cross[- ]cutting|end[- ]to[- ]end|multiple[- ]concerns|across)\b/i,
+	/\b(cross[- ]cutting|end[- ]to[- ]end|multiple[- ]concerns|across|spanning)\b/i,
 	/\b(reproduction|regression test)\b/i,
 	/\b(substantial|large)\s+(refactor|migration|feature)\b/i,
 ];
