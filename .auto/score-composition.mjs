@@ -263,6 +263,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "native-provider-install-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "installs from Pi's built-in provider stream without the conversion extension",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
