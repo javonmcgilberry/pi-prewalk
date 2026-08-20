@@ -485,6 +485,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "unrelated-analytics-input-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores unrelated tool results in task-tree analytics",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "automatic-source-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores extension and streaming input while automatic mode is ready",
