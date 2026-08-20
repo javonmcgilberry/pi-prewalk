@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "cross-provider-public-handoff-boundary",
+		file: "test/integration/agent-loop.test.ts",
+		pattern: "streams a cross-provider handoff through the executor's own provider",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "agent-end-continuation-boundary",
 		file: "test/integration/agent-loop.test.ts",
 		pattern: "settles an Autoresearch agent-end continuation around one manual Prewalk handoff",
