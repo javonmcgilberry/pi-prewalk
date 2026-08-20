@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "public-subagent-launch-boundary",
+		file: "test/integration/agent-loop.test.ts",
+		pattern: "preserves a real public subagent launch before its child provider boundary",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "public-planner-recovery-shutdown-boundary",
 		file: "test/integration/agent-loop.test.ts",
 		pattern: "self-recovers an aborted planner and keeps one stock-Pi route through shutdown",
