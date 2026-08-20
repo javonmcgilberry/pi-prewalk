@@ -335,6 +335,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "oversized-compaction-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "stops after one compaction retry when the executor remains oversized",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
