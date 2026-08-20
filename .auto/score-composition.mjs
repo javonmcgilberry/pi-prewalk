@@ -341,6 +341,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "initial-handoff-compaction-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps an initial handoff alive while compaction settles the agent",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
