@@ -179,6 +179,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "foreign-todo-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores a foreign todo slate after a same-session reload",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
