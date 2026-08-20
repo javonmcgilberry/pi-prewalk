@@ -533,6 +533,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "completed-finalization-recovery-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps recovery possible when completed analytics finalization fails",
+		metric: "stale_recovery",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
