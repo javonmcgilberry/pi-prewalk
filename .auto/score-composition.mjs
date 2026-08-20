@@ -353,6 +353,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "inferred-fallback-chain-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "infers a fallback chain when the config omits executorFallbacks",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
