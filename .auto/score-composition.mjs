@@ -509,6 +509,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "planning-only-receipt-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "reports a planning-only run without inventing a comparison",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
