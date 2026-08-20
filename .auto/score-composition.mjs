@@ -323,6 +323,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "executor-threshold-compaction-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps an active executor route through threshold compaction events",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
