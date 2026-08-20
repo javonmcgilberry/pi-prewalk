@@ -131,6 +131,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "cancellation-analytics-failure-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores the provider lease when cancellation analytics finalization fails",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
