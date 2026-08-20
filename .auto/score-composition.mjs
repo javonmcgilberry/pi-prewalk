@@ -383,6 +383,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "automatic-session-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "enables automatic admission from config for fresh sessions but not resumed sessions",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
