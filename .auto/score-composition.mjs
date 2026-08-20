@@ -77,6 +77,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "aborted-idle-recovery-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "recovers an aborted idle agent boundary before compaction and hands off after the valid todo and edit",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
