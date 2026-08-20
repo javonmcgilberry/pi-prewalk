@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "model-picker-pagination-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "paginates long model lists instead of filling the terminal",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "pending-unowned-fifo-retention-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "keeps more than 512 pending unowned agent markers in FIFO order",
