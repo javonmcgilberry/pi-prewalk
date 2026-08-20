@@ -66,6 +66,68 @@ let root: string;
 let agentDir: string;
 let workDir: string;
 
+async function createFixtureSession(
+	followUps: string[] = [],
+	deliverAs: "steer" | "followUp" = "followUp",
+) {
+	const planner = model();
+	let providerCalls = 0;
+	const provider: ExtensionFactory = (pi) => {
+		pi.registerProvider("fixture", {
+			api: "openai-codex-responses",
+			baseUrl: "https://fixture.invalid",
+			apiKey: "fixture-token",
+			models: [planner],
+			streamSimple: (selected) => {
+				providerCalls += 1;
+				return response(selected as Model<"openai-codex-responses">);
+			},
+		});
+	};
+	const autoresearchFixture: ExtensionFactory = (pi) => {
+		pi.registerCommand("autoresearch-fixture", {
+			description: "Emit Autoresearch-shaped follow-up messages.",
+			handler: async () => {
+				for (const text of followUps) await pi.sendUserMessage(text, { deliverAs });
+			},
+		});
+	};
+	const settings = SettingsManager.create(workDir, agentDir);
+	const loader = new DefaultResourceLoader({
+		cwd: workDir,
+		agentDir,
+		settingsManager: settings,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		extensionFactories: [
+			{ name: "provider", factory: provider },
+			{ name: "prewalk", factory: prewalkExtension },
+			{ name: "autoresearch-fixture", factory: autoresearchFixture },
+		],
+	});
+	await loader.reload();
+	const runtime = await ModelRuntime.create({
+		authPath: path.join(agentDir, "auth.json"),
+		modelsPath: null,
+	});
+	const sessionManager = SessionManager.inMemory(workDir);
+	const { session } = await createAgentSession({
+		cwd: workDir,
+		agentDir,
+		modelRuntime: runtime,
+		model: planner,
+		thinkingLevel: "low",
+		resourceLoader: loader,
+		settingsManager: settings,
+		sessionManager,
+		sessionStartEvent: { type: "session_start", reason: "startup" },
+	});
+	await session.bindExtensions({});
+	return { session, sessionManager, providerCalls: () => providerCalls };
+}
+
 beforeEach(async () => {
 	root = await mkdtemp(path.join(tmpdir(), "prewalk-autoresearch-composition-"));
 	agentDir = path.join(root, "agent");
@@ -85,63 +147,9 @@ afterEach(async () => {
 
 describe("Prewalk and Autoresearch composition", () => {
 	it("does not admit an Autoresearch-shaped extension message into automatic Prewalk", async () => {
-		const planner = model();
-		let providerCalls = 0;
-		const provider: ExtensionFactory = (pi) => {
-			pi.registerProvider("fixture", {
-				api: "openai-codex-responses",
-				baseUrl: "https://fixture.invalid",
-				apiKey: "fixture-token",
-				models: [planner],
-				streamSimple: (selected) => {
-					providerCalls += 1;
-					return response(selected as Model<"openai-codex-responses">);
-				},
-			});
-		};
-		const autoresearchFixture: ExtensionFactory = (pi) => {
-			pi.registerCommand("autoresearch-fixture", {
-				description: "Emit one Autoresearch-shaped follow-up message.",
-				handler: async () => {
-					await pi.sendUserMessage("Build an end-to-end feature across multiple concerns.", {
-						deliverAs: "followUp",
-					});
-				},
-			});
-		};
-		const settings = SettingsManager.create(workDir, agentDir);
-		const loader = new DefaultResourceLoader({
-			cwd: workDir,
-			agentDir,
-			settingsManager: settings,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: true,
-			extensionFactories: [
-				{ name: "provider", factory: provider },
-				{ name: "prewalk", factory: prewalkExtension },
-				{ name: "autoresearch-fixture", factory: autoresearchFixture },
-			],
-		});
-		await loader.reload();
-		const runtime = await ModelRuntime.create({
-			authPath: path.join(agentDir, "auth.json"),
-			modelsPath: null,
-		});
-		const sessionManager = SessionManager.inMemory(workDir);
-		const { session } = await createAgentSession({
-			cwd: workDir,
-			agentDir,
-			modelRuntime: runtime,
-			model: planner,
-			thinkingLevel: "low",
-			resourceLoader: loader,
-			settingsManager: settings,
-			sessionManager,
-			sessionStartEvent: { type: "session_start", reason: "startup" },
-		});
-		await session.bindExtensions({});
+		const { session, sessionManager, providerCalls } = await createFixtureSession([
+			"Build an end-to-end feature across multiple concerns.",
+		]);
 
 		await session.prompt("/prewalk auto");
 		await session.waitForIdle();
@@ -149,7 +157,39 @@ describe("Prewalk and Autoresearch composition", () => {
 		await session.waitForIdle();
 
 		const entries = JSON.stringify(sessionManager.getEntries());
-		expect(providerCalls).toBe(1);
+		expect(providerCalls()).toBe(1);
+		expect(entries).not.toContain("prewalk_assess");
+		expect(entries).not.toContain("Assess whether substantial implementation work remains");
+		session.dispose();
+	});
+
+	it("admits one interactive substantial input before any extension continuation", async () => {
+		const { session, sessionManager, providerCalls } = await createFixtureSession();
+		await session.prompt("/prewalk auto");
+		await session.waitForIdle();
+		await session.prompt("Build an end-to-end feature across multiple concerns.");
+		await session.waitForIdle();
+
+		const entries = JSON.stringify(sessionManager.getEntries());
+		const assessments = entries.match(/"customType":"prewalk-assess"/g)?.length ?? 0;
+		expect(assessments).toBe(1);
+		expect(providerCalls()).toBe(1);
+		session.dispose();
+	});
+
+	it("keeps a steered extension continuation outside automatic admission", async () => {
+		const followUp = "Build an end-to-end feature across multiple concerns.";
+		const { session, sessionManager, providerCalls } = await createFixtureSession(
+			[followUp],
+			"steer",
+		);
+		await session.prompt("/prewalk auto");
+		await session.waitForIdle();
+		await session.prompt("/autoresearch-fixture");
+		await session.waitForIdle();
+
+		const entries = JSON.stringify(sessionManager.getEntries());
+		expect(providerCalls()).toBe(1);
 		expect(entries).not.toContain("prewalk_assess");
 		expect(entries).not.toContain("Assess whether substantial implementation work remains");
 		session.dispose();
