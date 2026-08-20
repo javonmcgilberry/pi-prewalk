@@ -539,6 +539,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "message-key-retention-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "retains 512 message keys and evicts the oldest on the 513th distinct key",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
