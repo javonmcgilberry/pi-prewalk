@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "automatic-assessment-public-runtime-boundary",
+		file: "test/integration/agent-loop.test.ts",
+		pattern: "launches automatic assessment and its one continuation through Pi's public runtime",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "cross-provider-public-handoff-boundary",
 		file: "test/integration/agent-loop.test.ts",
 		pattern: "streams a cross-provider handoff through the executor's own provider",
