@@ -89,6 +89,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "stale-todo-replay-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps replaying the same planning checkpoint until a stale todo is replaced",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
