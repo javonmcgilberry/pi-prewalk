@@ -359,6 +359,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "explicit-empty-fallback-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not infer fallbacks when executorFallbacks is explicitly empty",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
