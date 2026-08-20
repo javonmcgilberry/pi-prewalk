@@ -347,6 +347,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "fallback-executor-selection-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "arms on a fallback executor when the primary one is missing",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
