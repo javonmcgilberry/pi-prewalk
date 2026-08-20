@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "executor-configured-reserve-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "uses Pi's configured reserve for executor threshold compaction",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "executor-window-threshold-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "uses the executor window for threshold compaction",
