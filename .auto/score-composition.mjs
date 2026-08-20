@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "manual-first-mutation-handoff-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "starts a manual run, then routes Luna after the first mutation",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "executor-configured-reserve-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "uses Pi's configured reserve for executor threshold compaction",
