@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "public-planner-recovery-shutdown-boundary",
+		file: "test/integration/agent-loop.test.ts",
+		pattern: "self-recovers an aborted planner and keeps one stock-Pi route through shutdown",
+		metric: "stale_recovery",
+	},
+	{
 		id: "automatic-assessment-public-runtime-boundary",
 		file: "test/integration/agent-loop.test.ts",
 		pattern: "launches automatic assessment and its one continuation through Pi's public runtime",
