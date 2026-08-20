@@ -59,6 +59,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "cancelled-queued-event-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores queued host events from a cancelled run after replacement",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
