@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "analytics-disabled-routing-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps routing active and stats readable when future analytics collection is disabled",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "manual-first-mutation-handoff-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "starts a manual run, then routes Luna after the first mutation",
