@@ -53,6 +53,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "reload-tool-result-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not re-arm continuation from arbitrary tool results across reload",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
