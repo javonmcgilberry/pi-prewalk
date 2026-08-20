@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "planner-compaction-checkpoint-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "replays the planning checkpoint after Pi compacts the initial planner request",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "runtime-profile-epoch-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "derives a new epoch planner from Pi's selected runtime profile",
