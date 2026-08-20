@@ -299,6 +299,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "slash-cancellation-release-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps slash cancellation pre-handoff and directs an active executor route to release",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
