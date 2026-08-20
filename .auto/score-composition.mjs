@@ -47,6 +47,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "settled-continuation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps the executor active after settling without injecting another continuation",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
