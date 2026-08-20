@@ -281,6 +281,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "journal-owner-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "leaves a recently written journal to the session that still owns it",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
