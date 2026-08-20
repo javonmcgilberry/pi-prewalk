@@ -1,0 +1,520 @@
+{
+  "schemaVersion": 1,
+  "privacy": "Synthetic public request text only; no paths, credentials, or session content.",
+  "rowCount": 64,
+  "familyCount": 16,
+  "rows": [
+    {
+      "id": "train-approved-plan-01",
+      "split": "train",
+      "family": "train-approved-plan",
+      "text": "Implement the approved migration plan for billing and persistence.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-approved-plan-02",
+      "split": "train",
+      "family": "train-approved-plan",
+      "text": "Execute the exact implementation plan for session recovery.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-approved-plan-03",
+      "split": "train",
+      "family": "train-approved-plan",
+      "text": "Build the approved feature plan across the service and client.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-approved-plan-04",
+      "split": "train",
+      "family": "train-approved-plan",
+      "text": "Migrate the storage contracts according to the approved plan.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-cross-cutting-01",
+      "split": "train",
+      "family": "train-cross-cutting",
+      "text": "Build a cross-cutting feature across the API and dashboard.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-cross-cutting-02",
+      "split": "train",
+      "family": "train-cross-cutting",
+      "text": "Fix the end-to-end workflow across the worker and queue.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-cross-cutting-03",
+      "split": "train",
+      "family": "train-cross-cutting",
+      "text": "Refactor the service across the persistence and reporting layers.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-cross-cutting-04",
+      "split": "train",
+      "family": "train-cross-cutting",
+      "text": "Implement an across-the-product recovery change.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-regression-01",
+      "split": "train",
+      "family": "train-regression",
+      "text": "Fix the production regression with a reproduction and regression test.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-regression-02",
+      "split": "train",
+      "family": "train-regression",
+      "text": "Diagnose and fix the cross-cutting failure with regression coverage.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-regression-03",
+      "split": "train",
+      "family": "train-regression",
+      "text": "Build the feature with a reproduction and a regression test.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-regression-04",
+      "split": "train",
+      "family": "train-regression",
+      "text": "Refactor the large migration after adding a reproduction.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "train-small-change-01",
+      "split": "train",
+      "family": "train-small-change",
+      "text": "Change the button label in one file.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-small-change-02",
+      "split": "train",
+      "family": "train-small-change",
+      "text": "Implement a single-file copy change.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-small-change-03",
+      "split": "train",
+      "family": "train-small-change",
+      "text": "Fix one small line in the executor.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-small-change-04",
+      "split": "train",
+      "family": "train-small-change",
+      "text": "Build a small isolated utility.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-operations-01",
+      "split": "train",
+      "family": "train-operations",
+      "text": "Run git status and report the result.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-operations-02",
+      "split": "train",
+      "family": "train-operations",
+      "text": "Install the approved package and update settings.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-operations-03",
+      "split": "train",
+      "family": "train-operations",
+      "text": "Configure the executor reasoning level.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-operations-04",
+      "split": "train",
+      "family": "train-operations",
+      "text": "Execute the one-off operational command.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-direct-negation-01",
+      "split": "train",
+      "family": "train-direct-negation",
+      "text": "Implement the migration without changing code.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-direct-negation-02",
+      "split": "train",
+      "family": "train-direct-negation",
+      "text": "Build the feature without modifying files.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-direct-negation-03",
+      "split": "train",
+      "family": "train-direct-negation",
+      "text": "Fix the regression without writing code.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-direct-negation-04",
+      "split": "train",
+      "family": "train-direct-negation",
+      "text": "Refactor the service without editing the implementation.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-making-negation-01",
+      "split": "train",
+      "family": "train-making-negation",
+      "text": "Implement the approved migration plan without making any code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-making-negation-02",
+      "split": "train",
+      "family": "train-making-negation",
+      "text": "Build the cross-cutting feature without making changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-making-negation-03",
+      "split": "train",
+      "family": "train-making-negation",
+      "text": "Execute the exact implementation plan without any changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-making-negation-04",
+      "split": "train",
+      "family": "train-making-negation",
+      "text": "Fix the large feature with no code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-quoted-01",
+      "split": "train",
+      "family": "train-quoted",
+      "text": "Explain how the quoted request 'implement a migration' would work.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-quoted-02",
+      "split": "train",
+      "family": "train-quoted",
+      "text": "Research the example `build an end-to-end feature` and summarize it.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-quoted-03",
+      "split": "train",
+      "family": "train-quoted",
+      "text": "Describe the phrase \"fix the cross-cutting issue\".",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "train-quoted-04",
+      "split": "train",
+      "family": "train-quoted",
+      "text": "Analyze whether 'execute the approved plan' is feasible.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-end-to-end-01",
+      "split": "validation",
+      "family": "validation-end-to-end",
+      "text": "Implement the end-to-end recovery workflow for the client and worker.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-end-to-end-02",
+      "split": "validation",
+      "family": "validation-end-to-end",
+      "text": "Build the cross-cutting migration across the API and persistence layer.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-end-to-end-03",
+      "split": "validation",
+      "family": "validation-end-to-end",
+      "text": "Fix the feature spanning the queue, service, and reporting layer.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-end-to-end-04",
+      "split": "validation",
+      "family": "validation-end-to-end",
+      "text": "Execute the approved plan for the full session lifecycle.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-substantial-01",
+      "split": "validation",
+      "family": "validation-substantial",
+      "text": "Implement the substantial refactor described in the plan.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-substantial-02",
+      "split": "validation",
+      "family": "validation-substantial",
+      "text": "Build the large migration with regression coverage.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-substantial-03",
+      "split": "validation",
+      "family": "validation-substantial",
+      "text": "Fix the substantial feature with a reproduction.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-substantial-04",
+      "split": "validation",
+      "family": "validation-substantial",
+      "text": "Refactor the large cross-cutting change across the product.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "validation-new-negation-01",
+      "split": "validation",
+      "family": "validation-new-negation",
+      "text": "Refactor the approved plan without making any changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-new-negation-02",
+      "split": "validation",
+      "family": "validation-new-negation",
+      "text": "Migrate the end-to-end feature without making code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-new-negation-03",
+      "split": "validation",
+      "family": "validation-new-negation",
+      "text": "Implement the cross-cutting migration with no code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-new-negation-04",
+      "split": "validation",
+      "family": "validation-new-negation",
+      "text": "Fix the substantial feature without any changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-setup-01",
+      "split": "validation",
+      "family": "validation-setup",
+      "text": "Research and compare the available implementations.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-setup-02",
+      "split": "validation",
+      "family": "validation-setup",
+      "text": "Explain how the executor handoff works.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-setup-03",
+      "split": "validation",
+      "family": "validation-setup",
+      "text": "Set up the new package and update configuration.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "validation-setup-04",
+      "split": "validation",
+      "family": "validation-setup",
+      "text": "Diagnose why the worker is slow without changing anything.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-multiple-concerns-01",
+      "split": "holdout",
+      "family": "holdout-multiple-concerns",
+      "text": "Fix the multiple-concerns failure in the planner and executor.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-multiple-concerns-02",
+      "split": "holdout",
+      "family": "holdout-multiple-concerns",
+      "text": "Build an end-to-end feature that updates the editor and analytics.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-multiple-concerns-03",
+      "split": "holdout",
+      "family": "holdout-multiple-concerns",
+      "text": "Implement the multiple concerns migration across the service.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-multiple-concerns-04",
+      "split": "holdout",
+      "family": "holdout-multiple-concerns",
+      "text": "Refactor the cross-cutting planner lifecycle.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-regression-01",
+      "split": "holdout",
+      "family": "holdout-regression",
+      "text": "Migrate the approved contract with a regression test.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-regression-02",
+      "split": "holdout",
+      "family": "holdout-regression",
+      "text": "Fix the large recovery workflow with reproduction coverage.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-regression-03",
+      "split": "holdout",
+      "family": "holdout-regression",
+      "text": "Execute the exact plan across the client and service.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-regression-04",
+      "split": "holdout",
+      "family": "holdout-regression",
+      "text": "Build the substantial feature with a regression test.",
+      "expected": "admit",
+      "mustAdmit": true
+    },
+    {
+      "id": "holdout-no-code-01",
+      "split": "holdout",
+      "family": "holdout-no-code",
+      "text": "Build the exact feature without making any code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-no-code-02",
+      "split": "holdout",
+      "family": "holdout-no-code",
+      "text": "Execute the approved plan with no changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-no-code-03",
+      "split": "holdout",
+      "family": "holdout-no-code",
+      "text": "Implement a large migration without making changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-no-code-04",
+      "split": "holdout",
+      "family": "holdout-no-code",
+      "text": "Refactor the cross-cutting feature without any code changes.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-research-01",
+      "split": "holdout",
+      "family": "holdout-research",
+      "text": "Investigate the migration options and write a recommendation.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-research-02",
+      "split": "holdout",
+      "family": "holdout-research",
+      "text": "Analyze the quoted request 'build the feature' without acting.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-research-03",
+      "split": "holdout",
+      "family": "holdout-research",
+      "text": "Configure the integration and update settings.",
+      "expected": "bypass",
+      "mustAdmit": false
+    },
+    {
+      "id": "holdout-research-04",
+      "split": "holdout",
+      "family": "holdout-research",
+      "text": "Run the maintenance command and report its result.",
+      "expected": "bypass",
+      "mustAdmit": false
+    }
+  ]
+}

@@ -16,9 +16,15 @@ case "$segment" in
     fi
     ;;
   admission)
-    node --experimental-strip-types .auto/score-admission.mjs --split=optimization
-    node --experimental-strip-types .auto/score-admission.mjs --split=holdout \
-      | sed 's/^METRIC /METRIC holdout_/'
+    if [ "${AR_ADMISSION_MODE:-}" = robustness ]; then
+      : "${AR_ADMISSION_SPLIT:?AR_ADMISSION_SPLIT is required for robustness mode}"
+      node --experimental-strip-types .auto/score-admission-robustness.mjs \
+        --split="$AR_ADMISSION_SPLIT"
+    else
+      node --experimental-strip-types .auto/score-admission.mjs --split=optimization
+      node --experimental-strip-types .auto/score-admission.mjs --split=holdout \
+        | sed 's/^METRIC /METRIC holdout_/'
+    fi
     ;;
   composition)
     node .auto/score-composition.mjs
