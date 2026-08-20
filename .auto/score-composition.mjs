@@ -527,6 +527,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "analytics-generation-reset-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "excludes a child result that finishes after its analytics generation is reset",
+		metric: "stale_recovery",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
