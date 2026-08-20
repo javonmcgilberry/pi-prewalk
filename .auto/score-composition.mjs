@@ -365,6 +365,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "compaction-disabled-fail-closed-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails closed when Pi automatic compaction is disabled",
+		metric: "unfinished_run",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
