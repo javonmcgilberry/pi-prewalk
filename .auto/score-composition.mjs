@@ -365,6 +365,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "configuration-no-start-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "configures an executor without starting Prewalk work",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
