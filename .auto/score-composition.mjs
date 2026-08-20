@@ -79,7 +79,8 @@ const scenarios = [
 	{
 		id: "aborted-idle-recovery-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "recovers an aborted idle agent boundary before compaction and hands off after the valid todo and edit",
+		pattern:
+			"recovers an aborted idle agent boundary before compaction and hands off after the valid todo and edit",
 		metric: "stale_recovery",
 	},
 	{
@@ -97,7 +98,8 @@ const scenarios = [
 	{
 		id: "planner-compaction-replay-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "replays the planning checkpoint after compaction interrupts the initial planner request",
+		pattern:
+			"replays the planning checkpoint after compaction interrupts the initial planner request",
 		metric: "stale_recovery",
 	},
 	{
@@ -115,7 +117,8 @@ const scenarios = [
 	{
 		id: "executor-compaction-observer-error-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "continues after the host reports an observer error for a committed executor compaction",
+		pattern:
+			"continues after the host reports an observer error for a committed executor compaction",
 		metric: "unfinished_run",
 	},
 	{
@@ -157,7 +160,8 @@ const scenarios = [
 	{
 		id: "child-proven-mutation-handoff-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "hands an opted-in child to a lower-effort same-model executor only after proven mutation",
+		pattern:
+			"hands an opted-in child to a lower-effort same-model executor only after proven mutation",
 		metric: "lifecycle_violations",
 	},
 	{
@@ -277,7 +281,8 @@ const scenarios = [
 	{
 		id: "reopened-stale-active-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "starts a reopened session on the planner and records stale active evidence as interrupted",
+		pattern:
+			"starts a reopened session on the planner and records stale active evidence as interrupted",
 		metric: "stale_recovery",
 	},
 	{
@@ -301,7 +306,8 @@ const scenarios = [
 	{
 		id: "slash-cancellation-release-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "keeps slash cancellation pre-handoff and directs an active executor route to release",
+		pattern:
+			"keeps slash cancellation pre-handoff and directs an active executor route to release",
 		metric: "duplicate_continuation",
 	},
 	{
@@ -433,7 +439,8 @@ const scenarios = [
 	{
 		id: "automatic-session-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "enables automatic admission from config for fresh sessions but not resumed sessions",
+		pattern:
+			"enables automatic admission from config for fresh sessions but not resumed sessions",
 		metric: "duplicate_admission",
 	},
 	{
@@ -445,7 +452,8 @@ const scenarios = [
 	{
 		id: "automatic-default-opt-in-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "defaults persistent automatic admission off and preserves a session opt-in on reload",
+		pattern:
+			"defaults persistent automatic admission off and preserves a session opt-in on reload",
 		metric: "duplicate_admission",
 	},
 	{
@@ -469,7 +477,8 @@ const scenarios = [
 	{
 		id: "assessment-inspection-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "allows read-only exec inspection but ignores failed mutation attempts during assessment",
+		pattern:
+			"allows read-only exec inspection but ignores failed mutation attempts during assessment",
 		metric: "duplicate_admission",
 	},
 	{
@@ -565,7 +574,8 @@ const scenarios = [
 	{
 		id: "permissive-direct-tool-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "allows a direct registered-tool execution without a host claim via permissive unknown",
+		pattern:
+			"allows a direct registered-tool execution without a host claim via permissive unknown",
 		metric: "lifecycle_violations",
 	},
 	{
