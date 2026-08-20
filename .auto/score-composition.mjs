@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-upstream-input-isolation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "leaves upstream child model, thinking, fallback, and scheduling inputs unchanged",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-parent-target-isolation-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "does not propagate an opted-in parent target to an unconfigured descendant",
