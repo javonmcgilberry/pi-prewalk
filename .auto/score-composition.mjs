@@ -359,6 +359,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "executor-preflight-pressure-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "compacts and retries when the executor preflight finds an oversized context",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
