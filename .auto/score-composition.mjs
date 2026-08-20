@@ -347,6 +347,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "threshold-resume-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "resumes unfinished executor work after Pi compacts at turn_end",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
