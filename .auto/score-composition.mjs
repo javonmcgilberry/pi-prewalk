@@ -119,6 +119,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "executor-compaction-error-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails the run once when executor compaction reports an error",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
