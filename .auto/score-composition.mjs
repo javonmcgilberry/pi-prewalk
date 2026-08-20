@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-clamped-target-diagnostic-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "reports a clamped same-model child target as equal-target",
+		metric: "unfinished_run",
+	},
+	{
 		id: "executor-reasoning-default-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "defaults a newly selected executor to low reasoning",
