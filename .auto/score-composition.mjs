@@ -53,6 +53,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "stale-settlement-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not let a stale settled handler reset a replacement run",
+		metric: "stale_recovery",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
