@@ -6,7 +6,8 @@ const scenarios = [
 	{
 		id: "live-message-reset-ownership-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "preserves live message-object ownership while session reset clears the key fallback",
+		pattern:
+			"preserves live message-object ownership while session reset clears the key fallback",
 		metric: "stale_recovery",
 	},
 	{
@@ -114,7 +115,8 @@ const scenarios = [
 	{
 		id: "analytics-disabled-routing-boundary",
 		file: "test/integration/extension.test.ts",
-		pattern: "keeps routing active and stats readable when future analytics collection is disabled",
+		pattern:
+			"keeps routing active and stats readable when future analytics collection is disabled",
 		metric: "lifecycle_violations",
 	},
 	{
