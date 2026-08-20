@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "executor-reasoning-default-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "defaults a newly selected executor to low reasoning",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-target-fail-closed-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "fails closed for equal and unavailable child targets",
