@@ -521,6 +521,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "first-known-agent-end-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "uses the first directly known agent-end message and skips earlier unknown messages",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
