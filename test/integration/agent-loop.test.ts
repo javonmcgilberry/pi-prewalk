@@ -688,6 +688,126 @@ describe("stock Pi Agent-loop integration", () => {
 		session.dispose();
 	});
 
+	it("settles an Autoresearch agent-end continuation around one manual Prewalk handoff", async () => {
+		const planner = model(PLANNER_MODEL_ID);
+		const executor = model(EXECUTOR_MODEL_ID);
+		const autoresearchContinuation =
+			"Continue the bounded Autoresearch experiment after recording the completed result.";
+		const calls: Array<{ model: string; owner: "prewalk" | "autoresearch" }> = [];
+		let prewalkPlannerCalls = 0;
+		let autoresearchResumes = 0;
+		const provider: ExtensionFactory = (pi) => {
+			pi.registerProvider("openai-codex", {
+				api: "openai-codex-responses",
+				baseUrl: "https://example.test",
+				apiKey: "integration-token",
+				oauth: {
+					name: "OpenAI Codex",
+					login: async () => ({ access: "token", refresh: "refresh", expires: 1 }),
+					refreshToken: async (credentials) => credentials,
+					getApiKey: (credentials) => credentials.access,
+				},
+				models: [planner, executor],
+				streamSimple: (selected, context) => {
+					const trailingMessage = JSON.stringify(context.messages.at(-1) ?? "");
+					if (trailingMessage.includes(autoresearchContinuation)) {
+						calls.push({ model: selected.id, owner: "autoresearch" });
+						return response(selected as Model<"openai-codex-responses">, [
+							{ type: "text", text: "Autoresearch continuation recorded." },
+						]);
+					}
+
+					calls.push({ model: selected.id, owner: "prewalk" });
+					if (selected.id === EXECUTOR_MODEL_ID) {
+						return response(executor, [{ type: "text", text: "Executor completed." }]);
+					}
+
+					prewalkPlannerCalls += 1;
+					if (prewalkPlannerCalls === 1) {
+						return response(planner, [
+							toolCall("todo-1", PREWALK_TODO_TOOL_NAME, {
+								op: "init",
+								list: [{ phase: "Implement", items: ["Make the integration mutation"] }],
+							}),
+						]);
+					}
+					return response(planner, [
+						toolCall("edit-1", "edit", {
+							path: path.join(workDir, "target.txt"),
+							oldText: "before",
+							newText: "after",
+						}),
+						toolCall("todo-done-1", PREWALK_TODO_TOOL_NAME, {
+							op: "done",
+							task: "Make the integration mutation",
+						}),
+					]);
+				},
+			});
+		};
+		const autoresearchFixture: ExtensionFactory = (pi) => {
+			let resumePending = true;
+			pi.on("agent_end", () => {
+				if (!resumePending) return;
+				resumePending = false;
+				autoresearchResumes += 1;
+				pi.sendUserMessage(autoresearchContinuation, { deliverAs: "followUp" });
+			});
+		};
+		const settings = SettingsManager.create(workDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: workDir,
+			agentDir,
+			settingsManager: settings,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			extensionFactories: [
+				{ name: "provider", factory: provider },
+				{ name: "prewalk", factory: prewalkExtension },
+				{ name: "autoresearch-fixture", factory: autoresearchFixture },
+			],
+		});
+		await loader.reload();
+		const runtime = await ModelRuntime.create({
+			authPath: path.join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const sessionManager = SessionManager.inMemory(workDir);
+		const { session } = await createAgentSession({
+			cwd: workDir,
+			agentDir,
+			modelRuntime: runtime,
+			model: planner,
+			resourceLoader: loader,
+			settingsManager: settings,
+			sessionManager,
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await session.bindExtensions({});
+
+		await session.prompt("/prewalk run");
+		await session.waitForIdle();
+		await session.prompt("Build an end-to-end feature across multiple concerns.");
+		await session.waitForIdle();
+
+		expect(autoresearchResumes).toBe(1);
+		expect(calls.filter((call) => call.owner === "autoresearch")).toHaveLength(1);
+		expect(calls.filter((call) => call.owner === "prewalk").map((call) => call.model)).toEqual([
+			PLANNER_MODEL_ID,
+			PLANNER_MODEL_ID,
+			EXECUTOR_MODEL_ID,
+		]);
+		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
+
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		const analyticsStore = new AnalyticsStore(agentDir);
+		expect(await analyticsStore.listUnfinishedJournals()).toEqual([]);
+		expect(await analyticsStore.listReceipts()).toHaveLength(1);
+		session.dispose();
+	});
+
 	it("preserves a real public subagent launch before its child provider boundary", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);

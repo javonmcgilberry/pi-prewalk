@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "agent-end-continuation-boundary",
+		file: "test/integration/agent-loop.test.ts",
+		pattern: "settles an Autoresearch agent-end continuation around one manual Prewalk handoff",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "extension-admission-boundary",
 		file: "test/integration/autoresearch-composition.test.ts",
 		pattern: "does not admit an Autoresearch-shaped extension message into automatic Prewalk",

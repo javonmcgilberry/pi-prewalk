@@ -10,7 +10,7 @@ case "$segment" in
     npm test -- --run test/orchestration/admission.test.ts
     ;;
   composition)
-    npm test -- --run test/integration/autoresearch-composition.test.ts
+    npm test -- --run test/integration/autoresearch-composition.test.ts test/integration/agent-loop.test.ts
     ;;
   *)
     echo "unknown AR_SEGMENT: $segment" >&2
