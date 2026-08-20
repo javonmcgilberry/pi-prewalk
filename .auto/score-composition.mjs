@@ -515,6 +515,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "executor-attribution-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "stops crediting planner turns to planning once the executor has taken over",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "planning-only-receipt-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "reports a planning-only run without inventing a comparison",
