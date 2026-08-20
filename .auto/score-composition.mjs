@@ -521,6 +521,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "post-receipt-finality-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "stops recording into a run once its receipt is written",
+		metric: "unfinished_run",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
