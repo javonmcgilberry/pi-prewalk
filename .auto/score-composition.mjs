@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "tui-analytics-dashboard-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "opens the interactive dashboard for a TUI stats request",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "export-existing-destination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses an existing export destination without changing its bytes",
