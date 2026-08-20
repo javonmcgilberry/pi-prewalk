@@ -371,6 +371,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "smaller-executor-watchdog-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "accepts a smaller executor and lets its watchdog protect the request",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
