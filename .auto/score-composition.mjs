@@ -329,6 +329,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "cancelled-executor-compaction-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not let a cancelled executor compaction restart the run",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "vanished-executor-reload-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "drops back to the planner when a restored run's executor has gone away",
