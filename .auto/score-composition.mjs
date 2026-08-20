@@ -203,6 +203,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "planning-failed-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores planning and failed Luna runs without adding an arm",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
