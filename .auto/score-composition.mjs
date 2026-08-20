@@ -239,6 +239,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "active-provider-drift-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "detects provider replacement before the next Agent-loop request",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
