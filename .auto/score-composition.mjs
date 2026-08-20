@@ -413,6 +413,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "assessment-tool-gate-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "blocks non-read-only tools before assessment execution while permitting inspection",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
