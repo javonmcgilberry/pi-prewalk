@@ -143,6 +143,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "child-mutation-isolation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not treat a child subagent result as the parent's first mutation",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
