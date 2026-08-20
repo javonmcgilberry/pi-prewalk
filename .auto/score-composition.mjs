@@ -257,6 +257,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "transient-failure-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a transient executor failure retryable until the next stream succeeds",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
