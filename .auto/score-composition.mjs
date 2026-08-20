@@ -455,6 +455,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "planner-abort-recovery-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "replays persisted planner reasoning after every abort without replacing the run",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
