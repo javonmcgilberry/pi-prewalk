@@ -125,6 +125,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "compaction-analytics-failure-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not reject compaction when analytics persistence fails",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
