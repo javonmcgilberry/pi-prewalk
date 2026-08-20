@@ -221,6 +221,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "disposed-provider-drift-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores provider drift reported by a disposed run",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
