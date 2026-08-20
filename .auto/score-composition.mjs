@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "active-tool-surface-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "registers Prewalk tools but exposes them only while Prewalk is active",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "wizard-fallback-chain-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "keeps a hand-written executor fallback chain through the wizard",
