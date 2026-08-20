@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "cancelled-status-model-refresh-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refreshes the retained cancelled status when Pi selects another model",
+		metric: "stale_recovery",
+	},
+	{
 		id: "tui-analytics-dashboard-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "opens the interactive dashboard for a TUI stats request",
