@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-parent-target-isolation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not propagate an opted-in parent target to an unconfigured descendant",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-unavailable-fail-closed-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "reports why a child stayed unarmed when its executor is unavailable",
