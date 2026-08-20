@@ -509,6 +509,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "active-capture-replacement-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "captures active message and both tool-claim fallbacks before replacement",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
