@@ -473,6 +473,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "duplicate-subagent-result-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "deduplicates repeated delivery of one terminal subagent result",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "automatic-source-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores extension and streaming input while automatic mode is ready",
