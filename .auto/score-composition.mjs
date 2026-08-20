@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-unavailable-fail-closed-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "reports why a child stayed unarmed when its executor is unavailable",
+		metric: "unfinished_run",
+	},
+	{
 		id: "stock-pi-child-process-boundary",
 		file: "test/integration/agent-loop.test.ts",
 		pattern: "runs an opted-in child through stock Pi and unmodified pi-subagents",
