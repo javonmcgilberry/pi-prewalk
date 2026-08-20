@@ -1,6 +1,7 @@
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
+	CONTEXT_ESTIMATE_SAFETY_MARGIN,
 	CONTEXT_RESERVE_TOKENS,
 	contextThreshold,
 	estimateRequestTokens,
@@ -15,6 +16,10 @@ describe("executor context watchdog", () => {
 	it("uses stock Pi's default reserve", () => {
 		expect(CONTEXT_RESERVE_TOKENS).toBe(16_384);
 		expect(contextThreshold(executor())).toBe(83_616);
+	});
+
+	it("keeps a small provider-serialization margin on estimates", () => {
+		expect(CONTEXT_ESTIMATE_SAFETY_MARGIN).toBe(384);
 	});
 
 	it("uses the effective Pi reserve instead of always using the stock default", () => {
@@ -57,8 +62,7 @@ describe("executor context watchdog", () => {
 			],
 		} as Context;
 
-		expect(estimateRequestTokens(context)).toBeGreaterThan(5_100);
-		expect(estimateRequestTokens(context)).toBeLessThan(6_000);
+		expect(estimateRequestTokens(context)).toBe(5_584);
 	});
 
 	it("falls back to a conservative whole-request estimate without valid usage", () => {
@@ -67,7 +71,7 @@ describe("executor context watchdog", () => {
 			messages: [{ role: "user", content: "u".repeat(400), timestamp: 1 }],
 		} as Context;
 
-		expect(estimateRequestTokens(context)).toBeGreaterThanOrEqual(200);
+		expect(estimateRequestTokens(context)).toBe(584);
 	});
 
 	it("does not trust stale usage when the current prompt or tools grew", () => {

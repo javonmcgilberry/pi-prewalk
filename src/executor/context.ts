@@ -4,6 +4,13 @@ import type { Api, AssistantMessage, Context, Message, Model, Usage } from "@ear
 export const CONTEXT_RESERVE_TOKENS = 16_384;
 
 /**
+ * Small calibration margin for provider-side request estimates. The estimate
+ * intentionally remains conservative because provider tokenization and tool
+ * serialization are not visible to this extension.
+ */
+export const CONTEXT_ESTIMATE_SAFETY_MARGIN = 384;
+
+/**
  * Return the request budget using the same reserve Pi uses for its
  * own compaction checks. Callers supply the effective reserve when the host
  * exposes it; this value remains the safe fallback for older hosts.
@@ -46,9 +53,9 @@ export function needsContextCompaction(
 export function estimateRequestTokens(context: Context): number {
 	const messages = context.messages;
 	const usageIndex = lastApplicableAssistantUsageIndex(messages);
-	if (usageIndex === null) return estimateWholeRequest(context);
+	if (usageIndex === null) return addSafetyMargin(estimateWholeRequest(context));
 	const usageMessage = messages[usageIndex];
-	if (usageMessage.role !== "assistant") return estimateWholeRequest(context);
+	if (usageMessage.role !== "assistant") return addSafetyMargin(estimateWholeRequest(context));
 	let tokens = usageTokens(usageMessage);
 	for (let index = usageIndex + 1; index < messages.length; index++) {
 		tokens += estimateMessage(messages[index]);
@@ -56,7 +63,11 @@ export function estimateRequestTokens(context: Context): number {
 	// The usage-bearing response may have been produced before the current
 	// system prompt or tool schemas changed. Keep the conservative whole-request
 	// estimate when it is larger rather than trusting stale prefix accounting.
-	return Math.max(tokens, estimateWholeRequest(context));
+	return addSafetyMargin(Math.max(tokens, estimateWholeRequest(context)));
+}
+
+function addSafetyMargin(tokens: number): number {
+	return tokens + CONTEXT_ESTIMATE_SAFETY_MARGIN;
 }
 
 function estimateWholeRequest(context: Context): number {

@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "policy": "Admit only clearly substantial implementation work; bypass research, operations, configuration, negation, quoted examples, and small isolated edits.",
+  "rows": [
+    {
+      "id": "train-01",
+      "split": "train",
+      "text": "Implement the approved migration plan for the billing API and database.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-02",
+      "split": "train",
+      "text": "Build an end-to-end feature that updates the editor, API, and analytics.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-03",
+      "split": "train",
+      "text": "Fix the production bug with a reproduction and a regression test.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-04",
+      "split": "train",
+      "text": "Refactor the component architecture across the campaign domain.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-05",
+      "split": "train",
+      "text": "Migrate authentication across the API, UI, and persistence layers.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-06",
+      "split": "train",
+      "text": "Execute the exact implementation plan for the session recovery feature.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-07",
+      "split": "train",
+      "text": "Build the substantial refactor described in the approved plan.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-08",
+      "split": "train",
+      "text": "Fix this cross-cutting regression across the runtime and dashboard.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-09",
+      "split": "train",
+      "text": "Implement the large feature spanning the worker, queue, and reporting layers.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-10",
+      "split": "train",
+      "text": "Build the end-to-end migration with a regression test and rollout notes.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-11",
+      "split": "train",
+      "text": "Fix the multiple-concerns failure in the planner and executor lifecycle.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-12",
+      "split": "train",
+      "text": "Implement the approved plan to migrate the storage and service contracts.",
+      "expected": "admit"
+    },
+    {
+      "id": "train-13",
+      "split": "train",
+      "text": "Research the migration options and write up the recommendation.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-14",
+      "split": "train",
+      "text": "Explain how the quoted request 'implement a migration' would work.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-15",
+      "split": "train",
+      "text": "Install the Figma skill.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-16",
+      "split": "train",
+      "text": "Configure the executor reasoning to medium.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-17",
+      "split": "train",
+      "text": "Run git status and report the result.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-18",
+      "split": "train",
+      "text": "Change the button label in one file.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-19",
+      "split": "train",
+      "text": "Diagnose the production regression without changing anything.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-20",
+      "split": "train",
+      "text": "Don't change anything; implement the approved migration plan.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-21",
+      "split": "train",
+      "text": "Update the settings and enable the new integration.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-22",
+      "split": "train",
+      "text": "Implement a single-file copy change.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-23",
+      "split": "train",
+      "text": "Investigate why the worker is slow.",
+      "expected": "bypass"
+    },
+    {
+      "id": "train-24",
+      "split": "train",
+      "text": "Execute the operational command after reviewing it.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-01",
+      "split": "validation",
+      "text": "Implement the exact plan across the coordinator and provider overlay.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-02",
+      "split": "validation",
+      "text": "Build a cross-cutting feature for session recovery and analytics.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-03",
+      "split": "validation",
+      "text": "Fix the issue with a reproduction and regression coverage.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-04",
+      "split": "validation",
+      "text": "Refactor the large feature across the persistence and API layers.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-05",
+      "split": "validation",
+      "text": "Implement the approved change in one file only.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-06",
+      "split": "validation",
+      "text": "Analyze and explain the proposed migration.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-07",
+      "split": "validation",
+      "text": "Run the one-off maintenance command.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-08",
+      "split": "validation",
+      "text": "Fix the typo in the README.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-09",
+      "split": "validation",
+      "text": "Implement the substantial feature described in the exact plan.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-10",
+      "split": "validation",
+      "text": "Diagnose and fix the cross-cutting issue with a regression test.",
+      "expected": "admit"
+    },
+    {
+      "id": "validation-11",
+      "split": "validation",
+      "text": "Set up the new package and update configuration.",
+      "expected": "bypass"
+    },
+    {
+      "id": "validation-12",
+      "split": "validation",
+      "text": "How does the executor handoff work?",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-01",
+      "split": "holdout",
+      "text": "Migrate the approved contract across the client, service, and tests.",
+      "expected": "admit"
+    },
+    {
+      "id": "holdout-02",
+      "split": "holdout",
+      "text": "Build the end-to-end recovery workflow with regression coverage.",
+      "expected": "admit"
+    },
+    {
+      "id": "holdout-03",
+      "split": "holdout",
+      "text": "Fix the substantial issue spanning multiple concerns.",
+      "expected": "admit"
+    },
+    {
+      "id": "holdout-04",
+      "split": "holdout",
+      "text": "Execute the approved plan for a cross-cutting feature.",
+      "expected": "admit"
+    },
+    {
+      "id": "holdout-05",
+      "split": "holdout",
+      "text": "Implement the example in the quoted text 'across the API'.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-06",
+      "split": "holdout",
+      "text": "Research and compare the available implementations.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-07",
+      "split": "holdout",
+      "text": "Configure the integration and update settings.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-08",
+      "split": "holdout",
+      "text": "Change one line in the executor.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-09",
+      "split": "holdout",
+      "text": "Implement the approved migration plan without changing anything.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-10",
+      "split": "holdout",
+      "text": "Diagnose why the test is flaky.",
+      "expected": "bypass"
+    },
+    {
+      "id": "holdout-11",
+      "split": "holdout",
+      "text": "Fix the API and UI behavior across the product.",
+      "expected": "admit"
+    },
+    {
+      "id": "holdout-12",
+      "split": "holdout",
+      "text": "Build a small isolated utility.",
+      "expected": "bypass"
+    }
+  ]
+}

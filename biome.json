@@ -5,6 +5,7 @@
       "**/*",
       "!node_modules/**/*",
       "!.pi-subagents/**/*",
+      "!.auto/context-calibration.json",
       "!!node_modules",
       "!!.pi-subagents"
     ]

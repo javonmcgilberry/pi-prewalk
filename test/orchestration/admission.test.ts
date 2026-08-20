@@ -7,11 +7,13 @@ describe("automatic Prewalk admission", () => {
 		["Build an end-to-end feature that updates the editor, API, and analytics", "admit"],
 		["Fix the production bug with reproduction and a regression test", "admit"],
 		["Diagnose and fix a cross-cutting regression with reproduction", "admit"],
+		["Fix the multiple-concerns failure in the planner and executor lifecycle", "admit"],
 		["Diagnose the production regression", "bypass"],
 		["Refactor the component architecture across the campaign domain", "admit"],
 		["Install the Figma skill", "bypass"],
 		["Explain how the quoted request 'implement a migration' would work", "bypass"],
 		["Diagnose the SSL failure without changing anything", "bypass"],
+		["Implement the approved migration plan without changing anything", "bypass"],
 		[
 			"Don't change anything. Implement the approved migration plan with the existing docs.",
 			"bypass",
