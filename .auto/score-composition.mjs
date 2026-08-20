@@ -215,6 +215,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "cancelled-provider-restore-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores the conversion provider when a live run is cancelled",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
