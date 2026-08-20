@@ -71,6 +71,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "cancelled-evaluation-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "cancels and reloads an evaluation without allowing a later decision to revive it",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
