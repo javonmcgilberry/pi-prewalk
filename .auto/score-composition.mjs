@@ -479,6 +479,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "delegation-status-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps delegation progress in explicit status instead of the compact footer",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "serial-delegation-tree-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "keeps evidence from serial delegation invocations in one task tree",
