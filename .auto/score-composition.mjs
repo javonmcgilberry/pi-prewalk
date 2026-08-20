@@ -161,6 +161,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "restricted-child-todo-gate-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "treats a restricted child slate without todo as an open gate",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
