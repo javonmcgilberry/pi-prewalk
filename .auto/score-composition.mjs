@@ -65,6 +65,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "inflight-cancellation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not reactivate Luna when an in-flight stream finishes after cancellation",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
