@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "pending-unowned-fifo-retention-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps more than 512 pending unowned agent markers in FIFO order",
+		metric: "stale_recovery",
+	},
+	{
 		id: "live-message-reset-ownership-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern:
