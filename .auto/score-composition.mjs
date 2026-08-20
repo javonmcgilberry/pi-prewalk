@@ -305,6 +305,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "hidden-guidance-scrub-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "scrubs hidden guidance after cancellation and from compaction",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
