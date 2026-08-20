@@ -503,6 +503,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "stale-tool-query-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not persist a tool result query before a later replacement-run claim",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
