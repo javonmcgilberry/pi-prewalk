@@ -533,6 +533,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "tool-id-retention-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "retains 512 tool IDs and permits rebinding only after oldest-ID eviction",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
