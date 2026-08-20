@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "tui-config-cancel-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "opens the plain-language configure menu in TUI mode without saving on exit",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-policy-invalid-command-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "rejects child command mistakes without changing the saved file",
