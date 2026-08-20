@@ -149,6 +149,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "child-local-todo-gate-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "requires an opted-in child's local todo before handoff and restores its tool slate",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
