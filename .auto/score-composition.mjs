@@ -377,6 +377,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "active-turn-admission-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refuses to arm manual Prewalk during an active agent turn",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
