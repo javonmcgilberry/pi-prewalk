@@ -335,6 +335,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "no-executor-fail-closed-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "leaves Prewalk unarmed with a notice when no executor candidate resolves",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
