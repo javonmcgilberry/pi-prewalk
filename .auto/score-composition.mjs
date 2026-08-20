@@ -461,6 +461,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "automatic-source-ownership-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores extension and streaming input while automatic mode is ready",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "shutdown-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "collects planner and later executor turns until shutdown, then reports the receipt",
