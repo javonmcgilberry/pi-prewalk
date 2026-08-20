@@ -329,6 +329,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "vanished-executor-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "drops back to the planner when a restored run's executor has gone away",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
