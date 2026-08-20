@@ -251,6 +251,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "settled-failure-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a settled executor failure visible and allows a new run",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
