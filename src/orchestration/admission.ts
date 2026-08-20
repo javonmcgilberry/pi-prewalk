@@ -2,6 +2,7 @@ export type AutomaticAdmission = "admit" | "bypass";
 
 const BYPASS_PATTERNS = [
 	/\b(do not|don't|without)\s+(chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|implement(?:ing)?|writ(?:e|ing))\b/i,
+	/\b(do not|don't|without)\s+(?:(?:make|making)\s+)?(?:any\s+)?(?:code\s+)?chang(?:e|es|ing)\b/i,
 	/\b(install|configure|configuration|setup|set up|upgrade|update settings)\b/i,
 	/\b(research|explain|investigate|analyze|analysis|why|how does)\b/i,
 	/\bdiagnos(?:e|is)\b(?!.*\b(fix|implement|build)\b)/i,
