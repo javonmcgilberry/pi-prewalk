@@ -245,6 +245,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "delegated-failure-restore-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores planner routing after a delegated Luna failure",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
