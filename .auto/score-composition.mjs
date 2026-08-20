@@ -167,6 +167,12 @@ const scenarios = [
 		metric: "lifecycle_violations",
 	},
 	{
+		id: "unconfigured-child-slate-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not change an unconfigured child's supplied tool slate",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
