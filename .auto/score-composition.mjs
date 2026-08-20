@@ -269,6 +269,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "manual-release-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "releases an active executor route back to the selected planner without re-arming",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
