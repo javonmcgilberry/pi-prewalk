@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "live-message-reset-ownership-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "preserves live message-object ownership while session reset clears the key fallback",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancelled-status-model-refresh-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refreshes the retained cancelled status when Pi selects another model",
