@@ -16,7 +16,7 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
-		id: "extension-next-turn-boundary",
+		id: "extension-steered-boundary",
 		file: "test/integration/autoresearch-composition.test.ts",
 		pattern: "keeps a steered extension continuation outside automatic admission",
 		metric: "duplicate_continuation",

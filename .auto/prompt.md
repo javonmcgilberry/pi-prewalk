@@ -70,6 +70,10 @@ Set `AR_SEGMENT` to `context`, `admission`, or `composition`, then run:
 ./.auto/measure.sh
 ```
 
+For the independent admission robustness corpus, also set
+`AR_ADMISSION_MODE=robustness` and choose `AR_ADMISSION_SPLIT=train`,
+`validation`, or `holdout`.
+
 The context scorer needs Node's built-in TypeScript stripping:
 `node --experimental-strip-types .auto/score-context.mjs`.
 
