@@ -527,6 +527,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "unowned-ordering-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "preserves explicit-unowned capture and direct-unowned agent-end ordering",
+		metric: "stale_recovery",
+	},
+	{
 		id: "cancellation-settlement-race-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "ignores settlement that races cancellation finalization",
