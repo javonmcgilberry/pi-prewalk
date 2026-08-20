@@ -209,6 +209,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "cancelled-run-restore-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "restores a cancelled run without validating models or reinstalling the overlay",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
