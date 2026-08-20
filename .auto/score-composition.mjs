@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "wizard-clamped-same-model-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "refuses to configure a same-model effort that clamps to the running level",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "wizard-same-model-noop-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses to configure the running model at its own reasoning level",
