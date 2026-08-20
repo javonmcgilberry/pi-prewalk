@@ -371,6 +371,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "unknown-mutation-trigger-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "ignores unknown mutation-like results without consuming the later valid trigger",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
