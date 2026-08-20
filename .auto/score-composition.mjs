@@ -275,6 +275,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "reopened-stale-active-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "starts a reopened session on the planner and records stale active evidence as interrupted",
+		metric: "stale_recovery",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
