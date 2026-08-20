@@ -587,6 +587,12 @@ const scenarios = [
 		metric: "stale_recovery",
 	},
 	{
+		id: "analytics-cleanup-retry-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "reports incomplete reset cleanup and retries it without another reset",
+		metric: "stale_recovery",
+	},
+	{
 		id: "completed-finalization-recovery-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "keeps recovery possible when completed analytics finalization fails",
