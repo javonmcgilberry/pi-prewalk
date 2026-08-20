@@ -389,6 +389,12 @@ const scenarios = [
 		metric: "duplicate_admission",
 	},
 	{
+		id: "automatic-cancellation-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "keeps a session cancellation disabled across reload even when the default is on",
+		metric: "duplicate_admission",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
