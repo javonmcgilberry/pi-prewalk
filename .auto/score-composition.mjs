@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "child-policy-invalid-command-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "rejects child command mistakes without changing the saved file",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "child-policy-command-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "supports plain-language child on, off, and custom-target commands",
