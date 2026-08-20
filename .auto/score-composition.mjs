@@ -107,6 +107,12 @@ const scenarios = [
 		metric: "unfinished_run",
 	},
 	{
+		id: "automatic-compaction-disabled-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "fails closed before planner transport when automatic compaction is disabled",
+		metric: "unfinished_run",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
