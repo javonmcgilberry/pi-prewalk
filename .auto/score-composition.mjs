@@ -191,6 +191,12 @@ const scenarios = [
 		metric: "duplicate_continuation",
 	},
 	{
+		id: "session-ended-reload-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "does not restore a successfully session-ended run on reload",
+		metric: "duplicate_continuation",
+	},
+	{
 		id: "termination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "honors explicit cancellation instead of reviving an aborted planner",
