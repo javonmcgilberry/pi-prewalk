@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "configure-no-ui-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "explains why configure cannot run without an interactive UI",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "tui-config-cancel-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "opens the plain-language configure menu in TUI mode without saving on exit",
