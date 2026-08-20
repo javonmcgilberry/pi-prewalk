@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "analytics-reset-confirmation-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "requires reset confirmation and excludes an active run only after confirmation",
+		metric: "unfinished_run",
+	},
+	{
 		id: "wizard-clamped-same-model-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "refuses to configure a same-model effort that clamps to the running level",
