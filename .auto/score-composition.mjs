@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-exact-discard-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "discards all matching exact pending and compaction markers by ID and epoch",
+		metric: "stale_recovery",
+	},
+	{
 		id: "active-route-reasoning-session-override-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "uses Shift\\+Tab for the active Luna route without changing the saved baseline",
