@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "active-route-reasoning-session-override-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "uses Shift\\+Tab for the active Luna route without changing the saved baseline",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "planner-side-shift-tab-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "leaves Shift\\+Tab to Pi while Sol is active and refreshes its status event",
