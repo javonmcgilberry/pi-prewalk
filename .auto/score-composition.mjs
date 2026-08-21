@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-stale-settlement-active-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "does not clear replacement active ownership when stale settlement wins",
+		metric: "stale_recovery",
+	},
+	{
 		id: "host-correlation-retained-facts-boundary",
 		file: "test/host-event-correlation.test.ts",
 		pattern: "leaves message, tool, agent-end, settlement, and active facts unchanged",
