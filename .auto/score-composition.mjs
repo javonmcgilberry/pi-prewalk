@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "planner-side-shift-tab-boundary",
+		file: "test/integration/extension.test.ts",
+		pattern: "leaves Shift\\+Tab to Pi while Sol is active and refreshes its status event",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "remote-tool-registration-precedence-boundary",
 		file: "test/integration/benchmark-agent-loop.test.ts",
 		pattern: "uses the first registered remote tool and never calls conversion's host duplicate",
