@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "remote-tool-registration-precedence-boundary",
+		file: "test/integration/benchmark-agent-loop.test.ts",
+		pattern: "uses the first registered remote tool and never calls conversion's host duplicate",
+		metric: "lifecycle_violations",
+	},
+	{
 		id: "model-picker-pagination-boundary",
 		file: "test/integration/extension.test.ts",
 		pattern: "paginates long model lists instead of filling the terminal",
