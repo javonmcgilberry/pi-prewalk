@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-retained-facts-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "leaves message, tool, agent-end, settlement, and active facts unchanged",
+		metric: "stale_recovery",
+	},
+	{
 		id: "host-correlation-exact-discard-boundary",
 		file: "test/host-event-correlation.test.ts",
 		pattern: "discards all matching exact pending and compaction markers by ID and epoch",
