@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-active-settlement-fallback-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "uses active ownership for agent-settled before falling back to current",
+		metric: "stale_recovery",
+	},
+	{
 		id: "host-correlation-pending-fallback-boundary",
 		file: "test/host-event-correlation.test.ts",
 		pattern: "moves pending ownership through agent-end and settlement before current fallback",
