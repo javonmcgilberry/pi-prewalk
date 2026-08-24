@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-pending-fallback-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "moves pending ownership through agent-end and settlement before current fallback",
+		metric: "stale_recovery",
+	},
+	{
 		id: "host-correlation-decision-kind-boundary",
 		file: "test/host-event-correlation.test.ts",
 		pattern: "enforces the decision-kind pairs for all ten observation variants",
