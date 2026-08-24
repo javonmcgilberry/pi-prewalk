@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const scenarios = [
 	{
+		id: "host-correlation-decision-kind-boundary",
+		file: "test/host-event-correlation.test.ts",
+		pattern: "enforces the decision-kind pairs for all ten observation variants",
+		metric: "stale_recovery",
+	},
+	{
 		id: "host-correlation-stale-settlement-active-boundary",
 		file: "test/host-event-correlation.test.ts",
 		pattern: "does not clear replacement active ownership when stale settlement wins",
