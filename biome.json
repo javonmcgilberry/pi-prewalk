@@ -6,8 +6,10 @@
       "!node_modules/**/*",
       "!.pi-subagents/**/*",
       "!.auto/context-calibration.json",
+      "!tools/oxlint/anti-slop/**/*",
       "!!node_modules",
-      "!!.pi-subagents"
+      "!!.pi-subagents",
+      "!!tools/oxlint/anti-slop"
     ]
   },
   "formatter": {

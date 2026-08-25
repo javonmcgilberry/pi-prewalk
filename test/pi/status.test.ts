@@ -43,43 +43,57 @@ function run(phase: RunPhase): PrewalkRun {
 }
 
 describe("Prewalk status", () => {
-	it("keeps the last task outcome separate from the lifecycle state", () => {
+	it("separates auto readiness from the last task outcome", () => {
 		expect(
 			compactStatus(undefined, selected(), "low", undefined, {
+				mode: "auto-ready",
 				lastOutcome: "bypassed",
 			}),
-		).toBe("prewalk: off · last bypassed");
+		).toBe("prewalk: Auto ready · last bypassed");
 		expect(
 			compactStatus(undefined, selected(), "low", undefined, {
+				mode: "manual",
 				lastOutcome: "completed",
 			}),
-		).toBe("prewalk: off · last completed");
+		).toBe("prewalk: Manual · last completed");
 	});
 	it.each([
-		["armed", "prewalk: armed · 5.6 Sol → Luna"],
-		["planning", "prewalk: planning · 5.6 Sol → Luna"],
-		["ready", "prewalk: ready · 5.6 Sol → Luna · waiting for first code change"],
-		["handoff-pending", "prewalk: switching to Luna"],
-		["active", "prewalk: executor · Luna"],
-		["completed", "prewalk: executor · Luna"],
-		["cancelled", "prewalk: cancelled"],
-		["failed", "prewalk: failed"],
+		[
+			"armed",
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		],
+		[
+			"planning",
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		],
+		[
+			"ready",
+			"prewalk: Ready · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning) · waiting for the first code change",
+		],
+		[
+			"handoff-pending",
+			"prewalk: Switching after this turn · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		],
+		["active", "prewalk: Executing · Executor: 5.6 Luna (low reasoning)"],
+		["completed", "prewalk: Executing · Executor: 5.6 Luna (low reasoning)"],
+		["cancelled", "prewalk: Cancelled · Planner: 5.6 Sol (low reasoning)"],
+		["failed", "prewalk: Failed · Planner: 5.6 Sol (low reasoning)"],
 	] satisfies Array<[RunPhase, string]>)("renders %s", (phase, expected) => {
 		expect(compactStatus(run(phase), selected(), "low")).toBe(expected);
 	});
 
 	it("shows the selected Pi model after cross-model cancellation", () => {
 		expect(compactStatus(run("cancelled"), selected("gpt-5.4"))).toBe(
-			"prewalk: cancelled · selected openai-codex/gpt-5.4",
+			"prewalk: Cancelled · selected openai-codex/gpt-5.4",
 		);
 	});
 
-	it("keeps failure details concise in the compact footer", () => {
+	it("keeps Luna marked on a delegated failure", () => {
 		const failed = run("failed");
 		failed.effectiveRoute = "executor";
 		failed.reasonCode = "executor-stream-failed";
 		expect(compactStatus(failed, selected(), "low")).toBe(
-			"prewalk: failed · executor stream failed",
+			"prewalk: Failed · Executor: 5.6 Luna (low reasoning) · executor stream failed",
 		);
 		expect(detailedStatus(failed, selected(), "low")).toContain("reason=executor-stream-failed");
 	});
@@ -88,7 +102,7 @@ describe("Prewalk status", () => {
 		const failed = run("failed");
 		failed.reasonCode = "configuration-invalid";
 		expect(compactStatus(failed, selected(), "low")).toBe(
-			"prewalk: failed · configuration invalid",
+			"prewalk: Failed · Planner: 5.6 Sol (low reasoning) · configuration invalid",
 		);
 	});
 
@@ -98,7 +112,9 @@ describe("Prewalk status", () => {
 				agent: "worker",
 				state: "running",
 			}),
-		).toBe("prewalk: ready · 5.6 Sol → Luna · waiting for first code change");
+		).toBe(
+			"prewalk: Ready · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning) · waiting for the first code change",
+		);
 
 		const failed = run("failed");
 		failed.reasonCode = "configuration-invalid";
@@ -107,6 +123,6 @@ describe("Prewalk status", () => {
 				agent: "worker",
 				state: "running",
 			}),
-		).toContain("failed · configuration invalid");
+		).toBe("prewalk: Failed · Planner: 5.6 Sol (low reasoning) · configuration invalid");
 	});
 });

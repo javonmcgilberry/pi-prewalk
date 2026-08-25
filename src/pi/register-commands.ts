@@ -20,7 +20,7 @@ import { configPath, readPrewalkConfig, writePrewalkConfig } from "../config/pre
 import { isReasoningLevel, type PrewalkConfig } from "../orchestration/coordinator.js";
 import type { PrewalkApplication } from "../orchestration/prewalk-application.js";
 import type { TurnGate } from "../turn/turn-gate.js";
-import type { DelegationStatus } from "../ui/status.js";
+import type { DelegationStatus, SessionStatus } from "../ui/status.js";
 import { detailedStatus } from "../ui/status.js";
 
 const PREWALK_COMMANDS = [
@@ -404,6 +404,9 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 				return;
 			}
 			if (command === "status") {
+				const lastOutcome = deps.lastOutcome();
+				const sessionStatus: SessionStatus = { mode: "manual" };
+				if (lastOutcome) sessionStatus.lastOutcome = lastOutcome;
 				const child = deps.childDiagnostic();
 				if (child && !deps.application.run) {
 					ctx.ui.notify(`Child Prewalk: ${child}.`, "info");
@@ -415,7 +418,7 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 						ctx.model,
 						ctx.thinkingLevel,
 						deps.delegation(),
-						deps.lastOutcome() ? { lastOutcome: deps.lastOutcome() } : undefined,
+						sessionStatus,
 					),
 					"info",
 				);

@@ -82,6 +82,13 @@ pi install .
 
 If automatic mode is enabled, a fresh top-level session starts with one Prewalk run already armed. It stays armed through ordinary prompts, research, questions, and extension-delivered follow-ups; prompt wording does not decide whether it starts. After handoff, release, cancellation, or completion, it does not silently re-arm. Use `/prewalk auto` for another explicit run and `/prewalk status` whenever you are unsure which model is handling the conversation.
 
+The footer names both roles and their reasoning levels directly. With the
+default route, `Planning` and `Ready` show `Planner: 5.6 Sol (low reasoning) →
+Executor: 5.6 Luna (low reasoning)`. `Switching after this turn` means the
+handoff is committed, and `Executing` names the executor. `Cancelled` and
+`Failed` identify the selected or responsible model. Internal lifecycle names
+such as `armed` appear only in detailed diagnostics.
+
 ## Local usage estimates
 
 A local snapshot from **2026-08-13** contains 112 receipts: 92 finished runs and 40 with enough data for a comparison. Those 40 runs cost **$197.89** according to the providers. The ledger estimates **$831.06** if the planner had continued with the same observed token mix, a difference of **$647.26**.
@@ -209,6 +216,8 @@ Use `/prewalk status` to see why a run failed. To start over, run `/prewalk canc
 ## Development and paid paths
 
 Routine checks do not make provider requests:
+
+`npm run lint` runs Biome first, then the repository-local anti-slop Oxlint rules. While the existing repository-wide baseline is being cleaned up, run `npx oxlint <changed files>`, record unrelated findings already present in a touched file, and fix every new finding from your change. Do not disable rules or add suppressions to make a check pass.
 
 ```sh
 npm run lint

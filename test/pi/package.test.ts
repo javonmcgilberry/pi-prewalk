@@ -119,10 +119,12 @@ describe("shipped package contract", () => {
 			"@earendil-works/pi-coding-agent": "0.84.3",
 			"@earendil-works/pi-tui": "0.84.3",
 			"@howaboua/pi-codex-conversion": "3.0.10",
+			"@oxlint/plugins": "1.80.0",
+			oxlint: "1.80.0",
 			typebox: "1.3.8",
 		});
 		expect(pkg.scripts).toMatchObject({
-			lint: "biome check .",
+			lint: "biome check . && oxlint .",
 			"smoke:rpc": "node scripts/smoke-rpc.mjs",
 			"canary:provider": "node scripts/canary-provider.mjs",
 		});

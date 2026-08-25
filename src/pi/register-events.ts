@@ -54,7 +54,7 @@ import { latestAuditRecord, latestPrewalkToolSlate, SessionRecovery } from "../s
 import { hasRecognizedMutationPath, RECOGNIZED_MUTATION_TOOL_NAMES } from "../turn/mutation.js";
 import { PREWALK_TODO_TOOL_NAME } from "../turn/todo.js";
 import { TurnGate } from "../turn/turn-gate.js";
-import { compactStatus, type DelegationStatus } from "../ui/status.js";
+import { compactStatus, type DelegationStatus, type SessionStatus } from "../ui/status.js";
 import { registerPrewalkCommand } from "./register-commands.js";
 import { registerPrewalkTools } from "./register-tools.js";
 
@@ -435,6 +435,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		findModel: (provider: string, model: string) => ctx.modelRegistry.find(provider, model),
 	});
 	const updateStatus = (ctx: ExtensionContext): void => {
+		const sessionStatus: SessionStatus = { mode: "manual" };
+		if (lastOutcome) sessionStatus.lastOutcome = lastOutcome;
 		const nextStatus =
 			childDiagnostic && !application.run
 				? `prewalk: child ${childDiagnostic}`
@@ -443,7 +445,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 						ctx.model,
 						ctx.thinkingLevel,
 						delegation,
-						lastOutcome ? { lastOutcome } : undefined,
+						sessionStatus,
 					);
 		if (nextStatus === lastStatus) return;
 		ctx.ui.setStatus(STATUS_KEY, nextStatus);

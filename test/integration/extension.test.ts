@@ -824,7 +824,9 @@ describe("Prewalk extension harness", () => {
 			await harness.emit("session_start", { type: "session_start", reason });
 
 			expect(harness.entries.at(-1)?.data).toMatchObject({ event: "armed", mode: "automatic" });
-			expect(harness.statuses.at(-1)).toBe("prewalk: armed · 5.6 Sol → Luna");
+			expect(harness.statuses.at(-1)).toBe(
+				"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+			);
 			expect(harness.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
 			expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		}
@@ -836,7 +838,9 @@ describe("Prewalk extension harness", () => {
 		expect(resumed.providerConfig()?.streamSimple).toBe(resumed.baseStream);
 		await resumed.commands.get("prewalk")?.("auto", resumed.context);
 		expect(resumed.entries.at(-1)?.data).toMatchObject({ event: "armed", mode: "automatic" });
-		expect(resumed.statuses.at(-1)).toBe("prewalk: armed · 5.6 Sol → Luna");
+		expect(resumed.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 	});
 
 	it("arms and cancels an explicit automatic run", async () => {
@@ -920,7 +924,7 @@ describe("Prewalk extension harness", () => {
 
 		const messageCount = harness.messages.length;
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
-		expect(harness.statuses.at(-1)).toBe("prewalk: off · last completed");
+		expect(harness.statuses.at(-1)).toBe("prewalk: Manual · last completed");
 		await harness.emit("input", {
 			type: "input",
 			text: "Continue the ticket without an explicit Prewalk command",
@@ -1532,7 +1536,7 @@ describe("Prewalk extension harness", () => {
 			phase: "handoff-pending",
 			todoActive: true,
 		});
-		expect(harness.statuses.at(-1)).toContain("switching to Luna");
+		expect(harness.statuses.at(-1)).toContain("Switching after this turn");
 	});
 
 	it("keeps the planner through Markdown-only edits before handing off for code", async () => {
@@ -1949,7 +1953,7 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
 		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
-		expect(restored.statuses.at(-1)).toBeUndefined();
+		expect(restored.statuses.at(-1)).toBe("prewalk: Manual");
 		expect(restored.entries).toEqual([]);
 	});
 
@@ -1966,7 +1970,7 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
 		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
-		expect(restored.statuses.at(-1)).toBeUndefined();
+		expect(restored.statuses.at(-1)).toBe("prewalk: Manual");
 		expect(restored.entries).toEqual([]);
 	});
 
@@ -2231,7 +2235,7 @@ describe("Prewalk extension harness", () => {
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		expect(harness.statuses.at(-1)).toContain("planning · 5.6 Sol");
+		expect(harness.statuses.at(-1)).toContain("Planner: 5.6 Sol");
 		await harness.commands.get("prewalk")?.("stats", harness.context);
 		expect(harness.notifications.at(-1)).toContain("All time");
 	});
@@ -2457,7 +2461,9 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.delegated).toEqual([]);
-		expect(harness.statuses.at(-1)).toBe("prewalk: planning · 5.6 Sol → Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 		expect(harness.messages.at(-1)?.content).toContain("the prewalk_todo tool");
@@ -2498,7 +2504,9 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
-		expect(harness.statuses.at(-1)).toBe("prewalk: switching to Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Switching after this turn · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 
 		const runId = (harness.entries[0]?.data as { runId: string }).runId;
 		const [filtered] = await harness.emit("context", {
@@ -2586,7 +2594,9 @@ describe("Prewalk extension harness", () => {
 		expect(harness.delegated).toEqual([harness.executor]);
 		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
 		expect(harness.context.model).toBe(harness.executor);
-		expect(harness.statuses.at(-1)).toBe("prewalk: executor · Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Executing · Executor: 5.6 Luna (low reasoning)",
+		);
 	});
 
 	it("preserves the ordered replayable trajectory at the executor boundary", async () => {
@@ -2748,7 +2758,7 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 		expect(harness.messages.at(-1)?.customType).not.toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
-		expect(harness.statuses.at(-1)).not.toContain("switching after this turn");
+		expect(harness.statuses.at(-1)).not.toContain("Switching after this turn");
 
 		await harness.emit("tool_result", {
 			type: "tool_result",
@@ -2788,7 +2798,9 @@ describe("Prewalk extension harness", () => {
 				reasoning: "high",
 			},
 		});
-		expect(harness.statuses.at(-1)).toBe("prewalk: planning · gpt-5.4 → Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: gpt-5.4 (high reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 	});
 
 	it("leaves Prewalk unarmed with a notice when no executor candidate resolves", async () => {
@@ -3271,7 +3283,9 @@ describe("Prewalk extension harness", () => {
 		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
 
 		expect(harness.terminalInput("\u001b[Z")).toEqual({ consume: true });
-		expect(harness.statuses.at(-1)).toBe("prewalk: executor · Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Executing · Executor: 5.6 Luna (medium reasoning)",
+		);
 		expect(harness.notifications.at(-1)).toBe("Luna reasoning: medium");
 
 		await harness.emit("agent_start", { type: "agent_start" });
@@ -3297,7 +3311,9 @@ describe("Prewalk extension harness", () => {
 			level: "medium",
 			previousLevel: "low",
 		});
-		expect(harness.statuses.at(-1)).toBe("prewalk: planning · 5.6 Sol → Luna");
+		expect(harness.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (medium reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 	});
 
 	it("does not reactivate Luna when an in-flight stream finishes after cancellation", async () => {
@@ -3320,7 +3336,7 @@ describe("Prewalk extension harness", () => {
 		delayed.end();
 		const result = await pending;
 
-		expect(harness.statuses.at(-1)).toBe("prewalk: cancelled");
+		expect(harness.statuses.at(-1)).toBe("prewalk: Cancelled · Planner: 5.6 Sol (low reasoning)");
 		expect(result?.stopReason).toBe("aborted");
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "cancelled",
@@ -3400,7 +3416,9 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
 		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
-		expect(restored.statuses.at(-1)).toBe("prewalk: planning · 5.6 Sol → Luna");
+		expect(restored.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 		expect(restored.entries).toEqual([]);
 	});
 
@@ -4299,7 +4317,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(failed?.stopReason).toBe("error");
 		expect(failed?.errorMessage).toBe("provider failure");
-		expect(harness.statuses.at(-1)).toBe("prewalk: off · last failed");
+		expect(harness.statuses.at(-1)).toBe("prewalk: Manual · last failed");
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
 			effectiveRoute: "executor",
@@ -4359,7 +4377,7 @@ describe("Prewalk extension harness", () => {
 			?.streamSimple?.(harness.planner, { messages: [] })
 			.result();
 		expect(second?.stopReason).toBe("stop");
-		expect(harness.statuses.at(-1)).not.toContain("failed: executor stream failed");
+		expect(harness.statuses.at(-1)).not.toContain("executor stream failed");
 	});
 
 	it("installs from Pi's built-in provider stream without the conversion extension", async () => {
@@ -4576,7 +4594,9 @@ describe("Prewalk extension harness", () => {
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
 
 		expect(restored.delegated).toEqual([]);
-		expect(restored.statuses.at(-1)).toBe("prewalk: executor · Luna");
+		expect(restored.statuses.at(-1)).toBe(
+			"prewalk: Executing · Executor: 5.6 Luna (low reasoning)",
+		);
 		await restored.emit("agent_start", { type: "agent_start" });
 		await restored.providerConfig()?.streamSimple?.(restored.planner, { messages: [] }).result();
 		expect(restored.delegated).toEqual([restored.executor]);
@@ -4601,7 +4621,9 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(failed.pi);
 		await failed.emit("session_start", { type: "session_start", reason: "startup" });
 		await failed.commands.get("prewalk")?.("run", failed.context);
-		expect(failed.statuses.at(-1)).toBe("prewalk: failed · configuration invalid");
+		expect(failed.statuses.at(-1)).toBe(
+			"prewalk: Failed · Planner: 5.6 Sol (low reasoning) · configuration invalid",
+		);
 
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
@@ -4614,7 +4636,9 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
 
-		expect(restored.statuses.at(-1)).toBe("prewalk: armed · 5.6 Sol → Luna");
+		expect(restored.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 		expect(restored.delegated).toEqual([]);
 		expect(restored.entries.at(-1)?.data).toMatchObject({
 			event: "armed",
@@ -4641,7 +4665,9 @@ describe("Prewalk extension harness", () => {
 			type: "session_start",
 			reason: "reload",
 		});
-		expect(restoredPlanning.statuses.at(-1)).toBe("prewalk: planning · 5.6 Sol → Luna");
+		expect(restoredPlanning.statuses.at(-1)).toBe(
+			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
+		);
 		expect(restoredPlanning.entries).toEqual([]);
 		expect(restoredPlanning.delegated).toEqual([]);
 
@@ -4660,7 +4686,9 @@ describe("Prewalk extension harness", () => {
 			type: "session_start",
 			reason: "reload",
 		});
-		expect(restoredFailure.statuses.at(-1)).toBe("prewalk: failed · executor stream failed");
+		expect(restoredFailure.statuses.at(-1)).toBe(
+			"prewalk: Failed · Executor: 5.6 Luna (low reasoning) · executor stream failed",
+		);
 		await restoredFailure.emit("agent_start", { type: "agent_start" });
 		await restoredFailure
 			.providerConfig()
@@ -4685,7 +4713,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
 		expect(restored.statuses.at(-1)).toBe(
-			"prewalk: cancelled · selected openai-codex/gpt-5.6-luna",
+			"prewalk: Cancelled · selected openai-codex/gpt-5.6-luna",
 		);
 		expect(restored.entries).toEqual([]);
 	});
@@ -4771,7 +4799,7 @@ describe("Prewalk extension harness", () => {
 		});
 
 		expect(harness.statuses.at(-1)).toBe(
-			"prewalk: cancelled · selected openai-codex/gpt-5.6-luna",
+			"prewalk: Cancelled · selected openai-codex/gpt-5.6-luna",
 		);
 	});
 
@@ -4805,7 +4833,7 @@ describe("Prewalk extension harness", () => {
 			source: "user",
 			model: explicitSelection.executor,
 		});
-		expect(explicitSelection.statuses.at(-1)).toBeUndefined();
+		expect(explicitSelection.statuses.at(-1)).toBe("prewalk: Manual");
 		expect(explicitSelection.entries.at(-1)?.data).toMatchObject({
 			event: "cancelled",
 			effectiveRoute: "selected",
@@ -4825,7 +4853,7 @@ describe("Prewalk extension harness", () => {
 		});
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
-		expect(harness.statuses.at(-1)).toBeUndefined();
+		expect(harness.statuses.at(-1)).toBe("prewalk: Manual");
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "cancelled",
 			effectiveRoute: "selected",

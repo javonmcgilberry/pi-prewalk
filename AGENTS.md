@@ -64,6 +64,12 @@ its run-scoped route lease remain the runtime ownership boundary.
 Write the characterization before changing behavior. Run the focused suites
 first:
 
+Run Biome and Oxlint on the JavaScript and TypeScript files you change. The
+repository-wide anti-slop baseline is being cleaned up incrementally, so record
+unrelated findings already present in a touched file and fix every new finding
+from your change. Fix the code instead of disabling a rule or adding a
+suppression.
+
 ```sh
 npm test -- test/host-event-correlation.test.ts test/integration/extension.test.ts
 npm run typecheck
