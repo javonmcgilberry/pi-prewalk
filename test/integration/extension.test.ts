@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
+	type Context,
 	createAssistantMessageEventStream,
 	type Model,
 } from "@earendil-works/pi-ai";
@@ -16,6 +17,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../../extensions/prewalk.js";
 import { AnalyticsStore } from "../../src/analytics/store.js";
+import { estimateRequestTokens } from "../../src/executor/context.js";
 import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_HANDOFF_CONFIG,
@@ -182,7 +184,11 @@ function createHarness(
 			const contextMessages =
 				(contextResults.at(-1) as { messages?: unknown[] } | undefined)?.messages ??
 				streamContext.messages;
-			const estimatedTokens = Math.ceil(JSON.stringify(contextMessages).length / 4) + 384;
+			const estimatedTokens = estimateRequestTokens({
+				...streamContext,
+				// SAFETY: The harness context handler returns Pi's provider message array.
+				messages: contextMessages as Context["messages"],
+			});
 			if (estimatedTokens > Math.max(0, effectiveSelected.contextWindow - 16_384)) {
 				const pressure = {
 					...assistant(effectiveSelected as Model<"openai-codex-responses">),
@@ -5349,6 +5355,93 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 		expect(harness.messages).toHaveLength(beforeMessages);
 		expect(harness.messageOptions).toHaveLength(beforeOptions);
+	});
+
+	it("does not count Code Mode trace details as executor request context", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		const delegatedBeforeTrace = harness.delegated.length;
+		await harness.emit("agent_start", { type: "agent_start" });
+		const codeModeTraceContext = {
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "code-mode-1",
+					toolName: "exec",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: 2,
+					details: { traces: "x".repeat(900_000) },
+				},
+			],
+		} satisfies Context;
+		const response = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, codeModeTraceContext)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: response,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(response?.stopReason).toBe("stop");
+		expect(harness.delegated).toHaveLength(delegatedBeforeTrace + 1);
+		expect(harness.compactionCalls).toEqual([]);
+		expect(harness.notifications.at(-1)).not.toBe("Prewalk failed: executor-compaction-failed.");
+	});
+
+	it("allows a later executor pressure cycle after a successful active retry", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await reachHandoff(harness);
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+
+		const oversized = {
+			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
+		} satisfies Context;
+		const firstPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 2,
+			message: firstPressure,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.compactionCalls).toHaveLength(1);
+		harness.completeCompaction();
+
+		await harness.emit("agent_start", { type: "agent_start" });
+		const successfulRetry = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, { messages: [] })
+			.result();
+		expect(successfulRetry?.stopReason).toBe("stop");
+
+		const secondPressure = await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, oversized)
+			.result();
+		await harness.emit("turn_end", {
+			type: "turn_end",
+			turnIndex: 3,
+			message: secondPressure,
+			toolResults: [],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.compactionCalls).toHaveLength(2);
+		expect(harness.notifications).not.toContain("Prewalk failed: executor-compaction-failed.");
 	});
 
 	it("compacts and retries when the executor preflight finds an oversized context", async () => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { type AgentMessage, convertToLlm } from "@earendil-works/pi-agent-core";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -12,6 +12,7 @@ import { matchesKey } from "@earendil-works/pi-tui";
 import { DEFAULT_ANALYTICS_CONFIG, type RunOutcome } from "../analytics/index.js";
 import { PrewalkAnalytics } from "../analytics/run-accounting.js";
 import { configurePrewalk, readPrewalkConfig } from "../config/prewalk-config.js";
+import { estimateRequestTokens } from "../executor/context.js";
 import {
 	type ContextCompactionPolicy,
 	ContextPressureController,
@@ -250,9 +251,13 @@ function isEphemeralPrewalkPrompt(message: AgentMessage): boolean {
 	);
 }
 
-function estimateContextEventTokens(messages: readonly unknown[]): number {
+function estimateContextEventTokens(messages: readonly AgentMessage[]): number {
 	try {
-		return Math.ceil(JSON.stringify(messages).length / 4) + 384;
+		return estimateRequestTokens({
+			systemPrompt: "",
+			messages: convertToLlm([...messages]),
+			tools: [],
+		});
 	} catch {
 		return Number.POSITIVE_INFINITY;
 	}
@@ -663,6 +668,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				onExecutorStreamFailed: async () => {
 					if (!sameRunIdentity(runIdentity, application.run)) return;
 					contextPressure.onExecutorStreamFailed(runIdentity);
+					executorStreamStarted = undefined;
 				},
 				onExecutorContextPressure: (retry) => {
 					if (!sameRunIdentity(runIdentity, application.run)) return;
@@ -1328,6 +1334,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			lastAssistant.stopReason === "error"
 		) {
 			contextPressure.onExecutorStreamFailed(identity);
+			executorStreamStarted = undefined;
 			return;
 		}
 		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
@@ -1356,16 +1363,20 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			correlation.decision !== "ignore" &&
 			run &&
 			identity &&
-			run.phase === "handoff-pending" &&
 			event.message.role === "assistant" &&
 			event.message.provider === run.config.executor.provider &&
-			event.message.model === run.config.executor.model
+			event.message.model === run.config.executor.model &&
+			(run.phase === "handoff-pending" ||
+				(run.effectiveRoute === "executor" &&
+					(run.phase === "active" || run.phase === "completed")))
 		) {
 			try {
 				contextPressure.onExecutorStreamStarted(identity);
-				application.activateExecutor();
 				executorStreamStarted = identity;
-				audit("executor-active", ctx);
+				if (run.phase === "handoff-pending") {
+					application.activateExecutor();
+					audit("executor-active", ctx);
+				}
 			} catch {
 				fail("provider-drift", false, ctx, identity);
 				await analytics.waitForWrites();
@@ -1394,6 +1405,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (isExecutorMessage && identity !== undefined) {
 			if (event.message.stopReason === "error") {
 				contextPressure.onExecutorStreamFailed(identity);
+				executorStreamStarted = undefined;
 			} else if (executorStreamStarted && sameRunIdentity(executorStreamStarted, run)) {
 				contextPressure.onExecutorStreamSucceeded(identity);
 				executorStreamStarted = undefined;
