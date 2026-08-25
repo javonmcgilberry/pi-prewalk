@@ -7,6 +7,7 @@ export type MutationSource =
 	| "builtin"
 	| "direct"
 	| "shell"
+	| "powershell"
 	| "exec_command"
 	| "code_mode"
 	| "adapter";
@@ -63,6 +64,7 @@ export const RECOGNIZED_MUTATION_TOOL_NAMES = [
 	"write",
 	"apply_patch",
 	"bash",
+	"powershell",
 	"exec_command",
 	"exec",
 ] as const;
@@ -310,6 +312,76 @@ export function hasProvableApplyPatch(command: string): boolean {
 	return false;
 }
 
+const POWERSHELL_MUTATION_COMMANDS = new Set([
+	"add-content",
+	"clear-content",
+	"copy-item",
+	"move-item",
+	"new-item",
+	"out-file",
+	"remove-item",
+	"rename-item",
+	"set-content",
+	"set-item",
+	"set-itemproperty",
+]);
+
+/**
+ * PowerShell does not expose an apply-patch tool on Windows. Accept only a
+ * plainly visible, single mutating cmdlet (or the .NET file-write methods)
+ * so a successful PowerShell result is positive mutation evidence rather than
+ * a keyword mention or a read-only pipeline.
+ */
+export function hasProvablePowerShellMutation(command: string): boolean {
+	const tokens = tokenizeShell(command);
+	if (!tokens) return false;
+	let commandPosition = true;
+	let found = false;
+	for (const token of tokens) {
+		if (token.kind === "operator") {
+			if (
+				token.value === "|" ||
+				token.value === "|&" ||
+				token.value === "||" ||
+				token.value === "&"
+			) {
+				return false;
+			}
+			if (token.value === ";") {
+				if (found) return false;
+				commandPosition = true;
+				continue;
+			}
+			if (token.value === "\n") {
+				commandPosition = !found;
+				continue;
+			}
+			continue;
+		}
+		if (!commandPosition) continue;
+		const normalized = token.value.toLowerCase();
+		if (
+			/^\[(?:system\.)?io\.file\]::(?:writealltext|appendalltext|writeallbytes)\(/iu.test(
+				token.value,
+			)
+		) {
+			if (found) return false;
+			found = true;
+			commandPosition = false;
+			continue;
+		}
+		if (token.quoted) return false;
+		if (POWERSHELL_MUTATION_COMMANDS.has(normalized)) {
+			found = true;
+			commandPosition = false;
+			continue;
+		}
+		if (/^[A-Za-z_][A-Za-z0-9_]*=[^$]*$/.test(token.value)) continue;
+		return false;
+	}
+	return found;
+}
+
 function assistantCalls(message: unknown): Array<{ id: string; name: string }> {
 	if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content))
 		return [];
@@ -445,6 +517,17 @@ export class MutationTurnBuffer {
 						kind: "apply_patch",
 						source: "shell",
 						paths: patchPathsFromInput(result.input, "command"),
+					}
+				: undefined;
+		}
+		if (result.toolName === "powershell") {
+			const command = commandFrom(result.input, "command");
+			return command && hasProvablePowerShellMutation(command)
+				? {
+						toolCallId: result.toolCallId,
+						toolName: result.toolName,
+						kind: "write",
+						source: "powershell",
 					}
 				: undefined;
 		}

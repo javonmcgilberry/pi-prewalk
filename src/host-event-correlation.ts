@@ -16,7 +16,8 @@ export type HostObservation =
 	| { type: "tool-claim"; toolCallId: string }
 	| { type: "tool"; toolCallId: string }
 	| { type: "before-compaction" }
-	| { type: "compaction" };
+	| { type: "compaction" }
+	| { type: "compaction-failed" };
 
 export type HostCorrelationEvidence =
 	| "message-object"
@@ -358,7 +359,7 @@ function observeBeforeCompaction(
 	return classify(marker, currentRun, "current-capture");
 }
 
-function observeCompaction(
+function observeCompactionTerminal(
 	state: CorrelationState,
 	currentRun: HostRunIdentity | undefined,
 ): HostCorrelation {
@@ -371,6 +372,20 @@ function observeCompaction(
 		};
 	}
 	return permissiveUnknown();
+}
+
+function observeCompaction(
+	state: CorrelationState,
+	currentRun: HostRunIdentity | undefined,
+): HostCorrelation {
+	return observeCompactionTerminal(state, currentRun);
+}
+
+function observeCompactionFailed(
+	state: CorrelationState,
+	currentRun: HostRunIdentity | undefined,
+): HostCorrelation {
+	return observeCompactionTerminal(state, currentRun);
 }
 
 /**
@@ -421,6 +436,8 @@ function observeState(
 			return observeBeforeCompaction(state, currentRun);
 		case "compaction":
 			return observeCompaction(state, currentRun);
+		case "compaction-failed":
+			return observeCompactionFailed(state, currentRun);
 		default:
 			return assertNever(observation);
 	}

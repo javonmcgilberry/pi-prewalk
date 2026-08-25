@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	hasProvablePowerShellMutation,
 	hasRecognizedMutationPath,
 	type MutationEvidenceAdapter,
 	type MutationToolResult,
@@ -45,7 +46,7 @@ function finish(
 }
 
 describe("mutation path availability", () => {
-	it.each(["edit", "write", "apply_patch", "bash", "exec_command", "exec"])(
+	it.each(["edit", "write", "apply_patch", "bash", "powershell", "exec_command", "exec"])(
 		"accepts %s as a potential proving path",
 		(toolName) => {
 			expect(hasRecognizedMutationPath(["read", toolName])).toBe(true);
@@ -185,6 +186,49 @@ describe("direct mutation results", () => {
 				{ id: "cancelled", name: "write" },
 			]).mutation,
 		).toBeUndefined();
+	});
+});
+
+describe("PowerShell mutation proof", () => {
+	it.each([
+		"Set-Content -LiteralPath src\\index.ts -Value 'updated'",
+		"Add-Content -Path README.md -Value 'note'",
+		"Out-File -FilePath src\\index.ts -InputObject 'updated'",
+		"[System.IO.File]::WriteAllText('src/index.ts', 'updated')",
+	])("accepts a positive mutating command: %s", (command) => {
+		expect(hasProvablePowerShellMutation(command)).toBe(true);
+		const buffer = new MutationTurnBuffer();
+		buffer.recordResult(result("powershell", "powershell", { input: { command } }));
+		expect(finish(buffer, [{ id: "powershell", name: "powershell" }]).mutation).toEqual({
+			toolCallId: "powershell",
+			toolName: "powershell",
+			kind: "write",
+			source: "powershell",
+		});
+	});
+
+	it.each([
+		"Get-Content src\\index.ts",
+		"Write-Output 'Set-Content -Path src/index.ts'",
+		"Set-Content -Path src\\index.ts -Value 'updated' | ForEach-Object { $_ }",
+		"Set-Content -Path src\\index.ts -Value 'updated'; Write-Output done",
+		"$command = 'Set-Content'; & $command src\\index.ts",
+	])("rejects an unproven PowerShell mutation: %s", (command) => {
+		expect(hasProvablePowerShellMutation(command)).toBe(false);
+		const buffer = new MutationTurnBuffer();
+		buffer.recordResult(result("powershell", "powershell", { input: { command } }));
+		expect(finish(buffer, [{ id: "powershell", name: "powershell" }]).mutation).toBeUndefined();
+	});
+
+	it("requires a successful PowerShell result", () => {
+		const buffer = new MutationTurnBuffer();
+		buffer.recordResult(
+			result("powershell", "powershell", {
+				input: { command: "Set-Content -Path src\\index.ts -Value updated" },
+				isError: true,
+			}),
+		);
+		expect(finish(buffer, [{ id: "powershell", name: "powershell" }]).mutation).toBeUndefined();
 	});
 });
 

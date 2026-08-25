@@ -334,7 +334,7 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		// effort is a real downgrade, and only the same effective effort is a no-op.
 		// The reasoning step below applies the model's clamping before rejecting that
 		// pairing. A smaller executor is protected by the request-time context
-		// watchdog in the provider overlay.
+		// watchdog before Pi sends the request.
 		.filter((model) => model.maxTokens > 0)
 		.sort((left, right) => {
 			const leftHome = left.provider === planner.provider ? 0 : 1;

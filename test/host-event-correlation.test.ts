@@ -140,7 +140,7 @@ describe("PiHostEventCorrelation identity and outcome model", () => {
 		});
 	});
 
-	it("enforces the decision-kind pairs for all ten observation variants", () => {
+	it("enforces the decision-kind pairs for all eleven observation variants", () => {
 		const cases: Array<{
 			result: HostCorrelation;
 			decision: "apply" | "ignore";
@@ -202,6 +202,11 @@ describe("PiHostEventCorrelation identity and outcome model", () => {
 			},
 			{
 				result: new PiHostEventCorrelation().observe({ type: "compaction" }, A),
+				decision: "apply",
+				kind: "unknown",
+			},
+			{
+				result: new PiHostEventCorrelation().observe({ type: "compaction-failed" }, A),
 				decision: "apply",
 				kind: "unknown",
 			},
@@ -1038,6 +1043,30 @@ describe("PiHostEventCorrelation discard and compaction", () => {
 		});
 	});
 
+	it("consumes failed compaction markers without suppressing a replacement run", () => {
+		const correlation = new PiHostEventCorrelation();
+		correlation.observe({ type: "before-compaction" }, A);
+		expectResult(correlation.observe({ type: "compaction-failed" }, B), {
+			decision: "ignore",
+			kind: "stale",
+			evidence: "compaction-order",
+			run: A,
+		});
+
+		correlation.observe({ type: "before-compaction" }, B);
+		expectResult(correlation.observe({ type: "compaction-failed" }, B), {
+			decision: "apply",
+			kind: "exact",
+			evidence: "compaction-order",
+			run: B,
+		});
+		expectResult(correlation.observe({ type: "compaction" }, B), {
+			decision: "apply",
+			kind: "unknown",
+			fallback: "preserve-current",
+		});
+	});
+
 	it("reports unchanged when no matching compaction exists and arms only after removal", () => {
 		const correlation = new PiHostEventCorrelation();
 		expect(correlation.discardPendingForRun(A)).toEqual({
@@ -1312,6 +1341,7 @@ describe("PiHostEventCorrelation ambiguity and dependency boundary", () => {
 				"tool",
 				"before-compaction",
 				"compaction",
+				"compaction-failed",
 			].sort(),
 		);
 		expect(toolClaimIds).toEqual(["event.toolCallId", "event.toolCallId"]);

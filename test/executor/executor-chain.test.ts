@@ -73,7 +73,7 @@ describe("executor chain resolution", () => {
 	});
 
 	it("accepts an executor smaller than the planner it takes over from", async () => {
-		// The provider overlay now preflights the exact request against this smaller
+		// The native session route now checks the exact request against this smaller
 		// window and triggers stock Pi compaction before transport.
 		const glm = model("cerebras", "zai-glm-4.7", 131_072);
 		const flash = model("google", "gemini-3.5-flash", 1_048_576);

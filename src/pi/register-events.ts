@@ -250,6 +250,14 @@ function isEphemeralPrewalkPrompt(message: AgentMessage): boolean {
 	);
 }
 
+function estimateContextEventTokens(messages: readonly unknown[]): number {
+	try {
+		return Math.ceil(JSON.stringify(messages).length / 4) + 384;
+	} catch {
+		return Number.POSITIVE_INFINITY;
+	}
+}
+
 function delegatedAgent(value: unknown): string {
 	if (!isRecord(value)) return "subagent";
 	const raw = typeof value.agent === "string" ? value.agent.trim() : "";
@@ -351,6 +359,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		return runtimeController;
 	};
 	let primaryAgentStream = false;
+	let executorStreamStarted: HostRunIdentity | undefined;
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
@@ -512,6 +521,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		resetPlanningRecovery();
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
 		resetContextPressureState();
+		executorStreamStarted = undefined;
 		if (!application.run) {
 			if (!ctx.model) {
 				ctx.ui.notify(failureNotice(reasonCode), "error");
@@ -531,7 +541,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			);
 		}
 		application.fail(reasonCode, holdExecutorRoute);
-		getRuntimeController(ctx).restore(identityOf(failedRun));
+		void getRuntimeController(ctx)
+			.restore(identityOf(failedRun))
+			.catch(() => undefined);
 		turnGate.resetMutationEvidence();
 		audit("failed", ctx);
 		if (
@@ -553,11 +565,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		resetPlanningRecovery();
 		hostCorrelation.discardPendingForRun(runIdentity);
 		resetContextPressureState();
+		ctx.abort();
 		application.cancel(selectedModelIsPlanner);
 		primaryAgentStream = false;
+		executorStreamStarted = undefined;
 		turnGate.resetMutationEvidence();
 		audit("cancelled", ctx);
-		getRuntimeController(ctx).restore(runIdentity);
+		await getRuntimeController(ctx).restore(runIdentity, selectedModelIsPlanner);
+		updateStatus(ctx);
 		await analytics.finalize("cancelled", run).catch(() => {
 			ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
 		});
@@ -576,8 +591,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const runIdentity = identityOf(run);
 		resetContextPressureState();
 		application.release();
+		executorStreamStarted = undefined;
 		audit("manual-release", ctx);
-		getRuntimeController(ctx).restore(runIdentity);
+		await getRuntimeController(ctx).restore(runIdentity);
 		await analytics.finalize("released", run).catch(() => {
 			ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
 		});
@@ -898,7 +914,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					armedRun.phase !== "ready")
 			) {
 				if (armedRun && sameRunIdentity(armedRunIdentity, application.run)) {
-					getRuntimeController(ctx).restore(armedRunIdentity);
+					await getRuntimeController(ctx).restore(armedRunIdentity);
 					await analytics
 						.finalize(armedRun.phase === "failed" ? "failed" : "cancelled", armedRun)
 						.catch(() => undefined);
@@ -1032,7 +1048,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			updateStatus(ctx);
 			if (application.run) {
 				const cancelledRun = identityOf(application.run);
-				await cancel(isPlannerSelected(ctx.model, application.run.planner), ctx);
+				await cancel(true, ctx);
 				if (sameRunIdentity(cancelledRun, application.run)) {
 					deactivatePrewalkTools();
 					retainedCancelledRun = application.run;
@@ -1054,6 +1070,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		resetContextPressureState();
+		executorStreamStarted = undefined;
+		await getRuntimeController(ctx).restore();
 		retainedCancelledRun = undefined;
 		refreshContextCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
@@ -1137,7 +1155,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					return;
 				case "refused":
 					application.reset();
-					getRuntimeController(ctx).restore();
+					await getRuntimeController(ctx).restore();
 					turnGate.resetMutationEvidence();
 					deactivatePrewalkTools();
 					ctx.ui.notify(unavailableExecutorNotice(recovery.rejected), "error");
@@ -1203,7 +1221,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if ((control === "stop" || control === "cancel") && event.source !== "extension") {
 			if (application.run) {
 				const cancelledRun = identityOf(application.run);
-				await cancel(isPlannerSelected(ctx.model, application.run.planner), ctx);
+				await cancel(true, ctx);
 				if (!sameRunIdentity(cancelledRun, application.run)) return { action: "handled" };
 				lastOutcome = "completed";
 				deactivatePrewalkTools();
@@ -1222,11 +1240,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		resetContextPressureState();
+		executorStreamStarted = undefined;
 		activeSessionId = undefined;
 		primaryAgentStream = false;
 		delegation = undefined;
 		const run = application.run;
-		getRuntimeController(ctx).restore();
+		await getRuntimeController(ctx).restore();
 		if (event.reason !== "reload") {
 			const outcome: RunOutcome =
 				run?.effectiveRoute === "executor" &&
@@ -1256,7 +1275,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		lastStatus = undefined;
 	});
 
-	pi.on("agent_start", (_event, ctx) => {
+	pi.on("agent_start", async (_event, ctx) => {
 		const correlation = hostCorrelation.observe(
 			{ type: "agent-start" },
 			identityOf(application.run),
@@ -1265,9 +1284,29 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (planningRetry && sameRunIdentity(planningRetry, application.run)) {
 			planningRetryStarted = true;
 		}
+		if (application.run) {
+			const lease = ensureModelRuntime(ctx);
+			try {
+				await lease.sync();
+			} catch {
+				return;
+			}
+		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshContextCompactionPolicy(ctx);
 		primaryAgentStream = true;
+	});
+
+	pi.on("turn_start", async (_event, ctx) => {
+		if (!application.run) return;
+		const lease = ensureModelRuntime(ctx);
+		try {
+			await lease.sync();
+		} catch {
+			return;
+		}
+		if (!verifyModelRuntimeOwnership(ctx)) return;
+		refreshContextCompactionPolicy(ctx);
 	});
 
 	pi.on("agent_end", (event, ctx) => {
@@ -1278,6 +1317,19 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (correlation.decision === "ignore") return;
 		primaryAgentStream = false;
 		const lastAssistant = lastAssistantMessage(event.messages);
+		const run = application.run;
+		const identity = identityOf(run);
+		if (
+			run &&
+			identity &&
+			lastAssistant?.role === "assistant" &&
+			lastAssistant.provider === run.config.executor.provider &&
+			lastAssistant.model === run.config.executor.model &&
+			lastAssistant.stopReason === "error"
+		) {
+			contextPressure.onExecutorStreamFailed(identity);
+			return;
+		}
 		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
 		if (
 			planningRetryStarted &&
@@ -1293,14 +1345,35 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		);
 	});
 
-	pi.on("message_start", (event) => {
-		hostCorrelation.observe(
+	pi.on("message_start", async (event, ctx) => {
+		const run = application.run;
+		const correlation = hostCorrelation.observe(
 			{ type: "message-start", message: event.message },
-			identityOf(application.run),
+			identityOf(run),
 		);
+		const identity = identityOf(run);
+		if (
+			correlation.decision !== "ignore" &&
+			run &&
+			identity &&
+			run.phase === "handoff-pending" &&
+			event.message.role === "assistant" &&
+			event.message.provider === run.config.executor.provider &&
+			event.message.model === run.config.executor.model
+		) {
+			try {
+				contextPressure.onExecutorStreamStarted(identity);
+				application.activateExecutor();
+				executorStreamStarted = identity;
+				audit("executor-active", ctx);
+			} catch {
+				fail("provider-drift", false, ctx, identity);
+				await analytics.waitForWrites();
+			}
+		}
 	});
 
-	pi.on("message_end", async (event) => {
+	pi.on("message_end", async (event, ctx) => {
 		const run = application.run;
 		const correlation = hostCorrelation.observe(
 			{ type: "message", message: event.message },
@@ -1309,11 +1382,32 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (
 			correlation.decision === "ignore" ||
 			!run ||
-			!analytics.hasStateFor(run) ||
 			event.message.role !== "assistant" ||
 			event.message.stopReason === "aborted"
 		)
 			return;
+		const identity = identityOf(run);
+		const isExecutorMessage =
+			identity !== undefined &&
+			event.message.provider === run.config.executor.provider &&
+			event.message.model === run.config.executor.model;
+		if (isExecutorMessage && identity !== undefined) {
+			if (event.message.stopReason === "error") {
+				contextPressure.onExecutorStreamFailed(identity);
+			} else if (executorStreamStarted && sameRunIdentity(executorStreamStarted, run)) {
+				contextPressure.onExecutorStreamSucceeded(identity);
+				executorStreamStarted = undefined;
+				if (run.phase === "active") {
+					try {
+						application.completeHandoff();
+						audit("handoff-completed", ctx);
+					} catch {
+						fail("provider-drift", true, ctx, identity);
+					}
+				}
+			}
+		}
+		if (!analytics.hasStateFor(run)) return;
 		const role = analytics.usageRole(run, event.message.provider, event.message.model);
 		await analytics.recordUsage(
 			"assistant",
@@ -1351,6 +1445,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			// ctx.compact() aborts the active Agent loop before its completion callback
 			// runs. The pressure controller keeps this handoff alive until that
 			// callback settles and owns the only checklist retry.
+			await analytics.waitForWrites().catch(() => {
+				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+			});
 			updateStatus(ctx);
 			return;
 		}
@@ -1387,7 +1484,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		const failedRun = run.phase === "failed";
-		getRuntimeController(ctx).restore(runIdentity);
+		await getRuntimeController(ctx).restore(runIdentity);
 		let finalized = false;
 		try {
 			await analytics.finalize(failedRun ? "failed" : "succeeded", run);
@@ -1546,6 +1643,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				turnGate.resetMutationEvidence();
 			}
 		}
+		if (runIdentity !== undefined && sameRunIdentity(runIdentity, application.run)) {
+			try {
+				await ensureModelRuntime(ctx).sync();
+			} catch {
+				return;
+			}
+			if (!verifyModelRuntimeOwnership(ctx)) return;
+		}
 		const currentRun = application.run;
 		if (
 			sameRunIdentity(identityOf(run), currentRun) &&
@@ -1602,11 +1707,23 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		);
 	});
 
+	pi.on("session_before_tree", (_event, ctx) => {
+		const run = application.run;
+		if (!evaluation && (!run || run.phase === "cancelled" || run.phase === "failed")) {
+			return;
+		}
+		ctx.ui.notify(
+			"Prewalk blocks session-tree navigation while its run is active; cancel or release first.",
+			"warning",
+		);
+		return { cancel: true };
+	});
+
 	pi.on("session_compact", async (event, ctx) => {
 		const run = application.run;
 		const correlation = hostCorrelation.observe({ type: "compaction" }, identityOf(run));
 		if (correlation.decision === "ignore") return;
-		await contextPressure.afterCompaction(run, contextPressureHost(ctx));
+		await contextPressure.afterCompaction(run, contextPressureHost(ctx), event.willRetry);
 		if (!event.compactionEntry.usage || !run || !analytics.hasStateFor(run)) return;
 		const selected = ctx.model;
 		const provider = selected?.provider ?? run?.planner.provider;
@@ -1632,6 +1749,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 	});
 
+	pi.on("session_compact_failed", (event, ctx) => {
+		const run = application.run;
+		const correlation = hostCorrelation.observe({ type: "compaction-failed" }, identityOf(run));
+		if (correlation.decision === "ignore") return;
+		contextPressure.compactionFailed(run, contextPressureHost(ctx), event.willRetry);
+		updateStatus(ctx);
+	});
+
 	pi.on("model_select", async (event, ctx) => {
 		if (event.source === "restore") return;
 		const run = application.run;
@@ -1653,6 +1778,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("thinking_level_select", (event, ctx) => {
+		if (runtimeController?.consumeInternalThinkingLevel(event.level)) return;
 		const run = application.run;
 		if (
 			run?.effectiveRoute === "planner" &&

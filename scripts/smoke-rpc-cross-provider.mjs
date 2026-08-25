@@ -46,7 +46,7 @@ try {
 			`${state.model?.provider}/${state.model?.id}` === plannerRef,
 			`Planner not selected: ${state.model?.provider}/${state.model?.id}`,
 		);
-		// Arming runs planner validation, the executor chain, and overlay install.
+		// Arming runs planner validation and the native executor-route admission.
 		await session.rpc.send({ type: "prompt", message: "/prewalk run" });
 		const after = (await session.rpc.send({ type: "get_state" })).data;
 		assert(

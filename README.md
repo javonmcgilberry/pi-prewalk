@@ -119,11 +119,11 @@ Failed, cancelled, partial, still-running, printed, quoted, or dynamically assem
 
 Later turns stay on the executor, even after `/reload` in the same live session. In `/prewalk status`, `completed` means the executor finished its first response successfully. It does not mean Prewalk knows the task is done. Run `/prewalk release` when you finish the task. Release restores the planner, closes that run, and lets you start another one in the same conversation. A new Pi session always starts on the planner.
 
-Pi continues to display the planner as the selected model while Prewalk routes requests to the executor. The receiving model gets the history Pi can replay, but signed reasoning is retained only for an exact model match. Cross-provider execution uses the executor provider's own resolved credentials; Prewalk never forwards a planner-resolved API key.
+Pi selects the planner during planning and the executor for the active session-local route after handoff. The receiving model gets the history Pi can replay, but signed reasoning is retained only for an exact model match. Cross-provider execution uses the executor provider's own resolved credentials; Prewalk never forwards a planner-resolved API key.
 
 ## Limits and safety
 
-Prewalk is experimental and uses Pi's public extension APIs. It currently targets Pi **0.84.2**, but it may not work with every Pi version. This implementation has not completed a paid controlled benchmark, so the local numbers above are estimates, not measured quality or savings claims.
+Prewalk is experimental and uses Pi's public extension APIs. It currently targets Pi **0.84.3**, but it may not work with every Pi version. This implementation has not completed a paid controlled benchmark, so the local numbers above are estimates, not measured quality or savings claims.
 
 Prewalk respects Pi's active tool list, including `defaultTools`, and never turns a disabled tool back on. Before planning starts, the list must include a tool that can prove the first edit: `edit`, `write`, `apply_patch`, `bash`, `exec_command`, or Code Mode's `exec`. If it does not, Prewalk stops early and tells you what to enable. Its two tools ask providers to prefer strict JSON-schema arguments. Providers that do not support that option still use normal validation.
 
@@ -145,7 +145,7 @@ Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is
 
 The optional `executorFallbacks` array lists backup executors in order. When it is missing, Prewalk builds a list from registered models and Oh My Pi's built-in `smol` preferences. An empty array turns that behavior off. A fallback must be registered, authorized, able to produce output, and different from the planner after reasoning-level limits are applied.
 
-Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. At an idle manual-run boundary, it removes only lifecycle facts left by an aborted, unowned agent; exact old-run facts remain stale. Until the checklist exists, an aborted planner stream, a rejected stale planning tool call, or a settled checklist-free turn queues another hidden recovery turn on the same run. Pi already saves any partial assistant content and signed reasoning it received. The same planner gets that history on recovery instead of starting over. Reasoning that never reached Pi cannot be recovered, but Prewalk keeps the saved transcript and run state. Prewalk retries automatically up to `plannerRecovery.maxRetries`, which defaults to 5. It then fails the run instead of looping forever. Creating the checklist resets the retry count, and `/prewalk cancel` stops recovery immediately. Prewalk does not patch Pi, call `setModel()`, import private Pi modules, or change ordinary Pi turns. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
+Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. At an idle manual-run boundary, it removes only lifecycle facts left by an aborted, unowned agent; exact old-run facts remain stale. Until the checklist exists, an aborted planner stream, a rejected stale planning tool call, or a settled checklist-free turn queues another hidden recovery turn on the same run. Pi already saves any partial assistant content and signed reasoning it received. The same planner gets that history on recovery instead of starting over. Reasoning that never reached Pi cannot be recovered, but Prewalk keeps the saved transcript and run state. Prewalk retries automatically up to `plannerRecovery.maxRetries`, which defaults to 5. It then fails the run instead of looping forever. Creating the checklist resets the retry count, and `/prewalk cancel` stops recovery immediately. Prewalk uses Pi 0.84.3's public session-local `setModel()` and `setThinkingLevel()` APIs; it does not patch Pi or import private modules. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
 
 ## Child agents
 
@@ -199,10 +199,10 @@ Analytics live under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`
 ## Failure and cleanup
 
 - Selecting another Pi model cancels the current route without changing the new selection. After cancellation, the footer keeps the cancelled run visible and refreshes its selected model.
-- A failed pre-handoff run or explicit cancellation releases the provider overlay before another run starts. After handoff, use `/prewalk release`.
+- A failed pre-handoff run or explicit cancellation restores the session-local planner route before another run starts. After handoff, use `/prewalk release`.
 - Planner/provider mismatch, missing authorization, invalid config, todo conflict, and unsupported native compaction fail before executor use.
 - If an executor provider fails outside context pressure, Prewalk restores the planner, preserves the transcript and receipt, and does not replay a possibly partial tool turn automatically.
-- Hidden planning prompts stay out of normal model context and compaction input. While a Prewalk run is active, its provider overlay checks planner and executor requests before transport; inactive Pi sessions are not wrapped.
+- Hidden planning prompts stay out of normal model context and compaction input. While a Prewalk run is active, its native session-local model route and context watchdog govern planner and executor requests; inactive Pi sessions are untouched.
 
 Use `/prewalk status` to see why a run failed. To start over, run `/prewalk cancel`, then `/prewalk run`.
 

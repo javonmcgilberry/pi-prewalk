@@ -6,6 +6,7 @@
  * reload. Issues no model request and must leave settings byte-identical.
  */
 
+import { VERSION as piVersion } from "@earendil-works/pi-coding-agent";
 import { assert, defaultAnalytics, startSmokeSession } from "./rpc-smoke-support.mjs";
 import { actionableStderr } from "./rpc-support.mjs";
 
@@ -49,7 +50,7 @@ try {
 	console.log(
 		JSON.stringify({
 			ok: true,
-			pi: "0.84.2",
+			pi: piVersion,
 			conversionExtension: "not-loaded",
 			plannerModel: plannerRef,
 			executorModel,
