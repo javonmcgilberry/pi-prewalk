@@ -1678,9 +1678,28 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (sameRunIdentity(identityOf(run), application.run)) updateStatus(ctx);
 	});
 
-	pi.on("context", (event) => ({
-		messages: event.messages.filter((message) => shouldExposePrompt(message, application.run)),
-	}));
+	pi.on("context", (event, ctx) => {
+		const run = application.run;
+		if (run && primaryAgentStream && ctx.model) {
+			const tokens = estimateContextEventTokens(event.messages);
+			const pressure =
+				tokens > Math.max(0, ctx.model.contextWindow - contextPressure.reserveTokens());
+			const identity = identityOf(run);
+			if (identity && pressure) {
+				if (run.phase === "handoff-pending" || run.effectiveRoute === "executor") {
+					contextPressure.onExecutorContextPressure(identity, true);
+				} else if (run.effectiveRoute === "planner") {
+					contextPressure.onPlannerContextPressure(identity);
+				}
+			} else if (identity && run.effectiveRoute === "planner") {
+				contextPressure.onPlannerContextSafe(identity);
+			}
+			if (pressure && ctx.signal) ctx.abort();
+		}
+		return {
+			messages: event.messages.filter((message) => shouldExposePrompt(message, application.run)),
+		};
+	});
 
 	pi.on("session_before_compact", (event) => {
 		hostCorrelation.observe({ type: "before-compaction" }, identityOf(application.run));
@@ -1709,7 +1728,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_before_tree", (_event, ctx) => {
 		const run = application.run;
-		if (!evaluation && (!run || run.phase === "cancelled" || run.phase === "failed")) {
+		if (!run || run.phase === "cancelled" || run.phase === "failed") {
 			return;
 		}
 		ctx.ui.notify(
@@ -1759,6 +1778,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("model_select", async (event, ctx) => {
 		if (event.source === "restore") return;
+		if (
+			event.source === "set" &&
+			runtimeController?.consumeInternalModelSelect(event.model, event.source)
+		) {
+			return;
+		}
 		const run = application.run;
 		if (!run) {
 			if (retainedCancelledRun) updateStatus(ctx);

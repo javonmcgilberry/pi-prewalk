@@ -820,7 +820,7 @@ describe("Prewalk extension harness", () => {
 			expect(harness.entries.at(-1)?.data).toMatchObject({ event: "armed", mode: "automatic" });
 			expect(harness.statuses.at(-1)).toBe("prewalk: armed · 5.6 Sol → Luna");
 			expect(harness.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
-			expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+			expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		}
 
 		const resumed = createHarness({ sessionId: "resume-session" });
@@ -839,7 +839,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("auto", harness.context);
 		expect(harness.entries.at(-1)?.data).toMatchObject({ event: "armed", mode: "automatic" });
-		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 
 		expect(harness.entries.at(-1)?.data).toMatchObject({ event: "cancelled" });
@@ -891,7 +891,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "steer" });
-		expect(harness.providerConfig()?.streamSimple).not.toBe(harness.baseStream);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 		expect(harness.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
 	});
 
@@ -2579,7 +2579,7 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.delegated).toEqual([harness.executor]);
 		expect(result?.model).toBe(EXECUTOR_MODEL_ID);
-		expect(harness.context.model).toBe(harness.planner);
+		expect(harness.context.model).toBe(harness.executor);
 		expect(harness.statuses.at(-1)).toBe("prewalk: executor · Luna");
 	});
 
@@ -2627,28 +2627,20 @@ describe("Prewalk extension harness", () => {
 			},
 			{
 				role: "custom",
-				customType: "prewalk-assess",
-				content: "ephemeral assessment",
-				display: false,
-				details: { runId, assessmentId: "assessment" },
-				timestamp: 8,
-			},
-			{
-				role: "custom",
 				customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
 				content: "checklist",
 				display: false,
 				details: { runId },
-				timestamp: 9,
+				timestamp: 8,
 			},
-			assistantWithToolCalls(harness.planner, [{ id: "mutation", name: "edit" }], 10),
+			assistantWithToolCalls(harness.planner, [{ id: "mutation", name: "edit" }], 9),
 			{
 				role: "toolResult",
 				toolCallId: "mutation",
 				toolName: "edit",
 				content: [],
 				isError: false,
-				timestamp: 11,
+				timestamp: 10,
 			},
 			{
 				role: "custom",
@@ -2656,7 +2648,7 @@ describe("Prewalk extension harness", () => {
 				content: "executor continuation",
 				display: false,
 				details: { runId },
-				timestamp: 12,
+				timestamp: 11,
 			},
 		] as unknown[];
 
@@ -3401,7 +3393,7 @@ describe("Prewalk extension harness", () => {
 		restored.setBranch(auditBranch(harness));
 		prewalkExtension(restored.pi);
 		await restored.emit("session_start", { type: "session_start", reason: "reload" });
-		expect(restored.providerConfig()?.streamSimple).not.toBe(restored.baseStream);
+		expect(restored.providerConfig()?.streamSimple).toBe(restored.baseStream);
 		expect(restored.statuses.at(-1)).toBe("prewalk: planning · 5.6 Sol → Luna");
 		expect(restored.entries).toEqual([]);
 	});
