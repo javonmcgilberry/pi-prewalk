@@ -1,18 +1,19 @@
 import { createHash } from "node:crypto";
+import { isRecord, isString } from "../value-contracts.mjs";
 
 const STATUSES = new Set(["supported", "failed", "pending", "skipped", "yanked", "review"]);
 const MAX_SUMMARY = 2000;
 
 export function stableVersion(version) {
-	return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version);
+	return isString(version) && /^\d+\.\d+\.\d+$/.test(version);
 }
 
 function candidateVersion(version) {
-	return typeof version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version);
+	return isString(version) && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version);
 }
 
 export function validateCandidateResult(value) {
-	if (!value || typeof value !== "object" || Array.isArray(value))
+	if (!value || !isRecord(value) || Array.isArray(value))
 		throw new Error("result must be an object");
 	const keys = Object.keys(value).sort();
 	const expected = [
@@ -30,29 +31,17 @@ export function validateCandidateResult(value) {
 	if (!candidateVersion(value.version)) throw new Error("version must be semver");
 	if (!STATUSES.has(value.status)) throw new Error("status is invalid");
 	for (const field of ["artifactId", "integrity", "runId", "testedAt"]) {
-		if (
-			typeof value[field] !== "string" ||
-			value[field].length === 0 ||
-			value[field].length > 200
-		) {
+		if (!isString(value[field]) || value[field].length === 0 || value[field].length > 200) {
 			throw new Error(`${field} is invalid`);
 		}
 	}
-	if (typeof value.summary !== "string" || value.summary.length > MAX_SUMMARY)
+	if (!isString(value.summary) || value.summary.length > MAX_SUMMARY)
 		throw new Error("summary is invalid");
-	if (
-		!value.dependencies ||
-		typeof value.dependencies !== "object" ||
-		Array.isArray(value.dependencies)
-	) {
+	if (!value.dependencies || !isRecord(value.dependencies) || Array.isArray(value.dependencies)) {
 		throw new Error("dependencies are invalid");
 	}
 	for (const [name, version] of Object.entries(value.dependencies)) {
-		if (
-			!/^[a-zA-Z0-9@/._-]+$/.test(name) ||
-			typeof version !== "string" ||
-			version.length > 100
-		) {
+		if (!/^[a-zA-Z0-9@/._-]+$/.test(name) || !isString(version) || version.length > 100) {
 			throw new Error("dependency entry is invalid");
 		}
 	}

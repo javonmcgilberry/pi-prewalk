@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { isString } from "./value-contracts.mjs";
 
 const DEFAULT_SOURCE = "/opt/task-base";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -67,8 +68,8 @@ export async function dispatchEvaluatorRequest(
 	if (
 		!request ||
 		request.method !== "evaluate" ||
-		typeof request.patchBase64 !== "string" ||
-		typeof request.testCommand !== "string" ||
+		!isString(request.patchBase64) ||
+		!isString(request.testCommand) ||
 		request.testCommand.length === 0 ||
 		!Number.isInteger(request.timeoutMs) ||
 		request.timeoutMs <= 0

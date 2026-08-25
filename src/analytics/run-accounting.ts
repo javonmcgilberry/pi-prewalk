@@ -1,4 +1,5 @@
 import type { ModelCost, Usage } from "@earendil-works/pi-ai";
+import type { BoundaryValue } from "../guards.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import {
 	ANALYTICS_SCHEMA_VERSION,
@@ -38,7 +39,7 @@ export interface DelegationProjectionInput {
 	parentSessionId: string;
 	invocationId: string;
 	childCount: number;
-	details: unknown;
+	details: BoundaryValue;
 	isError: boolean;
 	generation: string;
 }
@@ -49,6 +50,18 @@ type PricingSchedule = {
 	cacheRead: number;
 	cacheWrite: number;
 	tiers?: ModelCost["tiers"];
+};
+
+type JournalPricingInputs = {
+	catalogFallbackEnabled: boolean;
+	modelMetadata?: {
+		capturedAt: string;
+		rates: { planner: PricingSchedule; executor: PricingSchedule };
+	};
+	catalog?: {
+		catalogDate: string;
+		rates: { planner: PricingSchedule; executor: PricingSchedule };
+	};
 };
 
 type ActiveAnalyticsState = {
@@ -65,13 +78,14 @@ type ActiveAnalyticsState = {
 };
 
 function pricingSchedule(cost: ModelCost): PricingSchedule {
-	return {
+	const schedule: PricingSchedule = {
 		input: cost.input,
 		output: cost.output,
 		cacheRead: cost.cacheRead,
 		cacheWrite: cost.cacheWrite,
-		...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ ...tier })) } : {}),
 	};
+	if (cost.tiers) schedule.tiers = cost.tiers.map((tier) => ({ ...tier }));
+	return schedule;
 }
 
 function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
@@ -81,20 +95,7 @@ function handoffState(run: PrewalkRun): RunJournal["handoffState"] {
 	return "not-started";
 }
 
-function journalPricingInputs(
-	journal: RunJournal,
-	host: AnalyticsHost,
-): {
-	catalogFallbackEnabled: boolean;
-	modelMetadata?: {
-		capturedAt: string;
-		rates: { planner: PricingSchedule; executor: PricingSchedule };
-	};
-	catalog?: {
-		catalogDate: string;
-		rates: { planner: PricingSchedule; executor: PricingSchedule };
-	};
-} {
+function journalPricingInputs(journal: RunJournal, host: AnalyticsHost): JournalPricingInputs {
 	const catalogFallbackEnabled = journal.configuration.analytics.catalogFallbackEnabled;
 	const planner = host.findModel(
 		journal.configuration.planner.provider,
@@ -312,8 +313,8 @@ export class PrewalkAnalytics {
 				pricingEvidence: calculation.pricingEvidence,
 				pricing: pricing.rates,
 				evidenceKeys: [...(journal.evidenceKeys ?? [])],
-				...(journal.lineage === undefined ? {} : { lineage: journal.lineage }),
 			};
+			if (journal.lineage !== undefined) receipt.lineage = journal.lineage;
 			try {
 				await this.#store.promoteReceipt(receipt);
 			} catch (error) {
@@ -358,12 +359,12 @@ export class PrewalkAnalytics {
 				actualCost: calculation.actualCost,
 				estimate: calculation.estimate,
 				pricingEvidence: calculation.pricingEvidence,
-				...(pricingInputs.modelMetadata === undefined
-					? {}
-					: { pricing: pricingInputs.modelMetadata.rates }),
 				evidenceKeys: [...(journal.evidenceKeys ?? [])],
-				...(journal.lineage === undefined ? {} : { lineage: journal.lineage }),
 			};
+			if (pricingInputs.modelMetadata !== undefined) {
+				recovered.pricing = pricingInputs.modelMetadata.rates;
+			}
+			if (journal.lineage !== undefined) recovered.lineage = journal.lineage;
 			try {
 				await this.#store.promoteReceipt(recovered);
 			} catch (error) {

@@ -1,11 +1,26 @@
+export type CanaryJsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| CanaryJsonValue[]
+	| { [key: string]: CanaryJsonValue }
+	| undefined;
+
 export const CANARY_CONFIRMATION: string;
 export const CANARY_TOOL_ALLOWLIST: string;
 export const DEFAULT_RETENTION_MS: number;
 export const MAX_RETENTION_MS: number;
-export function containsCanaryHiddenGuidance(payload: unknown, hiddenPrompts: string[]): boolean;
-export function findCanaryHiddenGuidancePaths(payload: unknown, hiddenPrompts: string[]): string[];
-export function canaryPayloadTargetsModel(payload: unknown, model: string): boolean;
-export function canaryAuditState(entries: unknown[]): {
+export function containsCanaryHiddenGuidance(
+	payload: CanaryJsonValue,
+	hiddenPrompts: string[],
+): boolean;
+export function findCanaryHiddenGuidancePaths(
+	payload: CanaryJsonValue,
+	hiddenPrompts: string[],
+): string[];
+export function canaryPayloadTargetsModel(payload: CanaryJsonValue, model: string): boolean;
+export function canaryAuditState(entries: CanaryJsonValue[]): {
 	state: "running" | "ready" | "completed" | "failed";
 	events: string[];
 	reasonCode?: string;
@@ -23,7 +38,7 @@ export function evaluateCanaryPayloadMarker(
 ): { ok: true; assertion: string } | { ok: false; reasonCode: string };
 export function isCanaryMutationInput(
 	toolName: string,
-	input: unknown,
+	input: CanaryJsonValue,
 	requestedPath: string,
 	fixturePath: string,
 ): boolean;

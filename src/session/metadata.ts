@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { type BoundaryValue, isRecord, isString } from "../guards.js";
 
 const MAX_METADATA_FILES = 10_000;
 const MAX_SESSION_LOG_INDEX = 50_000;
@@ -16,7 +17,7 @@ export async function readSessionMetadataTitles(
 		const entries = await readdir(directory);
 		names = entries.filter((name) => name.endsWith(".json")).sort((a, b) => a.localeCompare(b));
 	} catch (error) {
-		if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return new Map();
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return new Map();
 		throw error;
 	}
 	if (names.length > MAX_METADATA_FILES) {
@@ -26,17 +27,14 @@ export async function readSessionMetadataTitles(
 	const titles = new Map<string, string>();
 	for (const name of names) {
 		try {
-			const value: unknown = JSON.parse(await readFile(path.join(directory, name), "utf8"));
-			if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-			const schemaVersion = Reflect.get(value, "schemaVersion");
-			const sessionId = Reflect.get(value, "sessionId");
-			const storedTitle = Reflect.get(value, "title");
-			if (
-				schemaVersion !== 1 ||
-				typeof sessionId !== "string" ||
-				typeof storedTitle !== "string"
-			)
-				continue;
+			const value: BoundaryValue = JSON.parse(
+				await readFile(path.join(directory, name), "utf8"),
+			);
+			if (!isRecord(value)) continue;
+			const schemaVersion = value.schemaVersion;
+			const sessionId = value.sessionId;
+			const storedTitle = value.title;
+			if (schemaVersion !== 1 || !isString(sessionId) || !isString(storedTitle)) continue;
 			const title = storedTitle.replace(/[\r\n]+/g, " ").trim();
 			if (sessionId.trim() && title) titles.set(sessionId, title);
 		} catch {
@@ -124,7 +122,7 @@ async function indexSessionLogPaths(sessionsRoot: string): Promise<Map<string, s
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name);
 	} catch (error) {
-		if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return pathsById;
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return pathsById;
 		throw error;
 	}
 
@@ -169,17 +167,17 @@ async function readLatestSessionInfoName(filePath: string): Promise<string | und
 		for await (const line of rl) {
 			if (!line.includes("session_info")) continue;
 			try {
-				const entry: unknown = JSON.parse(line);
-				if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-				if (Reflect.get(entry, "type") !== "session_info") continue;
-				const raw = Reflect.get(entry, "name");
-				name = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+				const entry: BoundaryValue = JSON.parse(line);
+				if (!isRecord(entry)) continue;
+				if (entry.type !== "session_info") continue;
+				const raw = entry.name;
+				name = isString(raw) && raw.trim() ? raw.trim() : undefined;
 			} catch {
 				// Skip malformed lines; the ledger UI still works without a title.
 			}
 		}
 	} catch (error) {
-		if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return undefined;
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
 		throw error;
 	} finally {
 		rl.close();

@@ -12,6 +12,7 @@ import {
 	RpcProcess,
 	resolvePiLaunch,
 } from "./rpc-support.mjs";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 const SOL = "openai-codex/gpt-5.6-sol";
 const LUNA = "openai-codex/gpt-5.6-luna";
@@ -41,11 +42,11 @@ function sumUsage(messages) {
 function assistantMessagesFromEvents(events) {
 	const found = [];
 	const visit = (value) => {
-		if (!value || typeof value !== "object") return;
-		if (value.role === "assistant" && typeof value.model === "string") found.push(value);
+		if (!value || !isRecord(value)) return;
+		if (value.role === "assistant" && isString(value.model)) found.push(value);
 		for (const nested of Object.values(value)) {
 			if (Array.isArray(nested)) nested.forEach(visit);
-			else if (nested && typeof nested === "object") visit(nested);
+			else if (nested && isRecord(nested)) visit(nested);
 		}
 	};
 	for (const event of events) visit(event);
@@ -322,7 +323,7 @@ export function createBenchmarkRuntime({
 				);
 				if (
 					seal?.ok !== true ||
-					typeof seal.patchBase64 !== "string" ||
+					!isString(seal.patchBase64) ||
 					!/^[a-f0-9]{64}$/.test(seal.patchDigest) ||
 					!/^[a-f0-9]{64}$/.test(seal.workspaceDigest)
 				) {

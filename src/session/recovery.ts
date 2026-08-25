@@ -1,4 +1,5 @@
 import type { RejectedExecutor } from "../executor/selection.js";
+import { type BoundaryValue, isRecord, isString } from "../guards.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import {
 	PREWALK_AUDIT_TYPE,
@@ -27,18 +28,19 @@ export interface SessionRecoveryHost {
 	restoreAnalyticsJournal(run: PrewalkRun): Promise<void>;
 }
 
-function isCustomEntry(value: unknown, customType: string): value is { data: unknown } {
+function isCustomEntry(value: BoundaryValue, customType: string): value is { data: BoundaryValue } {
 	return (
-		value !== null &&
-		typeof value === "object" &&
-		Reflect.get(value, "type") === "custom" &&
-		Reflect.get(value, "customType") === customType &&
+		isRecord(value) &&
+		value.type === "custom" &&
+		value.customType === customType &&
 		"data" in value
 	);
 }
 
 /** Returns the latest valid audit entry, ignoring unrelated or malformed data. */
-export function latestAuditRecord(entries: readonly unknown[]): PrewalkAuditRecord | undefined {
+export function latestAuditRecord(
+	entries: readonly BoundaryValue[],
+): PrewalkAuditRecord | undefined {
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index];
 		if (!isCustomEntry(entry, PREWALK_AUDIT_TYPE)) continue;
@@ -49,18 +51,16 @@ export function latestAuditRecord(entries: readonly unknown[]): PrewalkAuditReco
 }
 
 export function latestPrewalkToolSlate(
-	entries: readonly unknown[],
+	entries: readonly BoundaryValue[],
 	runId: string,
 ): string[] | undefined {
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index];
 		if (!isCustomEntry(entry, "prewalk-tool-slate")) continue;
 		const data = entry.data;
-		if (data === null || typeof data !== "object" || Reflect.get(data, "runId") !== runId) {
-			continue;
-		}
-		const tools = Reflect.get(data, "tools");
-		if (Array.isArray(tools) && tools.every((name) => typeof name === "string")) {
+		if (!isRecord(data) || data.runId !== runId) continue;
+		const tools = data.tools;
+		if (Array.isArray(tools) && tools.every((name) => isString(name))) {
 			return [...tools];
 		}
 	}

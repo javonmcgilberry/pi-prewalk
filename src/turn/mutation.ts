@@ -1,5 +1,5 @@
 import path from "node:path";
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, type DomainObject, isNumber, isRecord, isString } from "../guards.js";
 import { PREWALK_TODO_TOOL_NAME } from "./todo.js";
 
 export type MutationKind = "edit" | "write" | "apply_patch";
@@ -26,16 +26,16 @@ export interface MutationCandidate {
 export interface MutationToolResult {
 	toolCallId: string;
 	toolName: string;
-	input: unknown;
+	input: BoundaryValue;
 	isError: boolean;
-	details?: unknown;
+	details?: BoundaryValue;
 }
 
 export interface MutationExecutionUpdate {
 	toolCallId: string;
 	toolName: string;
-	args: unknown;
-	partialResult: unknown;
+	args: BoundaryValue;
+	partialResult: BoundaryValue;
 }
 
 export interface MutationTurnOptions {
@@ -78,9 +78,9 @@ export function hasRecognizedMutationPath(toolNames: readonly string[]): boolean
 interface CodeModeTrace {
 	id: string;
 	name: string;
-	input: unknown;
+	input: BoundaryValue;
 	status: string;
-	result?: unknown;
+	result?: BoundaryValue;
 }
 
 interface CodeModeCell {
@@ -95,63 +95,64 @@ interface ShellToken {
 	quoted: boolean;
 }
 
-function stringField(value: unknown, field: string): string | undefined {
+function stringField(value: BoundaryValue, field: string): string | undefined {
 	if (!isRecord(value)) return undefined;
 	const fieldValue = value[field];
-	return typeof fieldValue === "string" ? fieldValue : undefined;
+	return isString(fieldValue) ? fieldValue : undefined;
 }
 
-function numberField(value: unknown, field: string): number | undefined {
+function numberField(value: BoundaryValue, field: string): number | undefined {
 	if (!isRecord(value)) return undefined;
 	const fieldValue = value[field];
-	return typeof fieldValue === "number" ? fieldValue : undefined;
+	return isNumber(fieldValue) ? fieldValue : undefined;
 }
 
-function codeModeDetails(value: unknown): Record<string, unknown> | undefined {
+function codeModeDetails(value: BoundaryValue): DomainObject | undefined {
 	if (!isRecord(value)) return undefined;
 	const details = isRecord(value.details) ? value.details : value;
 	return details.codeMode === true ? details : undefined;
 }
 
-function traceFrom(value: unknown): CodeModeTrace | undefined {
+function traceFrom(value: BoundaryValue): CodeModeTrace | undefined {
 	if (
 		!isRecord(value) ||
-		typeof value.id !== "string" ||
-		typeof value.name !== "string" ||
-		typeof value.status !== "string"
+		!isString(value.id) ||
+		!isString(value.name) ||
+		!isString(value.status)
 	) {
 		return undefined;
 	}
-	return {
+	const trace: CodeModeTrace = {
 		id: value.id,
 		name: value.name,
 		input: value.input,
 		status: value.status,
-		...(value.result === undefined ? {} : { result: value.result }),
 	};
+	if (value.result !== undefined) trace.result = value.result;
+	return trace;
 }
 
-function commandFrom(input: unknown, field: "command" | "cmd"): string | undefined {
+function commandFrom(input: BoundaryValue, field: "command" | "cmd"): string | undefined {
 	return stringField(input, field);
 }
 
-function successfulExit(details: unknown): boolean {
+function successfulExit(details: BoundaryValue): boolean {
 	return (
 		numberField(details, "exit_code") === 0 && numberField(details, "session_id") === undefined
 	);
 }
 
-function successfulPatchDetails(details: unknown): boolean {
+function successfulPatchDetails(details: BoundaryValue): boolean {
 	return stringField(details, "status") === "success";
 }
 
-function stringArrayField(value: unknown, field: string): string[] | undefined {
+function stringArrayField(value: BoundaryValue, field: string): string[] | undefined {
 	if (!isRecord(value) || !Array.isArray(value[field])) return undefined;
 	const entries = value[field];
-	return entries.every((entry) => typeof entry === "string") ? entries : undefined;
+	return entries.every((entry) => isString(entry)) ? entries : undefined;
 }
 
-function changedFilesFromDetails(details: unknown): string[] | undefined {
+function changedFilesFromDetails(details: BoundaryValue): string[] | undefined {
 	if (!isRecord(details)) return undefined;
 	return (
 		stringArrayField(details, "changedFiles") ??
@@ -159,8 +160,8 @@ function changedFilesFromDetails(details: unknown): string[] | undefined {
 	);
 }
 
-function patchPaths(value: unknown): string[] | undefined {
-	if (typeof value !== "string") return undefined;
+function patchPaths(value: BoundaryValue): string[] | undefined {
+	if (!isString(value)) return undefined;
 	const paths: string[] = [];
 	for (const line of value.split(/\r?\n/)) {
 		const match = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
@@ -172,14 +173,14 @@ function patchPaths(value: unknown): string[] | undefined {
 }
 
 function patchPathsFromInput(
-	input: unknown,
+	input: BoundaryValue,
 	commandField?: "command" | "cmd",
 ): string[] | undefined {
 	if (commandField) return patchPaths(commandFrom(input, commandField));
 	return patchPaths(stringField(input, "patch"));
 }
 
-function editPath(input: unknown): string[] | undefined {
+function editPath(input: BoundaryValue): string[] | undefined {
 	const filePath = stringField(input, "path") ?? stringField(input, "file_path");
 	return filePath ? [filePath] : undefined;
 }
@@ -382,17 +383,12 @@ export function hasProvablePowerShellMutation(command: string): boolean {
 	return found;
 }
 
-function assistantCalls(message: unknown): Array<{ id: string; name: string }> {
+function assistantCalls(message: BoundaryValue): Array<{ id: string; name: string }> {
 	if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content))
 		return [];
 	const calls: Array<{ id: string; name: string }> = [];
 	for (const item of message.content) {
-		if (
-			isRecord(item) &&
-			item.type === "toolCall" &&
-			typeof item.id === "string" &&
-			typeof item.name === "string"
-		) {
+		if (isRecord(item) && item.type === "toolCall" && isString(item.id) && isString(item.name)) {
 			calls.push({ id: item.id, name: item.name });
 		}
 	}
@@ -436,7 +432,7 @@ export class MutationTurnBuffer {
 		}
 	}
 
-	finishTurn(message: unknown, options: MutationTurnOptions): MutationTurnEvidence {
+	finishTurn(message: BoundaryValue, options: MutationTurnOptions): MutationTurnEvidence {
 		const todoSucceeded = [...this.results.values()].some(
 			(result) => result.toolName === PREWALK_TODO_TOOL_NAME && !result.isError,
 		);
@@ -462,12 +458,12 @@ export class MutationTurnBuffer {
 		return evidence;
 	}
 
-	private mergeCodeModeDetails(details: Record<string, unknown>): void {
-		const cellId = typeof details.cellId === "string" ? details.cellId : undefined;
+	private mergeCodeModeDetails(details: DomainObject): void {
+		const cellId = isString(details.cellId) ? details.cellId : undefined;
 		if (!cellId) return;
 		const cell = this.cells.get(cellId) ?? { traces: new Map<string, CodeModeTrace>() };
-		if (typeof details.status === "string") cell.status = details.status;
-		if (typeof details.scriptError === "string") cell.scriptError = details.scriptError;
+		if (isString(details.status)) cell.status = details.status;
+		if (isString(details.scriptError)) cell.scriptError = details.scriptError;
 		if (Array.isArray(details.traces)) {
 			for (const value of details.traces) {
 				const trace = traceFrom(value);
@@ -560,7 +556,7 @@ export class MutationTurnBuffer {
 		}
 		if (result.toolName === "exec" || result.toolName === "wait") {
 			const details = codeModeDetails(result.details);
-			const cellId = details && typeof details.cellId === "string" ? details.cellId : undefined;
+			const cellId = details && isString(details.cellId) ? details.cellId : undefined;
 			const cell = cellId ? this.cells.get(cellId) : undefined;
 			if (!cellId || !cell || cell.status !== "result" || cell.scriptError) return undefined;
 			for (const trace of cell.traces.values()) {
@@ -640,7 +636,7 @@ export class MutationTurnBuffer {
 	private cleanupTurn(): void {
 		for (const result of this.results.values()) {
 			const details = codeModeDetails(result.details);
-			const cellId = details && typeof details.cellId === "string" ? details.cellId : undefined;
+			const cellId = details && isString(details.cellId) ? details.cellId : undefined;
 			if (cellId && stringField(details, "status") !== "yielded") this.cells.delete(cellId);
 			if (
 				result.toolName === "write_stdin" &&

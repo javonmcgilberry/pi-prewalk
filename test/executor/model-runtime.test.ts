@@ -127,6 +127,7 @@ describe("native temporary model runtime", () => {
 		const lease = fixture.runtime.mount(fixture.plan, fixture.callbacks);
 		fixture.setRoute(true);
 		const originalFind = fixture.registry.find;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		fixture.registry.find = ((provider: string, id: string) =>
 			provider === fixture.planner.provider && id === fixture.planner.id
 				? fixture.planner

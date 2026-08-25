@@ -1,10 +1,19 @@
+export type BenchmarkJsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| BenchmarkJsonValue[]
+	| { [key: string]: BenchmarkJsonValue }
+	| undefined;
+
 export const BENCHMARK_CONFIRMATION: string;
 export const ARMS: string[];
 export const STUDY_TARGETS: Readonly<BenchmarkManifest["targets"]>;
 export const RESULT_OUTCOMES: BenchmarkOutcome[];
 export const FROZEN_BENCHMARK_PROTOCOL: BenchmarkProtocol;
-export function canonicalJson(value: unknown): string;
-export function canonicalDigest(value: unknown): string;
+export function canonicalJson(value: BenchmarkJsonValue): string;
+export function canonicalDigest(value: BenchmarkJsonValue): string;
 export type BenchmarkOutcome = "passed" | "failed" | "timeout" | "invalid";
 export interface BenchmarkTask {
 	id: string;

@@ -1,4 +1,4 @@
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, isRecord, isString } from "../guards.js";
 
 export const PREWALK_TODO_TOOL_NAME = "prewalk_todo";
 
@@ -70,7 +70,7 @@ function cloneTodoPhases(phases: readonly TodoPhase[]): TodoPhase[] {
 	}));
 }
 
-function isStatus(value: unknown): value is TodoStatus {
+function isStatus(value: BoundaryValue): value is TodoStatus {
 	return (
 		value === "pending" ||
 		value === "in_progress" ||
@@ -80,15 +80,15 @@ function isStatus(value: unknown): value is TodoStatus {
 	);
 }
 
-function isTodoPhase(value: unknown): value is TodoPhase {
-	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) {
+function isTodoPhase(value: BoundaryValue): value is TodoPhase {
+	if (!isRecord(value) || !isString(value.name) || !Array.isArray(value.tasks)) {
 		return false;
 	}
 	return value.tasks.every((task) => {
-		if (!isRecord(task) || typeof task.content !== "string" || !isStatus(task.status)) {
+		if (!isRecord(task) || !isString(task.content) || !isStatus(task.status)) {
 			return false;
 		}
-		return task.blocker === undefined || typeof task.blocker === "string";
+		return task.blocker === undefined || isString(task.blocker);
 	});
 }
 
@@ -322,7 +322,7 @@ export function applyTodoOperation(current: readonly TodoPhase[], input: TodoInp
 	}
 }
 
-export function latestTodoPhases(messages: readonly unknown[]): TodoPhase[] {
+export function latestTodoPhases(messages: readonly BoundaryValue[]): TodoPhase[] {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
 		if (

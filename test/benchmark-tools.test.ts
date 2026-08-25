@@ -53,6 +53,7 @@ describe("benchmark-owned repository tools", () => {
 			{ cmd: "git status --short" },
 			new AbortController().signal,
 			undefined,
+			// SAFETY: The tool implementation ignores its opaque ExtensionContext on this execution path.
 			{} as never,
 		);
 		expect(request).toHaveBeenCalledWith(
@@ -80,6 +81,7 @@ describe("benchmark-owned repository tools", () => {
 			queueMicrotask(() => child.emit("exit", null, "SIGKILL"));
 			return true;
 		});
+		// SAFETY: The mock exposes the stdout, stdin, kill, and exit/error hooks consumed by the Docker bridge.
 		const spawnDocker = vi.fn(() => child as never);
 		const request = createDockerWorkerRequest("container-1", spawnDocker);
 		const controller = new AbortController();
@@ -114,7 +116,7 @@ describe("benchmark-owned repository tools", () => {
 
 describe("benchmark tool attestation", () => {
 	it("freezes the active tool slate after conversion and proves ownership", async () => {
-		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const handlers = new Map<"session_start" | "before_agent_start", () => void>();
 		const setActiveTools = vi.fn();
 		const allTools = [
 			{
@@ -135,7 +137,7 @@ describe("benchmark tool attestation", () => {
 			},
 		];
 		const pi = {
-			on: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => {
+			on: vi.fn((name: "session_start" | "before_agent_start", handler: () => void) => {
 				handlers.set(name, handler);
 			}),
 			setActiveTools,
@@ -147,14 +149,14 @@ describe("benchmark tool attestation", () => {
 			]),
 			getAllTools: vi.fn(() => allTools),
 		};
-		await benchmarkAttestation(pi as never);
-		await handlers.get("session_start")?.({}, {});
+		await benchmarkAttestation(pi);
+		handlers.get("session_start")?.();
 		expect(setActiveTools).toHaveBeenCalledWith([
 			"exec_command",
 			"write_stdin",
 			"apply_patch",
 			"prewalk_todo",
 		]);
-		expect(() => handlers.get("before_agent_start")?.({}, {})).not.toThrow();
+		expect(() => handlers.get("before_agent_start")?.()).not.toThrow();
 	});
 });

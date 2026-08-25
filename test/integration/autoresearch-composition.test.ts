@@ -80,6 +80,7 @@ async function createFixtureSession(
 			models: [planner],
 			streamSimple: (selected) => {
 				providerCalls += 1;
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				return response(selected as Model<"openai-codex-responses">);
 			},
 		});

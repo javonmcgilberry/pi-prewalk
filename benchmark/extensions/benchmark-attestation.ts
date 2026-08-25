@@ -1,9 +1,14 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+type BenchmarkAttestationAPI = {
+	on(event: "session_start" | "before_agent_start", handler: () => void): void;
+	getActiveTools(): string[];
+	getAllTools(): Array<{ name: string; sourceInfo: { path: string } }>;
+	setActiveTools(toolNames: string[]): void;
+};
 
 const ACTIVE_TOOLS = ["exec_command", "write_stdin", "apply_patch", "prewalk_todo"];
 const REMOTE_TOOLS = new Set(["exec_command", "write_stdin", "apply_patch"]);
 
-function attest(pi: ExtensionAPI): void {
+function attest(pi: BenchmarkAttestationAPI): void {
 	const active = pi.getActiveTools();
 	if (
 		active.length !== ACTIVE_TOOLS.length ||
@@ -24,7 +29,7 @@ function attest(pi: ExtensionAPI): void {
 	}
 }
 
-export default function benchmarkAttestation(pi: ExtensionAPI): void {
+export default function benchmarkAttestation(pi: BenchmarkAttestationAPI): void {
 	pi.on("session_start", () => {
 		pi.setActiveTools(ACTIVE_TOOLS);
 		attest(pi);

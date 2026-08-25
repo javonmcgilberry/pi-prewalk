@@ -71,7 +71,7 @@ export function withChildPolicy(
 		...structuredClone(config),
 		children: {
 			agents: {
-				...(config.children?.agents ?? {}),
+				...config.children?.agents,
 				[agent]: structuredClone(policy),
 			},
 		},

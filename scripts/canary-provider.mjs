@@ -15,6 +15,7 @@ import {
 	writeEvidence,
 } from "./canary-support.mjs";
 import { actionableStderr, buildRpcLaunchArgs, RpcProcess } from "./rpc-support.mjs";
+import { isString } from "./value-contracts.mjs";
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
 const options = validateCanaryOptions(parseCanaryArgs(process.argv.slice(2)));
@@ -284,9 +285,7 @@ try {
 		const audits = entries.filter(
 			(entry) => entry?.type === "custom" && entry.customType === "prewalk-audit",
 		);
-		auditEvents = audits
-			.map((entry) => entry.data?.event)
-			.filter((event) => typeof event === "string");
+		auditEvents = audits.map((entry) => entry.data?.event).filter((event) => isString(event));
 		const latest = audits.at(-1)?.data;
 		status = latest?.phase ?? "failed";
 		trigger = latest?.trigger?.toolName;
@@ -355,13 +354,12 @@ try {
 }
 
 const evidencePath = await persistEvidence();
-console.log(
-	JSON.stringify({
-		ok: outcome === "passed",
-		evidence: evidencePath,
-		...(failureReason ? { reasonCode: failureReason } : {}),
-	}),
-);
+const result = {
+	ok: outcome === "passed",
+	evidence: evidencePath,
+};
+if (failureReason) result.reasonCode = failureReason;
+console.log(JSON.stringify(result));
 if (receivedSignal) {
 	process.kill(process.pid, receivedSignal);
 } else if (failureReason) {

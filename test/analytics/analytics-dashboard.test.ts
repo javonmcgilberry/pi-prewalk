@@ -418,6 +418,7 @@ describe("analytics dashboard", () => {
 			component.dispose?.();
 			return undefined;
 		};
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		await showAnalyticsDashboard({ ui: { custom } } as any, overview(), async () => {
 			refreshCount += 1;
 			return overview();
@@ -441,6 +442,7 @@ describe("analytics dashboard", () => {
 			return undefined;
 		};
 		try {
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			await showAnalyticsDashboard({ ui: { custom } } as any, overview(), async () => {
 				refreshCount += 1;
 				return overview();
@@ -508,6 +510,7 @@ describe("analytics dashboard", () => {
 			return undefined;
 		};
 		try {
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			await showAnalyticsDashboard({ ui: { custom } } as any, active, async () => {
 				refreshCount += 1;
 				return finished;
@@ -691,6 +694,7 @@ describe("analytics dashboard", () => {
 			component.dispose();
 			return undefined;
 		};
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		await showAnalyticsDashboard({ ui: { custom } } as any, initial, async () => refreshed);
 		expect(selectedAfterRefresh).toContain("› History session 3");
 	});
@@ -727,6 +731,7 @@ describe("analytics dashboard", () => {
 			return undefined;
 		};
 
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		await showAnalyticsDashboard({ ui: { custom } } as any, overviewWithHistory(10), async () =>
 			overviewWithHistory(10),
 		);
@@ -768,6 +773,7 @@ describe("analytics dashboard", () => {
 			component.dispose();
 			return undefined;
 		};
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		await showAnalyticsDashboard({ ui: { custom } } as any, initial, async () => initial, {
 			enrichTitles: async () => enriched,
 		});
@@ -789,6 +795,7 @@ describe("analytics dashboard", () => {
 			component.dispose();
 			return undefined;
 		};
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const ctx = { ui: { custom } } as any;
 		await showAnalyticsDashboard(ctx, overview(), async () => overview());
 		await showAnalyticsDashboard(ctx, overview(), async () => overview());

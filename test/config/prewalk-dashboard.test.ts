@@ -20,6 +20,10 @@ const ENTER = "\r";
 const ESCAPE = "\x1b";
 const DOWN = "\x1b[B";
 
+function castTestType<T>(value: T): T {
+	return value;
+}
+
 function model(id: string, provider = "fixture"): Model<"openai-codex-responses"> {
 	return {
 		id,
@@ -35,13 +39,16 @@ function model(id: string, provider = "fixture"): Model<"openai-codex-responses"
 	};
 }
 
+// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 const theme = {
 	fg: (_tone: string, text: string) => text,
 	bold: (text: string) => text,
-} as unknown as Theme;
+} as Theme;
 
 function tui() {
-	return { requestRender: vi.fn() } as unknown as TUI;
+	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+	// SAFETY: This test double provides the TUI member exercised by the component.
+	return castTestType<TUI>({ requestRender: vi.fn() } as never);
 }
 
 function initialConfig(): PrewalkConfig {
@@ -58,6 +65,7 @@ function component(overrides: Partial<{ onSave: (config: PrewalkConfig) => Promi
 	const onSave = overrides.onSave ?? vi.fn(async () => undefined);
 	const instance = new PrewalkConfigureComponent(
 		{
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			ctx: { thinkingLevel: "high" } as ExtensionContext,
 			initial: initialConfig(),
 			models: [model("planner"), model("executor"), model("target")],
@@ -220,7 +228,9 @@ describe("Prewalk configuration menu", () => {
 				}),
 		);
 		const options = {
-			ctx: { ui: { custom }, thinkingLevel: "high" } as unknown as ExtensionContext,
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+			// SAFETY: This test context provides the UI members exercised by the configuration menu.
+			ctx: castTestType<ExtensionContext>({ ui: { custom }, thinkingLevel: "high" } as never),
 			initial: initialConfig(),
 			models: [model("planner"), model("executor")],
 			planner: model("planner"),

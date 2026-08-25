@@ -1,3 +1,13 @@
+type RpcValue =
+	| null
+	| boolean
+	| number
+	| string
+	| RpcValue[]
+	| { [key: string]: RpcValue }
+	| undefined;
+type RpcRecord = { [key: string]: RpcValue };
+
 export interface ModelRef {
 	provider: string;
 	id: string;
@@ -22,17 +32,17 @@ export class RpcProcess {
 		cwd: string;
 		env: NodeJS.ProcessEnv;
 		timeoutMs?: number;
-		onEvent?: (event: Record<string, unknown>, process: RpcProcess) => void;
+		onEvent?: (event: RpcRecord, process: RpcProcess) => void;
 	});
 	readonly child: import("node:child_process").ChildProcessWithoutNullStreams;
-	readonly events: Record<string, unknown>[];
+	readonly events: RpcRecord[];
 	stderr: string;
-	send(command: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
+	send(command: RpcRecord, timeoutMs?: number): Promise<RpcRecord>;
 	waitFor(
-		predicate: (event: Record<string, unknown>) => boolean,
+		predicate: (event: RpcRecord) => boolean,
 		timeoutMs?: number,
 		startIndex?: number,
-	): Promise<Record<string, unknown>>;
+	): Promise<RpcRecord>;
 	close(): Promise<void>;
 }
 export function actionableStderr(stderr: string): string[];

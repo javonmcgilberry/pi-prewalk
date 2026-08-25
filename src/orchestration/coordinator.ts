@@ -1,5 +1,6 @@
 import type { Api, Model, ModelThinkingLevel, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { AnalyticsConfig } from "../analytics/index.js";
+import { type BoundaryValue, isString } from "../guards.js";
 
 export const DEFAULT_PLANNER = {
 	provider: "openai-codex",
@@ -152,8 +153,8 @@ export const REASONING_LEVELS: readonly ThinkingLevel[] = [
 	"max",
 ];
 
-export function isReasoningLevel(value: unknown): value is ThinkingLevel {
-	return typeof value === "string" && REASONING_LEVELS.some((level) => level === value);
+export function isReasoningLevel(value: BoundaryValue): value is ThinkingLevel {
+	return isString(value) && REASONING_LEVELS.some((level) => level === value);
 }
 
 export function isPlannerSelected(model: Model<Api> | undefined, planner: ModelConfig): boolean {

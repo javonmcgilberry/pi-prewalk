@@ -158,12 +158,12 @@ runDockerIntegration("real Docker benchmark worker", () => {
 				ok: true,
 				patchDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 			});
-			if (typeof sealed.patchBase64 !== "string") {
-				throw new Error("Worker seal is missing.");
-			}
-			expect(Buffer.from(sealed.patchBase64, "base64").toString("utf8")).toContain("+after");
+			expect(sealed.patchBase64).toEqual(expect.any(String));
+			// SAFETY: The assertion above verifies the worker returned a base64 string.
+			const patchBase64 = sealed.patchBase64 as string;
+			expect(Buffer.from(patchBase64, "base64").toString("utf8")).toContain("+after");
 			await sandbox.destroy(worker);
-			const evaluated = await sandbox.evaluate(task, "integration-run", sealed.patchBase64);
+			const evaluated = await sandbox.evaluate(task, "integration-run", patchBase64);
 			expect(evaluated).toMatchObject({ ok: true, outcome: "passed" });
 		} finally {
 			await sandbox.cleanup();

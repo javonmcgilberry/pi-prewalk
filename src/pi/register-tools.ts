@@ -60,14 +60,12 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 			if (!run || run.phase === "cancelled" || run.phase === "failed") {
 				throw new Error("Prewalk todo is inactive.");
 			}
-			const input: TodoInput = {
-				op: params.op,
-				...(params.list ? { list: params.list } : {}),
-				...(params.task ? { task: params.task } : {}),
-				...(params.phase ? { phase: params.phase } : {}),
-				...(params.items ? { items: params.items } : {}),
-				...(params.reason ? { reason: params.reason } : {}),
-			};
+			const input: TodoInput = { op: params.op };
+			if (params.list) input.list = params.list;
+			if (params.task) input.task = params.task;
+			if (params.phase) input.phase = params.phase;
+			if (params.items) input.items = params.items;
+			if (params.reason) input.reason = params.reason;
 			const result = deps.turnGate.applyTodo(input);
 			if (result.isError) throw new Error(result.text);
 			if (input.op === "init") deps.onTodoInitialized();

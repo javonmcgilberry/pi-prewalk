@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
+import { isString } from "./value-contracts.mjs";
 
 const MODEL_REF = /^([a-z0-9][a-z0-9._-]*)\/(.+)$/i;
 
 export function parseModelRef(value) {
-	const match = typeof value === "string" ? MODEL_REF.exec(value) : undefined;
+	const match = isString(value) ? MODEL_REF.exec(value) : undefined;
 	if (!match || !match[2]?.trim()) throw new Error("Model must be provider/model.");
 	return { provider: match[1], id: match[2] };
 }
@@ -90,7 +91,7 @@ export class RpcProcess {
 			}
 			this.events.push(value);
 			onEvent?.(value, this);
-			for (const waiter of [...this.waiters]) {
+			for (const waiter of this.waiters) {
 				if (!waiter.predicate(value)) continue;
 				this.waiters.delete(waiter);
 				clearTimeout(waiter.timer);

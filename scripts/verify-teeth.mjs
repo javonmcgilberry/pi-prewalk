@@ -32,6 +32,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { isString } from "./value-contracts.mjs";
 
 const run = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "..");
@@ -54,15 +55,15 @@ try {
 		`Could not read mutation spec ${resolvedSpecPath}: ${error instanceof Error ? error.message : String(error)}`,
 	);
 }
-if (typeof spec.test !== "string" || !Array.isArray(spec.mutations)) {
+if (!isString(spec.test) || !Array.isArray(spec.mutations)) {
 	throw new Error("Spec needs a `test` command string and a `mutations` array.");
 }
 for (const [index, mutation] of spec.mutations.entries()) {
 	if (
-		typeof mutation?.name !== "string" ||
-		typeof mutation?.file !== "string" ||
-		typeof mutation?.find !== "string" ||
-		typeof mutation?.replace !== "string"
+		!isString(mutation?.name) ||
+		!isString(mutation?.file) ||
+		!isString(mutation?.find) ||
+		!isString(mutation?.replace)
 	) {
 		throw new Error(`mutations[${index}] needs string name, file, find, and replace.`);
 	}

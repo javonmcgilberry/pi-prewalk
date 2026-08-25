@@ -6,6 +6,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { parseConfig } from "../../src/config/prewalk-config.js";
+import { type BoundaryValue, isRecord, isString } from "../../src/guards.js";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -58,18 +59,91 @@ function findTypeAssertions(path: string, source: string): string[] {
 	return assertions;
 }
 
+type PackageContract = {
+	description: string;
+	bin?: Record<string, string>;
+	files: string[];
+	scripts: Record<string, string>;
+	dependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	devDependencies: Record<string, string>;
+	pi: { extensions: string[] };
+};
+
+function stringRecord(value: BoundaryValue): Record<string, string> | undefined {
+	if (!isRecord(value)) return undefined;
+	const result: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (!isString(entry)) return undefined;
+		result[key] = entry;
+	}
+	return result;
+}
+
+function parsePackage(value: BoundaryValue): PackageContract | undefined {
+	if (
+		!isRecord(value) ||
+		!isString(value.description) ||
+		!Array.isArray(value.files) ||
+		!value.files.every(isString) ||
+		!stringRecord(value.scripts) ||
+		!stringRecord(value.devDependencies) ||
+		!isRecord(value.pi) ||
+		!Array.isArray(value.pi.extensions) ||
+		!value.pi.extensions.every(isString)
+	) {
+		return undefined;
+	}
+	const scripts = stringRecord(value.scripts);
+	const devDependencies = stringRecord(value.devDependencies);
+	if (!scripts || !devDependencies) return undefined;
+	const pkg: PackageContract = {
+		description: value.description,
+		files: value.files,
+		scripts,
+		devDependencies,
+		pi: { extensions: value.pi.extensions },
+	};
+	for (const key of ["bin", "dependencies", "peerDependencies"] as const) {
+		const entry = value[key];
+		if (entry !== undefined) {
+			const parsed = stringRecord(entry);
+			if (!parsed) return undefined;
+			pkg[key] = parsed;
+		}
+	}
+	return pkg;
+}
+
+type TsConfigContract = {
+	compilerOptions: { baseUrl?: string; paths?: Record<string, string[]> };
+};
+
+function parseTsConfig(value: BoundaryValue): TsConfigContract | undefined {
+	if (!isRecord(value) || !isRecord(value.compilerOptions)) return undefined;
+	const compilerOptions: TsConfigContract["compilerOptions"] = {};
+	if (value.compilerOptions.baseUrl !== undefined) {
+		if (!isString(value.compilerOptions.baseUrl)) return undefined;
+		compilerOptions.baseUrl = value.compilerOptions.baseUrl;
+	}
+	if (value.compilerOptions.paths !== undefined && !isRecord(value.compilerOptions.paths)) {
+		return undefined;
+	}
+	if (isRecord(value.compilerOptions.paths)) {
+		const paths: Record<string, string[]> = {};
+		for (const [key, entry] of Object.entries(value.compilerOptions.paths)) {
+			if (!Array.isArray(entry) || !entry.every(isString)) return undefined;
+			paths[key] = entry;
+		}
+		compilerOptions.paths = paths;
+	}
+	return { compilerOptions };
+}
+
 describe("shipped package contract", () => {
 	it("describes and packages the fixed stock-Pi extension and canaries", async () => {
-		const pkg = JSON.parse(await text("package.json")) as {
-			description: string;
-			bin?: Record<string, string>;
-			files: string[];
-			scripts: Record<string, string>;
-			dependencies?: Record<string, string>;
-			peerDependencies?: Record<string, string>;
-			devDependencies: Record<string, string>;
-			pi: { extensions: string[] };
-		};
+		const pkg = parsePackage(JSON.parse(await text("package.json")));
+		if (!pkg) throw new Error("Expected package.json to satisfy the shipped package contract.");
 
 		expect(pkg.description.toLowerCase()).toContain("same-session");
 		expect(pkg.description).toContain("planner-to-executor");
@@ -131,9 +205,8 @@ describe("shipped package contract", () => {
 	});
 
 	it("compiles against published Pi without patched path aliases", async () => {
-		const tsconfig = JSON.parse(await text("tsconfig.json")) as {
-			compilerOptions: { baseUrl?: string; paths?: Record<string, string[]> };
-		};
+		const tsconfig = parseTsConfig(JSON.parse(await text("tsconfig.json")));
+		if (!tsconfig) throw new Error("Expected tsconfig.json to satisfy its parsed contract.");
 		expect(tsconfig.compilerOptions.baseUrl).toBeUndefined();
 		expect(tsconfig.compilerOptions.paths).toBeUndefined();
 		expect(JSON.stringify(tsconfig)).not.toContain("earendil-works-pi");

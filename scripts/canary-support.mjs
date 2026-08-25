@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isFunction, isNumber, isRecord, isString } from "./value-contracts.mjs";
 
 export const CANARY_CONFIRMATION = "I_UNDERSTAND_PROVIDER_REQUESTS";
 export const CANARY_TOOL_ALLOWLIST = "prewalk_todo,read,edit,write";
@@ -35,7 +36,7 @@ export function findCanaryHiddenGuidancePaths(payload, hiddenPrompts) {
 	const paths = [];
 	const visit = (value, path) => {
 		if (paths.length >= 16) return;
-		if (typeof value === "string") {
+		if (isString(value)) {
 			if (expected.some((prompt) => value.includes(prompt))) paths.push(path);
 			return;
 		}
@@ -44,7 +45,7 @@ export function findCanaryHiddenGuidancePaths(payload, hiddenPrompts) {
 				visit(value[index], `${path}[${index}]`);
 			return;
 		}
-		if (!value || typeof value !== "object") return;
+		if (!value || !isRecord(value)) return;
 		for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`);
 	};
 	visit(payload, "$payload");
@@ -52,26 +53,22 @@ export function findCanaryHiddenGuidancePaths(payload, hiddenPrompts) {
 }
 
 export function canaryPayloadTargetsModel(payload, model) {
-	if (!payload || typeof payload !== "object") return false;
+	if (!payload || !isRecord(payload)) return false;
 	if (payload.model === model) return true;
 	const request = payload.request;
-	return Boolean(request && typeof request === "object" && request.model === model);
+	return Boolean(request && isRecord(request) && request.model === model);
 }
 
 export function canaryAuditState(entries) {
 	const audits = entries.filter(
 		(entry) => entry?.type === "custom" && entry.customType === "prewalk-audit",
 	);
-	const events = audits
-		.map((entry) => entry.data?.event)
-		.filter((event) => typeof event === "string");
+	const events = audits.map((entry) => entry.data?.event).filter((event) => isString(event));
 	const latest = audits.at(-1)?.data;
 	if (latest?.event === "failed") {
-		return {
-			state: "failed",
-			events,
-			...(typeof latest.reasonCode === "string" ? { reasonCode: latest.reasonCode } : {}),
-		};
+		const state = { state: "failed", events };
+		if (isString(latest.reasonCode)) state.reasonCode = latest.reasonCode;
+		return state;
 	}
 	if (events.includes("handoff-completed")) return { state: "completed", events };
 	return { state: events.includes("todo-ready") ? "ready" : "running", events };
@@ -97,7 +94,7 @@ export function evaluateCanaryPayloadMarker(marker, requirement) {
 }
 
 export function isCanaryMutationInput(toolName, input, requestedPath, fixturePath) {
-	if (requestedPath !== fixturePath || !input || typeof input !== "object") return false;
+	if (requestedPath !== fixturePath || !input || !isRecord(input)) return false;
 	if (toolName === "write") return input.content === "after" || input.content === "after\n";
 	if (toolName !== "edit") return false;
 	return (
@@ -218,9 +215,7 @@ export function buildCanaryPrewalkConfig(executor, reasoning) {
 function safeLabels(values, name) {
 	if (
 		!Array.isArray(values) ||
-		!values.every(
-			(value) => typeof value === "string" && value.length > 0 && !/[\r\n]/.test(value),
-		)
+		!values.every((value) => isString(value) && value.length > 0 && !/[\r\n]/.test(value))
 	) {
 		throw new Error(`Invalid evidence ${name}.`);
 	}
@@ -245,8 +240,8 @@ export function buildEvidenceSummary({
 	if (outcome !== "passed" && outcome !== "failed") {
 		throw new Error("Invalid canary outcome.");
 	}
-	if (!status || typeof status !== "string") throw new Error("Invalid canary status.");
-	if (trigger !== undefined && typeof trigger !== "string") {
+	if (!status || !isString(status)) throw new Error("Invalid canary status.");
+	if (trigger !== undefined && !isString(trigger)) {
 		throw new Error("Invalid canary trigger.");
 	}
 	const numericUsage = {};
@@ -256,12 +251,12 @@ export function buildEvidenceSummary({
 		numericUsage[key] = value;
 	}
 	for (const digest of [settingsBefore, settingsAfter]) {
-		if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) {
+		if (!isString(digest) || !/^[a-f0-9]{64}$/.test(digest)) {
 			throw new Error("Invalid settings digest.");
 		}
 	}
 	const createdAt = new Date(now);
-	return {
+	const summary = {
 		schemaVersion: 1,
 		createdAt: createdAt.toISOString(),
 		expiresAt: new Date(createdAt.getTime() + retentionMs).toISOString(),
@@ -269,7 +264,6 @@ export function buildEvidenceSummary({
 		requestModels: safeLabels(requestModels, "request models"),
 		usage: numericUsage,
 		status,
-		...(trigger ? { trigger } : {}),
 		settingsBefore,
 		settingsAfter,
 		assertions: safeLabels(assertions, "assertions"),
@@ -277,6 +271,8 @@ export function buildEvidenceSummary({
 		toolEvents: safeLabels(toolEvents, "tool events"),
 		payloadGuidancePaths: safeLabels(payloadGuidancePaths, "payload guidance paths"),
 	};
+	if (trigger) summary.trigger = trigger;
+	return summary;
 }
 
 async function validateEvidenceDirectory(directory, create) {
@@ -293,7 +289,7 @@ async function validateEvidenceDirectory(directory, create) {
 	if (info.isSymbolicLink() || !info.isDirectory()) {
 		throw new Error("Evidence directory must be a real directory, not a symlink.");
 	}
-	if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+	if (isFunction(process.getuid) && info.uid !== process.getuid()) {
 		throw new Error("Evidence directory is not owned by the current user.");
 	}
 	return true;
@@ -339,7 +335,7 @@ export async function pruneEvidence(directory, now = new Date()) {
 		}
 		if (
 			value?.schemaVersion === 1 &&
-			typeof value.expiresAt === "string" &&
+			isString(value.expiresAt) &&
 			Date.parse(value.expiresAt) <= now.getTime()
 		) {
 			await rm(filePath, { force: true });
@@ -354,11 +350,11 @@ export async function stageOpenAICodexCredential(sourceFile, targetFile) {
 	const credential = source?.["openai-codex"];
 	if (
 		!credential ||
-		typeof credential !== "object" ||
+		!isRecord(credential) ||
 		credential.type !== "oauth" ||
-		typeof credential.access !== "string" ||
-		typeof credential.refresh !== "string" ||
-		typeof credential.expires !== "number"
+		!isString(credential.access) ||
+		!isString(credential.refresh) ||
+		!isNumber(credential.expires)
 	) {
 		throw new Error("The source auth file has no complete openai-codex OAuth credential.");
 	}
@@ -372,9 +368,9 @@ export async function stageOpenAICodexCredential(sourceFile, targetFile) {
 export async function stageProviderCredentials(sourceFile, targetFile, providers) {
 	const source = JSON.parse(await readFile(sourceFile, "utf8"));
 	const staged = {};
-	for (const provider of [...new Set(providers)]) {
+	for (const provider of new Set(providers)) {
 		const credential = source?.[provider];
-		if (!credential || typeof credential !== "object" || Array.isArray(credential)) {
+		if (!credential || !isRecord(credential) || Array.isArray(credential)) {
 			throw new Error(`The source auth file has no credential for ${provider}.`);
 		}
 		staged[provider] = credential;

@@ -1,3 +1,4 @@
+import type { BoundaryValue } from "../guards.js";
 import {
 	type MutationExecutionUpdate,
 	type MutationToolResult,
@@ -32,7 +33,7 @@ export class TurnGate {
 		this.#runMutations.resetForRun();
 	}
 
-	restoreTodo(messages: readonly unknown[]): void {
+	restoreTodo(messages: readonly BoundaryValue[]): void {
 		this.#todoPhases = latestTodoPhases(messages);
 	}
 
@@ -66,7 +67,7 @@ export class TurnGate {
 		this.#runMutations.recordResult(event);
 	}
 
-	finishTurn(message: unknown, options: MutationTurnOptions): MutationTurnEvidence {
+	finishTurn(message: BoundaryValue, options: MutationTurnOptions): MutationTurnEvidence {
 		return this.#runMutations.finishTurn(message, options);
 	}
 }

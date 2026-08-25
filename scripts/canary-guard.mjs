@@ -5,6 +5,7 @@ import {
 	findCanaryHiddenGuidancePaths,
 	isCanaryMutationInput,
 } from "./canary-support.mjs";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 const scenarioPath = process.env.PREWALK_CANARY_SCENARIO;
 if (!scenarioPath || !path.isAbsolute(scenarioPath)) {
@@ -17,14 +18,14 @@ if (!scenarioStat.isFile() || (scenarioStat.mode & 0o077) !== 0) {
 const scenario = JSON.parse(readFileSync(scenarioPath, "utf8"));
 if (
 	!scenario ||
-	typeof scenario !== "object" ||
+	!isRecord(scenario) ||
 	Object.keys(scenario).some(
 		(key) => !["cwd", "fixturePath", "markerPath", "targetModel"].includes(key),
 	) ||
-	typeof scenario.cwd !== "string" ||
-	typeof scenario.fixturePath !== "string" ||
-	typeof scenario.markerPath !== "string" ||
-	typeof scenario.targetModel !== "string"
+	!isString(scenario.cwd) ||
+	!isString(scenario.fixturePath) ||
+	!isString(scenario.markerPath) ||
+	!isString(scenario.targetModel)
 ) {
 	throw new Error("Canary scenario is invalid.");
 }

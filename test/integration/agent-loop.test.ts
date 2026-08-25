@@ -1,3 +1,5 @@
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -24,12 +26,51 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import prewalkExtension from "../../extensions/prewalk.js";
 import { AnalyticsStore } from "../../src/analytics/store.js";
 import {
+	type BoundaryValue,
+	isBoolean,
+	isNumber,
+	isRecord,
+	isString,
+	parseBoundaryValue,
+} from "../../src/guards.js";
+import {
 	DEFAULT_EXECUTOR,
 	EXECUTOR_MODEL_ID,
 	PLANNER_MODEL_ID,
 	PREWALK_RECOVER_MESSAGE_TYPE,
 } from "../../src/orchestration/coordinator.js";
 import { PREWALK_TODO_TOOL_NAME } from "../../src/turn/todo.js";
+
+function parseJsonValue(value: BoundaryValue): JsonValue | undefined {
+	if (value === null || isString(value) || isNumber(value) || isBoolean(value)) return value;
+	if (Array.isArray(value)) {
+		const result: JsonValue[] = [];
+		for (const item of value) {
+			const parsed = parseJsonValue(parseBoundaryValue(item));
+			if (parsed === undefined) return undefined;
+			result.push(parsed);
+		}
+		return result;
+	}
+	if (!isRecord(value)) return undefined;
+	const result: { [key: string]: JsonValue } = {};
+	for (const [key, item] of Object.entries(value)) {
+		const parsed = parseJsonValue(parseBoundaryValue(item));
+		if (parsed === undefined) return undefined;
+		result[key] = parsed;
+	}
+	return result;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
+	return value !== undefined && value !== null && !Array.isArray(value) && isRecord(value);
+}
+
+function parseTraceRecord(line: string): { [key: string]: JsonValue } {
+	const parsed = parseJsonValue(parseBoundaryValue(JSON.parse(line)));
+	if (!isJsonObject(parsed)) throw new Error("Expected each trace line to contain a JSON object.");
+	return parsed;
+}
 
 function model(id: string): Model<"openai-codex-responses"> {
 	return {
@@ -118,7 +159,7 @@ function abortedResponse(selected: Model<"openai-codex-responses">) {
 	return stream;
 }
 
-function toolCall(id: string, name: string, argumentsValue: Record<string, unknown>): ToolCall {
+function toolCall(id: string, name: string, argumentsValue: Record<string, JsonValue>): ToolCall {
 	return { type: "toolCall", id, name, arguments: argumentsValue };
 }
 
@@ -727,6 +768,7 @@ describe("stock Pi Agent-loop integration", () => {
 					const trailingMessage = JSON.stringify(context.messages.at(-1) ?? "");
 					if (trailingMessage.includes(autoresearchContinuation)) {
 						calls.push({ model: selected.id, owner: "autoresearch" });
+						// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 						return response(selected as Model<"openai-codex-responses">, [
 							{ type: "text", text: "Autoresearch continuation recorded." },
 						]);
@@ -827,7 +869,7 @@ describe("stock Pi Agent-loop integration", () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const providerCalls: string[] = [];
-		const executedInputs: Array<Record<string, unknown>> = [];
+		const executedInputs: Array<Record<string, JsonValue>> = [];
 		const provider: ExtensionFactory = (pi) => {
 			pi.registerProvider("openai-codex", {
 				api: "openai-codex-responses",
@@ -1055,7 +1097,7 @@ describe("stock Pi Agent-loop integration", () => {
 				.trim()
 				.split("\n")
 				.filter(Boolean)
-				.map((line) => JSON.parse(line) as Record<string, unknown>);
+				.map(parseTraceRecord);
 			const providerRecords = trace.filter((record) => record.type === "provider");
 			const childRecords = trace.filter(
 				(record) => record.type === "before-agent-start" && record.agent !== "parent",

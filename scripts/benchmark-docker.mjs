@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 const PINNED_IMAGE = /^[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$/;
@@ -23,7 +24,7 @@ function safeName(value) {
 }
 
 function assertImage(image) {
-	if (typeof image !== "string" || !PINNED_IMAGE.test(image)) {
+	if (!isString(image) || !PINNED_IMAGE.test(image)) {
 		throw new Error("Benchmark image must be digest-pinned.");
 	}
 }
@@ -119,7 +120,7 @@ function parseJsonOutput(result, operation) {
 	} catch {
 		throw new Error(`Docker ${operation} returned invalid JSON.`);
 	}
-	if (!value || typeof value !== "object") {
+	if (!value || (!isRecord(value) && !Array.isArray(value))) {
 		throw new Error(`Docker ${operation} returned an invalid response.`);
 	}
 	return value;
@@ -296,7 +297,7 @@ export class DockerBenchmarkSandbox {
 	}
 
 	async cleanup() {
-		for (const handle of [...this.handles.values()]) {
+		for (const handle of this.handles.values()) {
 			let removed = false;
 			for (let attempt = 0; attempt < 2 && !removed; attempt += 1) {
 				try {

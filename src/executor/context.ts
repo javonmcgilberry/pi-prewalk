@@ -1,4 +1,5 @@
 import type { Api, AssistantMessage, Context, Message, Model, Usage } from "@earendil-works/pi-ai";
+import { type BoundaryValue, isString } from "../guards.js";
 
 /** Stock Pi's default reserveTokens value (see core/compaction/compaction.ts). */
 export const CONTEXT_RESERVE_TOKENS = 16_384;
@@ -115,17 +116,16 @@ function estimateMessage(message: Message): number {
 		if (block.type === "text" || block.type === "thinking") {
 			characters += block.type === "text" ? block.text.length : block.thinking.length;
 		} else {
-			characters +=
-				typeof block.name === "string"
-					? block.name.length + safeJson(block.arguments).length
-					: safeJson(block).length;
+			characters += isString(block.name)
+				? block.name.length + safeJson(block.arguments).length
+				: safeJson(block).length;
 		}
 	}
 	return ceilTokens(characters);
 }
 
 function estimateContent(content: string | readonly { type: string; text?: string }[]): number {
-	if (typeof content === "string") return estimateText(content);
+	if (isString(content)) return estimateText(content);
 	let characters = 0;
 	for (const block of content)
 		characters += block.type === "text" ? (block.text?.length ?? 0) : 4_800;
@@ -140,7 +140,7 @@ function ceilTokens(characters: number): number {
 	return Math.ceil(characters / 4);
 }
 
-function safeJson(value: unknown): string {
+function safeJson(value: BoundaryValue): string {
 	try {
 		return JSON.stringify(value) ?? "undefined";
 	} catch {

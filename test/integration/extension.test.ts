@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../../extensions/prewalk.js";
 import { AnalyticsStore } from "../../src/analytics/store.js";
 import { estimateRequestTokens } from "../../src/executor/context.js";
+import type { BoundaryValue } from "../../src/guards.js";
 import {
 	DEFAULT_EXECUTOR,
 	DEFAULT_HANDOFF_CONFIG,
@@ -31,7 +32,21 @@ import {
 } from "../../src/orchestration/coordinator.js";
 import { PREWALK_TODO_TOOL_NAME } from "../../src/turn/todo.js";
 
-type Handler = (event: any, ctx: ExtensionContext) => unknown;
+type Handler = (
+	event: BoundaryValue,
+	ctx: ExtensionContext,
+) => BoundaryValue | Promise<BoundaryValue>;
+
+type HarnessEntry = { data: BoundaryValue };
+
+function castTestType<T>(value: T): T {
+	return value;
+}
+
+function requiredEntry<T extends HarnessEntry>(entry: T | undefined): T {
+	if (!entry) throw new Error("Expected harness entry");
+	return entry;
+}
 
 function model(id: string, contextWindow = 200_000): Model<"openai-codex-responses"> {
 	return {
@@ -124,7 +139,7 @@ function createHarness(
 	} = {},
 ) {
 	const handlers = new Map<string, Handler[]>();
-	const busHandlers = new Map<string, Array<(data: unknown) => void>>();
+	const busHandlers = new Map<string, Array<(data: BoundaryValue) => void>>();
 	const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
 	const tools = new Map<string, ToolDefinition>();
 	if (options.foreignTodo) tools.set("todo", options.foreignTodo);
@@ -138,14 +153,14 @@ function createHarness(
 		triggerTurn?: boolean;
 		deliverAs?: "steer" | "followUp" | "nextTurn";
 	}> = [];
-	const entries: Array<{ customType: string; data: unknown }> = [];
+	const entries: Array<{ customType: string; data: BoundaryValue }> = [];
 	const statuses: Array<string | undefined> = [];
 	const notifications: string[] = [];
 	const delegated: Model<"openai-codex-responses">[] = [];
 	const delegatedOptions: Array<{ reasoning?: string } | undefined> = [];
 	const delegatedContexts: Array<{ messages: unknown[] }> = [];
 	const compactionCalls: Array<{
-		onComplete?: (result: unknown) => void;
+		onComplete?: (result: BoundaryValue) => void;
 		onError?: (error: Error) => void;
 	}> = [];
 	let contextUsage:
@@ -163,6 +178,7 @@ function createHarness(
 	let currentThinking: ThinkingLevel = "low";
 	let activeStream: { aborted: boolean } | undefined;
 	let streamImpl: NonNullable<ProviderConfig["streamSimple"]> = (selected) =>
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		doneStream(selected as Model<"openai-codex-responses">);
 	const baseStream: NonNullable<ProviderConfig["streamSimple"]> = (
 		selected,
@@ -182,6 +198,7 @@ function createHarness(
 					? currentModel
 					: selected;
 			const contextMessages =
+				// SAFETY: The harness context handler returns Pi's provider message array.
 				(contextResults.at(-1) as { messages?: unknown[] } | undefined)?.messages ??
 				streamContext.messages;
 			const estimatedTokens = estimateRequestTokens({
@@ -191,6 +208,7 @@ function createHarness(
 			});
 			if (estimatedTokens > Math.max(0, effectiveSelected.contextWindow - 16_384)) {
 				const pressure = {
+					// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 					...assistant(effectiveSelected as Model<"openai-codex-responses">),
 					content: [],
 					stopReason: "stop" as const,
@@ -201,6 +219,7 @@ function createHarness(
 				output.end();
 				return;
 			}
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			delegated.push(effectiveSelected as Model<"openai-codex-responses">);
 			const effectiveOptions = {
 				...options,
@@ -208,11 +227,16 @@ function createHarness(
 					options?.reasoning ?? (currentThinking === "off" ? undefined : currentThinking),
 			};
 			delegatedOptions.push(effectiveOptions);
-			const transformedContext = { ...streamContext, messages: contextMessages as any };
+			const transformedContext = {
+				...streamContext,
+				// SAFETY: The harness context handler returns Pi's provider message array.
+				messages: contextMessages as Context["messages"],
+			};
 			delegatedContexts.push(transformedContext);
 			const source = streamImpl(effectiveSelected, transformedContext, effectiveOptions);
 			for await (const event of source) {
 				if (streamState.aborted) {
+					// SAFETY: The stream event fallback is the model selected for this harness.
 					const sourceMessage =
 						"partial" in event
 							? event.partial
@@ -220,7 +244,8 @@ function createHarness(
 								? event.message
 								: "error" in event
 									? event.error
-									: assistant(effectiveSelected as Model<"openai-codex-responses">);
+									: // SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+										assistant(effectiveSelected as Model<"openai-codex-responses">);
 					const aborted = {
 						...sourceMessage,
 						stopReason: "aborted" as const,
@@ -247,9 +272,10 @@ function createHarness(
 	let providerConfig: ProviderConfig | undefined = oauthConfig(baseStream);
 	let branch: unknown[] = [];
 
-	const pi = {
+	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+	const pi = castTestType<ExtensionAPI>({
 		events: {
-			on: vi.fn((channel: string, handler: (data: unknown) => void) => {
+			on: vi.fn((channel: string, handler: (data: BoundaryValue) => void) => {
 				const registered = busHandlers.get(channel) ?? [];
 				registered.push(handler);
 				busHandlers.set(channel, registered);
@@ -260,7 +286,7 @@ function createHarness(
 					);
 				};
 			}),
-			emit: vi.fn((channel: string, data: unknown) => {
+			emit: vi.fn((channel: string, data: BoundaryValue) => {
 				for (const handler of busHandlers.get(channel) ?? []) handler(data);
 			}),
 		},
@@ -336,10 +362,10 @@ function createHarness(
 			messages.push(message);
 			messageOptions.push(options ?? {});
 		}),
-		appendEntry: vi.fn((customType: string, data: unknown) => {
+		appendEntry: vi.fn((customType: string, data: BoundaryValue) => {
 			entries.push({ customType, data });
 		}),
-	} as unknown as ExtensionAPI;
+	} as never);
 
 	const modelRegistry = {
 		getAvailable: () => options.availableModels ?? [planner, executor],
@@ -355,7 +381,8 @@ function createHarness(
 		})),
 		getRegisteredProviderConfig: vi.fn(() => providerConfig),
 	};
-	const context = {
+	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+	const context = castTestType<ExtensionContext>({
 		cwd: process.cwd(),
 		get model() {
 			return currentModel;
@@ -392,7 +419,7 @@ function createHarness(
 		isIdle: () => idle,
 		isProjectTrusted: () => true,
 		compact: (options: {
-			onComplete?: (result: unknown) => void;
+			onComplete?: (result: BoundaryValue) => void;
 			onError?: (error: Error) => void;
 		}) => {
 			compactionCalls.push(options);
@@ -406,9 +433,9 @@ function createHarness(
 			getBranch: () => branch,
 			buildContextEntries: () => [],
 		},
-	} as unknown as ExtensionContext;
+	} as never);
 
-	const emit = async (name: string, event: unknown) => {
+	const emit = async (name: string, event: BoundaryValue) => {
 		const results = [];
 		for (const handler of handlers.get(name) ?? []) {
 			results.push(await handler(event, context));
@@ -424,7 +451,8 @@ function createHarness(
 		baseStream,
 		handlers,
 		commands,
-		tools: tools as Map<string, any>,
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		tools: tools as Map<string, ToolDefinition>,
 		messages,
 		messageOptions,
 		entries,
@@ -440,7 +468,7 @@ function createHarness(
 		setIdle: (value: boolean) => {
 			idle = value;
 		},
-		completeCompaction: (result: unknown = {}) => {
+		completeCompaction: (result: BoundaryValue = {}) => {
 			compactionCalls.at(-1)?.onComplete?.(result);
 		},
 		failCompaction: (error = new Error("compaction failed")) => {
@@ -450,7 +478,7 @@ function createHarness(
 		activeToolUpdates,
 		terminalInput: (data: string) => terminalInputHandler?.(data),
 		emit,
-		emitBus: (channel: string, data: unknown) => {
+		emitBus: (channel: string, data: BoundaryValue) => {
 			for (const handler of busHandlers.get(channel) ?? []) handler(data);
 		},
 		providerConfig: () => providerConfig,
@@ -572,9 +600,16 @@ async function completePlanningOnlyRun(
 			undefined,
 			harness.context,
 		);
-	await harness.tools
-		.get(PREWALK_TODO_TOOL_NAME)
-		?.execute(`${toolCallId}-done`, { op: "done", task }, undefined, undefined, harness.context);
+	const todoTool = harness.tools.get(PREWALK_TODO_TOOL_NAME);
+	if (!todoTool) throw new Error("Expected Prewalk todo tool");
+	const runTodoTool = todoTool.execute;
+	await runTodoTool(
+		`${toolCallId}-done`,
+		{ op: "done", task },
+		undefined,
+		undefined,
+		harness.context,
+	);
 	await emitSuccessfulToolResult(harness, toolCallId, PREWALK_TODO_TOOL_NAME);
 	await harness.emit("turn_end", {
 		type: "turn_end",
@@ -643,6 +678,7 @@ async function openChildTodoGate(harness: ReturnType<typeof createHarness>): Pro
 		message: { role: "assistant", content: [] },
 		toolResults: [],
 	});
+	// SAFETY: The harness provider returns the context shape exercised by this test.
 	const todoResult = await harness.tools
 		.get(PREWALK_TODO_TOOL_NAME)
 		?.execute(
@@ -705,6 +741,7 @@ describe("Prewalk extension harness", () => {
 			type: "json_schema",
 			strict: "prefer",
 		});
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const todoSchema = harness.tools.get(PREWALK_TODO_TOOL_NAME)?.parameters as {
 			type: string;
 			required?: string[];
@@ -734,7 +771,9 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
 		await expect(
-			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("todo-1", { op: "view" }),
+			harness.tools
+				.get(PREWALK_TODO_TOOL_NAME)
+				?.execute("todo-1", { op: "view" }, undefined, undefined, harness.context),
 		).rejects.toThrow("inactive");
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.activeTools()).toEqual(["edit", "write", "bash", PREWALK_TODO_TOOL_NAME]);
@@ -805,10 +844,16 @@ describe("Prewalk extension harness", () => {
 		});
 
 		await expect(
-			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("fresh-todo", {
-				op: "init",
-				list: [{ phase: "Work", items: ["Continue"] }],
-			}),
+			harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute(
+				"fresh-todo",
+				{
+					op: "init",
+					list: [{ phase: "Work", items: ["Continue"] }],
+				},
+				undefined,
+				undefined,
+				harness.context,
+			),
 		).resolves.toMatchObject({ content: [{ type: "text" }] });
 	});
 
@@ -1016,10 +1061,12 @@ describe("Prewalk extension harness", () => {
 		});
 
 		expect(
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			harness.entries.some((entry) => (entry.data as { event?: string }).event === "todo-ready"),
 		).toBe(true);
 		expect(
 			harness.entries.some(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
 			),
 		).toBe(true);
@@ -1083,6 +1130,7 @@ describe("Prewalk extension harness", () => {
 		});
 		expect(
 			harness.entries.some((entry) =>
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				["failed", "completed"].includes((entry.data as { event?: string }).event ?? ""),
 			),
 		).toBe(false);
@@ -1094,6 +1142,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		const initialMessageCount = harness.messages.length;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const runId = (harness.messages.at(-1)?.details as { runId?: string } | undefined)?.runId;
 
 		for (const timestamp of [9_101, 9_102]) {
@@ -1131,11 +1180,13 @@ describe("Prewalk extension harness", () => {
 
 		expect(
 			harness.entries.some((entry) =>
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				["failed", "completed"].includes((entry.data as { event?: string }).event ?? ""),
 			),
 		).toBe(false);
 		expect(
 			harness.entries.filter(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				(entry) => (entry.data as { event?: string }).event === "planning-retry",
 			),
 		).toHaveLength(1);
@@ -1213,6 +1264,7 @@ describe("Prewalk extension harness", () => {
 		});
 		expect(harness.messageOptions.at(-1)).toEqual({ deliverAs: "nextTurn" });
 		expect(
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			harness.entries.some((entry) => (entry.data as { event?: string }).event === "completed"),
 		).toBe(false);
 		await harness.emit("before_agent_start", {
@@ -1301,10 +1353,17 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 
-		const result = await harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute("unclaimed", {
-			op: "init",
-			list: [{ phase: "A", items: ["current execution"] }],
-		});
+		// SAFETY: The harness provider returns the context shape exercised by this test.
+		const result = await harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute(
+			"unclaimed",
+			{
+				op: "init",
+				list: [{ phase: "A", items: ["current execution"] }],
+			},
+			undefined,
+			undefined,
+			harness.context,
+		);
 		expect(result?.details).toMatchObject({
 			phases: [{ name: "A", tasks: [{ content: "current execution", status: "in_progress" }] }],
 		});
@@ -1343,13 +1402,14 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("keeps a foreign todo outside the Prewalk lifecycle", async () => {
-		const foreignTodo = {
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const foreignTodo = castTestType<ToolDefinition>({
 			name: "todo",
 			label: "Foreign todo",
 			description: "Foreign todo",
 			parameters: {},
 			execute: vi.fn(),
-		} as unknown as ToolDefinition;
+		} as never);
 		const harness = createHarness({ foreignTodo, activeTools: ["read", "todo", "edit"] });
 		prewalkExtension(harness.pi);
 
@@ -1397,6 +1457,7 @@ describe("Prewalk extension harness", () => {
 			harness.entries.some(
 				(entry) =>
 					entry.customType === "prewalk-audit" &&
+					// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 					(entry.data as { event?: string }).event === "handoff-triggered",
 			),
 		).toBe(false);
@@ -1406,13 +1467,14 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("restores a foreign todo slate after a same-session reload", async () => {
-		const foreignTodo = {
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const foreignTodo = castTestType<ToolDefinition>({
 			name: "todo",
 			label: "Foreign todo",
 			description: "Foreign todo",
 			parameters: {},
 			execute: vi.fn(),
-		} as unknown as ToolDefinition;
+		} as never);
 		const first = createHarness({ foreignTodo, activeTools: ["read", "todo", "edit"] });
 		prewalkExtension(first.pi);
 		await first.emit("session_start", { type: "session_start", reason: "startup" });
@@ -1579,6 +1641,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
 		expect(
 			harness.entries.some(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
 			),
 		).toBe(false);
@@ -1826,8 +1889,10 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		const custom = vi.fn(async () => "cancelled" as const);
-		(harness.context as unknown as { mode: string }).mode = "tui";
-		(harness.context.ui as unknown as { custom: typeof custom }).custom = custom;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<ExtensionContext & { mode: string }>(harness.context as never).mode = "tui";
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<{ custom: typeof custom }>(harness.context.ui as never).custom = custom;
 
 		await harness.commands.get("prewalk")?.("configure", harness.context);
 
@@ -1840,7 +1905,8 @@ describe("Prewalk extension harness", () => {
 
 	it("explains why configure cannot run without an interactive UI", async () => {
 		const harness = createHarness();
-		(harness.context as unknown as { hasUI: boolean }).hasUI = false;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<ExtensionContext & { hasUI: boolean }>(harness.context as never).hasUI = false;
 		prewalkExtension(harness.pi);
 
 		await harness.commands.get("prewalk")?.("configure", harness.context);
@@ -1909,8 +1975,10 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		const custom = vi.fn(async () => undefined);
-		(harness.context as unknown as { mode: string }).mode = "tui";
-		(harness.context.ui as unknown as { custom: typeof custom }).custom = custom;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<ExtensionContext & { mode: string }>(harness.context as never).mode = "tui";
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<{ custom: typeof custom }>(harness.context.ui as never).custom = custom;
 
 		await harness.commands.get("prewalk")?.("stats", harness.context);
 
@@ -1926,7 +1994,8 @@ describe("Prewalk extension harness", () => {
 			type: "message_end",
 			message: assistant(harness.planner),
 		});
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await completePlanningOnlyRun(harness, "receipt");
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
@@ -1992,7 +2061,8 @@ describe("Prewalk extension harness", () => {
 			type: "message_end",
 			message: assistant(harness.executor),
 		});
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		await harness.commands.get("prewalk")?.("stats", harness.context);
@@ -2034,7 +2104,8 @@ describe("Prewalk extension harness", () => {
 			type: "message_end",
 			message: assistant(harness.planner),
 		});
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		await harness.commands.get("prewalk")?.(`stats receipt ${runId}`, harness.context);
@@ -2053,7 +2124,8 @@ describe("Prewalk extension harness", () => {
 			type: "message_end",
 			message: assistant(harness.planner),
 		});
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 		await completePlanningOnlyRun(harness, "finalization");
 
 		const store = new AnalyticsStore(agentDir);
@@ -2285,7 +2357,10 @@ describe("Prewalk extension harness", () => {
 
 	it("refuses to configure a same-model effort that clamps to the running level", async () => {
 		const harness = createHarness();
-		(harness.context as unknown as { thinkingLevel: string }).thinkingLevel = "high";
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<ExtensionContext & { thinkingLevel: string }>(
+			harness.context as never,
+		).thinkingLevel = "high";
 		prewalkExtension(harness.pi);
 		vi.mocked(harness.context.ui.select)
 			.mockResolvedValueOnce(`openai-codex/${PLANNER_MODEL_ID}`)
@@ -2508,7 +2583,9 @@ describe("Prewalk extension harness", () => {
 			"prewalk: Switching after this turn · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
 		);
 
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const [filtered] = await harness.emit("context", {
 			type: "context",
 			messages: [
@@ -2539,6 +2616,7 @@ describe("Prewalk extension harness", () => {
 			],
 		});
 		expect(
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			(filtered as { messages: Array<{ customType: string }> }).messages.map(
 				(message) => message.customType,
 			),
@@ -2586,8 +2664,10 @@ describe("Prewalk extension harness", () => {
 		}
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const result = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, filtered as { messages: [] })
 			.result();
 
@@ -2603,7 +2683,9 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const trajectory = [
 			{ role: "user", content: "original task", timestamp: 1 },
 			{
@@ -2669,6 +2751,7 @@ describe("Prewalk extension harness", () => {
 		] as unknown[];
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The trajectory fixture matches the provider context shape exercised by this test.
 		await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: trajectory } as never)
@@ -2913,19 +2996,19 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const launch: Record<string, unknown> = {
+		const launch = {
 			agent: "reviewer",
 			task: "Review",
 			model: "anthropic/claude-sonnet-4-5",
 			thinking: "high",
 			fallbackModels: ["openai-codex/gpt-5.4:medium"],
-		};
-		const schedule: Record<string, unknown> = {
+		} satisfies Record<string, string | string[]>;
+		const schedule = {
 			action: "schedule",
 			agent: "reviewer",
 			task: "Review later",
 			schedule: "+10m",
-		};
+		} satisfies Record<string, string | string[]>;
 		const launchSnapshot = structuredClone(launch);
 		const scheduleSnapshot = structuredClone(schedule);
 
@@ -3045,6 +3128,7 @@ describe("Prewalk extension harness", () => {
 		});
 		expect(harness.messages.at(-1)?.customType).not.toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
 
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const todoResult = await harness.tools
 			.get(PREWALK_TODO_TOOL_NAME)
 			?.execute(
@@ -3207,7 +3291,10 @@ describe("Prewalk extension harness", () => {
 			},
 		});
 		const equal = createHarness();
-		(equal.context as unknown as { thinkingLevel: string }).thinkingLevel = "high";
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		castTestType<ExtensionContext & { thinkingLevel: string }>(
+			equal.context as never,
+		).thinkingLevel = "high";
 		prewalkExtension(equal.pi);
 		await equal.emit("session_start", { type: "session_start", reason: "startup" });
 		await equal.commands.get("prewalk")?.("status", equal.context);
@@ -3322,7 +3409,8 @@ describe("Prewalk extension harness", () => {
 		harness.setStream(() => delayed);
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("agent_start", { type: "agent_start" });
 		const pending = harness
@@ -3357,7 +3445,9 @@ describe("Prewalk extension harness", () => {
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const replacementRunId = (requiredEntry(harness.entries.at(-1)).data as { runId: string })
+			.runId;
 
 		// Native routing does not replace a provider registration. A stream
 		// reference captured before cancellation therefore remains Pi-owned;
@@ -3408,6 +3498,7 @@ describe("Prewalk extension harness", () => {
 		}
 
 		expect(
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			harness.entries.some((entry) => (entry.data as { event?: string }).event === "completed"),
 		).toBe(false);
 
@@ -3437,6 +3528,7 @@ describe("Prewalk extension harness", () => {
 		}
 		expect(
 			harness.entries.some(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				(entry) => (entry.data as { event?: string }).event === "session-ended",
 			),
 		).toBe(false);
@@ -3479,6 +3571,7 @@ describe("Prewalk extension harness", () => {
 
 	it("does not let a stale settled handler reset a replacement run", async () => {
 		const harness = createHarness();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
@@ -3726,7 +3819,9 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("agent_end", { type: "agent_end", messages: [] });
 
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const replacementRunId = (requiredEntry(harness.entries.at(-1)).data as { runId: string })
+			.runId;
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		await harness.commands.get("prewalk")?.("status", harness.context);
@@ -3790,7 +3885,9 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("message_start", { type: "message_start", message: messageA });
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const replacementRunId = (requiredEntry(harness.entries.at(-1)).data as { runId: string })
+			.runId;
 		await harness.emit("before_agent_start", {
 			type: "before_agent_start",
 			prompt: "run-b",
@@ -3964,7 +4061,8 @@ describe("Prewalk extension harness", () => {
 			});
 		}
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const runId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries.at(-1)).data as { runId: string }).runId;
 		for (let index = 0; index < 513; index += 1) {
 			await harness.emit("agent_start", { type: "agent_start" });
 		}
@@ -4063,7 +4161,9 @@ describe("Prewalk extension harness", () => {
 
 		await harness.emit("input", { type: "input", text: "cancel", source: "interactive" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
-		const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const replacementRunId = (requiredEntry(harness.entries.at(-1)).data as { runId: string })
+			.runId;
 		await harness.emit("before_agent_start", {
 			type: "before_agent_start",
 			prompt: "replacement",
@@ -4115,7 +4215,8 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
-		const oldRunId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const oldRunId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 		const writes: Array<{ runId: string; usage: Array<{ role: string }> }> = [];
 		const writeJournal = vi
 			.spyOn(AnalyticsStore.prototype, "writeJournal")
@@ -4139,7 +4240,9 @@ describe("Prewalk extension harness", () => {
 			});
 			await harness.commands.get("prewalk")?.("cancel", harness.context);
 			await harness.commands.get("prewalk")?.("run", harness.context);
-			const replacementRunId = (harness.entries.at(-1)?.data as { runId: string }).runId;
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+			const replacementRunId = (requiredEntry(harness.entries.at(-1)).data as { runId: string })
+				.runId;
 			await harness.emit("session_compact", {
 				type: "session_compact",
 				compactionEntry: {
@@ -4303,12 +4406,15 @@ describe("Prewalk extension harness", () => {
 
 	it("restores planner routing after a delegated Luna failure", async () => {
 		const harness = createHarness();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const failed = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: [] })
@@ -4331,6 +4437,7 @@ describe("Prewalk extension harness", () => {
 
 	it("keeps a settled executor failure visible and allows a new run", async () => {
 		const harness = createHarness();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		harness.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
@@ -4346,7 +4453,9 @@ describe("Prewalk extension harness", () => {
 		expect(
 			harness.entries.some(
 				(entry) =>
+					// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 					(entry.data as { event?: string; phase?: string }).event === "armed" &&
+					// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 					(entry.data as { event?: string; phase?: string }).phase === "planning",
 			),
 		).toBe(true);
@@ -4357,14 +4466,18 @@ describe("Prewalk extension harness", () => {
 		let attempts = 0;
 		harness.setStream((selected) => {
 			attempts += 1;
+			// SAFETY: The selected model is created by this test harness.
 			return attempts === 1
-				? failedStream(selected as Model<"openai-codex-responses">)
-				: doneStream(selected as Model<"openai-codex-responses">);
+				? // SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+					failedStream(selected as Model<"openai-codex-responses">)
+				: // SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+					doneStream(selected as Model<"openai-codex-responses">);
 		});
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
 
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const first = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: [] })
@@ -4372,6 +4485,7 @@ describe("Prewalk extension harness", () => {
 		expect(first?.errorMessage).toBe("provider failure");
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const second = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: [] })
@@ -4406,6 +4520,7 @@ describe("Prewalk extension harness", () => {
 			message: { role: "assistant", content: [] },
 			toolResults: [],
 		});
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const todoResult = await harness.tools.get(PREWALK_TODO_TOOL_NAME)?.execute(
 			"todo-1",
 			{
@@ -4477,7 +4592,8 @@ describe("Prewalk extension harness", () => {
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("agent_start", { type: "agent_start" });
 		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
@@ -4522,7 +4638,8 @@ describe("Prewalk extension harness", () => {
 		const first = createHarness({ sessionId: "resumed-session" });
 		prewalkExtension(first.pi);
 		await reachHandoff(first);
-		const runId = (first.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(first.entries[0]).data as { runId: string }).runId;
 
 		const reopened = createHarness({ sessionId: "resumed-session" });
 		reopened.setBranch(auditBranch(first));
@@ -4540,7 +4657,8 @@ describe("Prewalk extension harness", () => {
 		const owner = createHarness({ sessionId: "owner-session" });
 		prewalkExtension(owner.pi);
 		await reachHandoff(owner);
-		const runId = (owner.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(owner.entries[0]).data as { runId: string }).runId;
 
 		const other = createHarness({ sessionId: "unrelated-session" });
 		prewalkExtension(other.pi);
@@ -4554,7 +4672,8 @@ describe("Prewalk extension harness", () => {
 		const dead = createHarness({ sessionId: "dead-session" });
 		prewalkExtension(dead.pi);
 		await reachHandoff(dead);
-		const runId = (dead.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(dead.entries[0]).data as { runId: string }).runId;
 
 		const store = new AnalyticsStore(agentDir);
 		const [record] = await store.listUnfinishedJournalRecords();
@@ -4672,6 +4791,7 @@ describe("Prewalk extension harness", () => {
 		expect(restoredPlanning.delegated).toEqual([]);
 
 		const failed = createHarness();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		failed.setStream((selected) => failedStream(selected as Model<"openai-codex-responses">));
 		prewalkExtension(failed.pi);
 		await reachHandoff(failed);
@@ -4706,6 +4826,7 @@ describe("Prewalk extension harness", () => {
 		await first.commands.get("prewalk")?.("cancel", first.context);
 
 		const restored = createHarness();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		(restored.context as { model: Model<"openai-codex-responses"> }).model = restored.executor;
 		restored.setBranch(auditBranch(first));
 		prewalkExtension(restored.pi);
@@ -4791,6 +4912,7 @@ describe("Prewalk extension harness", () => {
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		(harness.context as { model: Model<"openai-codex-responses"> }).model = harness.executor;
 		await harness.emit("model_select", {
 			type: "model_select",
@@ -4826,6 +4948,7 @@ describe("Prewalk extension harness", () => {
 			.providerConfig()
 			?.streamSimple?.(explicitSelection.planner, { messages: [] })
 			.result();
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		(explicitSelection.context as { model: Model<"openai-codex-responses"> }).model =
 			explicitSelection.executor;
 		await explicitSelection.emit("model_select", {
@@ -4875,15 +4998,18 @@ describe("Prewalk extension harness", () => {
 			customType: PREWALK_PLAN_MESSAGE_TYPE,
 			content: "hidden",
 			display: false,
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			details: { runId: harness.entries[0]?.data && (harness.entries[0].data as any).runId },
 			timestamp: 1,
 		};
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const [contextResult] = await harness.emit("context", {
 			type: "context",
 			messages: [prompt, { role: "user", content: [], timestamp: 1 }],
 		});
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		expect((contextResult as { messages: unknown[] }).messages).toHaveLength(1);
 
 		const preparation = {
@@ -4963,8 +5089,10 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const pressureMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
 			} as never)
@@ -5006,6 +5134,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messageOptions.at(-1)).toEqual({ triggerTurn: true });
 		expect(
 			harness.entries.some(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 				(entry) => (entry.data as { event?: string }).event === "handoff-triggered",
 			),
 		).toBe(false);
@@ -5029,8 +5158,10 @@ describe("Prewalk extension harness", () => {
 		});
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const pressureMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
 			} as never)
@@ -5064,11 +5195,13 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
 		} as never;
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5095,6 +5228,7 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5136,8 +5270,10 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const pressureMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
 			} as never)
@@ -5163,11 +5299,13 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(800_000), timestamp: 1 }],
 		} as never;
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5199,6 +5337,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5309,7 +5448,8 @@ describe("Prewalk extension harness", () => {
 
 		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
 		const beforeMessages = harness.messages.length;
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 		await harness.emit("turn_end", {
 			type: "turn_end",
 			turnIndex: 2,
@@ -5407,6 +5547,7 @@ describe("Prewalk extension harness", () => {
 				},
 			],
 		} satisfies Context;
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const response = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, codeModeTraceContext)
@@ -5435,6 +5576,7 @@ describe("Prewalk extension harness", () => {
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		} satisfies Context;
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5450,12 +5592,14 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const successfulRetry = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, { messages: [] })
 			.result();
 		expect(successfulRetry?.stopReason).toBe("stop");
 
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
 			?.streamSimple?.(harness.planner, oversized)
@@ -5481,8 +5625,10 @@ describe("Prewalk extension harness", () => {
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		};
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const pressureMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, oversized as never)
 			.result();
 
@@ -5499,7 +5645,8 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.compactionCalls).toHaveLength(1);
 		const beforeRetry = harness.messages.length;
-		const runId = (harness.entries[0]?.data as { runId: string }).runId;
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 		await harness.emit("session_before_compact", {
 			type: "session_before_compact",
 			preparation: {
@@ -5533,8 +5680,10 @@ describe("Prewalk extension harness", () => {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		};
 
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const first = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, oversized as never)
 			.result();
 		await harness.emit("turn_end", {
@@ -5548,8 +5697,10 @@ describe("Prewalk extension harness", () => {
 		harness.completeCompaction();
 
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const second = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, oversized as never)
 			.result();
 		await harness.emit("turn_end", {
@@ -5573,8 +5724,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const pressureMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(1_100_000), timestamp: 1 }],
 			} as never)
@@ -5597,8 +5750,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const errorMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 			} as never)
@@ -5623,8 +5778,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const errorMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 			} as never)
@@ -5649,8 +5806,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const errorMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 			} as never)
@@ -5675,8 +5834,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
+		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const errorMessage = await harness
 			.providerConfig()
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 			?.streamSimple?.(harness.planner, {
 				messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 			} as never)

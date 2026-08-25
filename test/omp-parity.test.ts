@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { type BoundaryValue, isRecord, isString } from "../src/guards.js";
 
 type Classification =
 	| "direct"
@@ -34,13 +35,77 @@ const promptHashes = new Map([
 	["prewalk-continue.md", "769599ce9fc5db930b2db47dccd1d98e7528e720a35520ea8039b4acb4c97955"],
 ]);
 
+function isClassification(value: BoundaryValue): value is Classification {
+	return (
+		value === "direct" ||
+		value === "forced-pi-adaptation" ||
+		value === "chosen-divergence" ||
+		value === "addition" ||
+		value === "unknown"
+	);
+}
+
+function parseScenario(value: BoundaryValue): Scenario | undefined {
+	if (
+		!isRecord(value) ||
+		!isString(value.upstream) ||
+		!isString(value.source) ||
+		!isString(value.bodySha256) ||
+		!isClassification(value.classification)
+	) {
+		return undefined;
+	}
+	if (value.local !== undefined && !isString(value.local)) return undefined;
+	if (value.rationale !== undefined && !isString(value.rationale)) return undefined;
+	const scenario: Scenario = {
+		upstream: value.upstream,
+		source: value.source,
+		bodySha256: value.bodySha256,
+		classification: value.classification,
+	};
+	if (value.local !== undefined) scenario.local = value.local;
+	if (value.rationale !== undefined) scenario.rationale = value.rationale;
+	return scenario;
+}
+
+function parseMatrix(value: BoundaryValue): Matrix | undefined {
+	if (
+		!isRecord(value) ||
+		value.schemaVersion !== 2 ||
+		!isString(value.revision) ||
+		!isString(value.promptSourceRevision) ||
+		!isRecord(value.promptAssets) ||
+		!Array.isArray(value.sourceSuites) ||
+		!value.sourceSuites.every(isString) ||
+		!Array.isArray(value.scenarios)
+	) {
+		return undefined;
+	}
+	const promptAssets: Matrix["promptAssets"] = {};
+	for (const [name, asset] of Object.entries(value.promptAssets)) {
+		if (!isRecord(asset) || !isString(asset.source) || !isString(asset.sha256)) return undefined;
+		promptAssets[name] = { source: asset.source, sha256: asset.sha256 };
+	}
+	const scenarios = value.scenarios.map(parseScenario);
+	if (scenarios.some((scenario) => scenario === undefined)) return undefined;
+	return {
+		schemaVersion: 2,
+		revision: value.revision,
+		promptSourceRevision: value.promptSourceRevision,
+		promptAssets,
+		sourceSuites: value.sourceSuites,
+		scenarios: scenarios.filter((scenario): scenario is Scenario => scenario !== undefined),
+	};
+}
+
 describe("pinned OMP behavior parity matrix", () => {
 	it("keeps scenario behavior and copied prompt provenance as separate authorities", async () => {
 		const raw = await readFile(
 			new URL("./fixtures/omp-prewalk-parity.json", import.meta.url),
 			"utf8",
 		);
-		const matrix = JSON.parse(raw) as Matrix;
+		const matrix = parseMatrix(JSON.parse(raw));
+		if (!matrix) throw new Error("Expected the pinned OMP parity matrix to validate.");
 
 		expect(matrix.revision).toBe(behaviorRevision);
 		expect(matrix.schemaVersion).toBe(2);

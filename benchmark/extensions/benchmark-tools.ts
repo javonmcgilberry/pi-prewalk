@@ -12,6 +12,29 @@ import { Type } from "typebox";
 const CONTAINER_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 const MAX_RESPONSE_BYTES = 1_000_000;
 const WORKER_BRIDGE = "/opt/prewalk-worker/bridge.mjs";
+const objectTag = Object.prototype.toString;
+
+type WorkerValue = string | number | boolean | null | WorkerRecord | WorkerValue[] | undefined;
+type FunctionValue = () => number;
+interface WorkerRecord {
+	[key: string]: WorkerValue;
+}
+
+function isRecord(value: WorkerValue): value is WorkerRecord {
+	return value !== null && objectTag.call(value) === "[object Object]";
+}
+function isString(value: WorkerValue): value is string {
+	return objectTag.call(value) === "[object String]";
+}
+function isNumber(value: WorkerValue): value is number {
+	return objectTag.call(value) === "[object Number]";
+}
+function isBoolean(value: WorkerValue): value is boolean {
+	return objectTag.call(value) === "[object Boolean]";
+}
+function isFunction(value: WorkerValue | FunctionValue): value is FunctionValue {
+	return objectTag.call(value).endsWith("Function]");
+}
 
 interface BenchmarkScenario {
 	containerId: string;
@@ -29,7 +52,7 @@ interface WorkerResponse {
 }
 
 type WorkerRequest = (
-	request: Record<string, unknown>,
+	request: WorkerRecord,
 	options?: { signal?: AbortSignal; timeoutMs?: number },
 ) => Promise<WorkerResponse>;
 
@@ -38,7 +61,7 @@ function ownerOnlyRegularFile(filePath: string, label: string): void {
 	if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0) {
 		throw new Error(`${label} must be an owner-only regular file.`);
 	}
-	if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+	if (isFunction(process.getuid) && info.uid !== process.getuid()) {
 		throw new Error(`${label} must be owned by the current user.`);
 	}
 }
@@ -48,15 +71,15 @@ export function loadBenchmarkScenario(filePath: string): BenchmarkScenario {
 		throw new Error("Benchmark scenario path must be absolute.");
 	}
 	ownerOnlyRegularFile(filePath, "Benchmark scenario");
-	const value: unknown = JSON.parse(readFileSync(filePath, "utf8"));
+	const value: WorkerValue = JSON.parse(readFileSync(filePath, "utf8"));
 	if (
 		!value ||
-		typeof value !== "object" ||
+		!isRecord(value) ||
 		!("containerId" in value) ||
 		!("evidencePath" in value) ||
-		typeof value.containerId !== "string" ||
+		!isString(value.containerId) ||
 		!CONTAINER_ID.test(value.containerId) ||
-		typeof value.evidencePath !== "string" ||
+		!isString(value.evidencePath) ||
 		!path.isAbsolute(value.evidencePath) ||
 		Object.keys(value).some((key) => key !== "containerId" && key !== "evidencePath")
 	) {
@@ -116,41 +139,27 @@ export function createDockerWorkerRequest(
 					reject(new Error("Benchmark worker request failed."));
 					return;
 				}
-				let value: unknown;
+				let value: WorkerValue;
 				try {
 					value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				} catch {
 					reject(new Error("Benchmark worker returned invalid JSON."));
 					return;
 				}
-				if (
-					!value ||
-					typeof value !== "object" ||
-					!("ok" in value) ||
-					typeof value.ok !== "boolean"
-				) {
+				if (!value || !isRecord(value) || !("ok" in value) || !isBoolean(value.ok)) {
 					reject(new Error("Benchmark worker returned an invalid response."));
 					return;
 				}
-				resolve({
-					ok: value.ok,
-					...("code" in value && typeof value.code === "string" ? { code: value.code } : {}),
-					...("output" in value && typeof value.output === "string"
-						? { output: value.output }
-						: {}),
-					...("exitCode" in value && typeof value.exitCode === "number"
-						? { exitCode: value.exitCode }
-						: {}),
-					...("truncated" in value && typeof value.truncated === "boolean"
-						? { truncated: value.truncated }
-						: {}),
-					...("lookupAttempts" in value && typeof value.lookupAttempts === "number"
-						? { lookupAttempts: value.lookupAttempts }
-						: {}),
-					...("sandboxViolations" in value && typeof value.sandboxViolations === "number"
-						? { sandboxViolations: value.sandboxViolations }
-						: {}),
-				});
+				const response: WorkerResponse = { ok: value.ok };
+				if (isString(value.code)) response.code = value.code;
+				if (isString(value.output)) response.output = value.output;
+				if (isNumber(value.exitCode)) response.exitCode = value.exitCode;
+				if (isBoolean(value.truncated)) response.truncated = value.truncated;
+				if (isNumber(value.lookupAttempts)) response.lookupAttempts = value.lookupAttempts;
+				if (isNumber(value.sandboxViolations)) {
+					response.sandboxViolations = value.sandboxViolations;
+				}
+				resolve(response);
 			});
 			child.stdin.end(JSON.stringify(request));
 		});
@@ -186,7 +195,7 @@ async function recordSafety(
 async function checkedRequest(
 	request: WorkerRequest,
 	evidencePath: string | undefined,
-	value: Record<string, unknown>,
+	value: WorkerRecord,
 	options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<WorkerResponse> {
 	const response = await request(value, options);

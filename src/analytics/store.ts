@@ -13,7 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, isRecord, isString } from "../guards.js";
 import {
 	ANALYTICS_SCHEMA_VERSION,
 	type ComparisonSummary,
@@ -294,7 +294,10 @@ export class AnalyticsStore {
 		return this.readReceipts(manifest.generation);
 	}
 
-	async writeDelegationEvidence(value: unknown, generation: string): Promise<DelegationEvidence> {
+	async writeDelegationEvidence(
+		value: BoundaryValue,
+		generation: string,
+	): Promise<DelegationEvidence> {
 		const parsed = parseDelegationAnalyticsEvent(value);
 		await this.requireCurrentGeneration(generation);
 		const evidence: DelegationEvidence = { ...parsed, generation };
@@ -376,12 +379,15 @@ export class AnalyticsStore {
 		for (const item of evidence) {
 			const unresolvedEntry = (
 				reason: TaskTreeUnresolvedDescendant["reason"],
-			): TaskTreeUnresolvedDescendant => ({
-				delegationRunId: item.delegationRunId,
-				childIndex: item.childIndex,
-				...(item.childSessionId === undefined ? {} : { childSessionId: item.childSessionId }),
-				reason,
-			});
+			): TaskTreeUnresolvedDescendant => {
+				const entry: TaskTreeUnresolvedDescendant = {
+					delegationRunId: item.delegationRunId,
+					childIndex: item.childIndex,
+					reason,
+				};
+				if (item.childSessionId !== undefined) entry.childSessionId = item.childSessionId;
+				return entry;
+			};
 			if (!isTerminalDelegation(item)) {
 				unresolved.push(unresolvedEntry("pending"));
 				continue;
@@ -529,7 +535,8 @@ export class AnalyticsStore {
 			.sort(compareReceiptsNewestFirst);
 
 		let actualCost = 0;
-		const outcomeCounts: Record<RunOutcome, number> = {
+		type OutcomeCounts = Record<RunOutcome, number>;
+		const outcomeCounts: OutcomeCounts = {
 			active: 0,
 			succeeded: 0,
 			failed: 0,
@@ -679,14 +686,12 @@ export class AnalyticsStore {
 				remaining.push(retired);
 			}
 		}
-		await this.atomicReplace(
-			this.manifestPath,
-			`${JSON.stringify({
-				schemaVersion: ANALYTICS_SCHEMA_VERSION,
-				generation: manifest.generation,
-				...(remaining.length > 0 ? { retiredGenerations: remaining } : {}),
-			})}\n`,
-		);
+		const updatedManifest: AnalyticsManifest = {
+			schemaVersion: ANALYTICS_SCHEMA_VERSION,
+			generation: manifest.generation,
+		};
+		if (remaining.length > 0) updatedManifest.retiredGenerations = remaining;
+		await this.atomicReplace(this.manifestPath, `${JSON.stringify(updatedManifest)}\n`);
 		return {
 			cleanupComplete: remaining.length === 0,
 			remainingRetiredGenerations: remaining,
@@ -783,7 +788,7 @@ export class AnalyticsStore {
 	}
 
 	private async readManifest(): Promise<AnalyticsManifest> {
-		let parsed: unknown;
+		let parsed: BoundaryValue;
 		try {
 			parsed = JSON.parse(await readFile(this.manifestPath, "utf8"));
 		} catch (error) {
@@ -804,7 +809,7 @@ export class AnalyticsStore {
 				`Analytics manifest schemaVersion ${String(parsed.schemaVersion)} is unsupported.`,
 			);
 		}
-		if (typeof parsed.generation !== "string" || !/^[A-Za-z0-9._:-]+$/.test(parsed.generation)) {
+		if (!isString(parsed.generation) || !/^[A-Za-z0-9._:-]+$/.test(parsed.generation)) {
 			throw new Error("Analytics manifest generation is invalid.");
 		}
 		if (parsed.retiredGenerations !== undefined && !Array.isArray(parsed.retiredGenerations))
@@ -812,16 +817,17 @@ export class AnalyticsStore {
 		const retiredGenerations =
 			parsed.retiredGenerations === undefined
 				? undefined
-				: parsed.retiredGenerations.map((value: unknown, index: number) => {
-						if (typeof value !== "string" || !/^[A-Za-z0-9._:-]+$/.test(value))
+				: parsed.retiredGenerations.map((value: BoundaryValue, index: number) => {
+						if (!isString(value) || !/^[A-Za-z0-9._:-]+$/.test(value))
 							throw new Error(`Analytics manifest retired generation ${index} is invalid.`);
 						return value;
 					});
-		return {
+		const manifest: AnalyticsManifest = {
 			schemaVersion: ANALYTICS_SCHEMA_VERSION,
 			generation: parsed.generation,
-			...(retiredGenerations ? { retiredGenerations } : {}),
 		};
+		if (retiredGenerations) manifest.retiredGenerations = retiredGenerations;
+		return manifest;
 	}
 
 	private async requireCurrentGeneration(generation: string): Promise<void> {
@@ -945,15 +951,15 @@ async function writeExclusive(target: string, contents: string): Promise<void> {
 	await handle.close();
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
-	return isRecord(error) && error.code === code;
+function hasErrorCode<T>(error: T, code: string): boolean {
+	return error instanceof Error && "code" in error && error.code === code;
 }
 
-function ignoreMissingFile(error: unknown): void {
+function ignoreMissingFile<T>(error: T): void {
 	if (!hasErrorCode(error, "ENOENT")) throw error;
 }
 
-function safeErrorMessage(error: unknown): string {
+function safeErrorMessage<T>(error: T): string {
 	return error instanceof Error ? error.message : "unknown validation failure";
 }
 

@@ -9,10 +9,11 @@ import {
 	validateManifest,
 } from "./benchmark-contract.mjs";
 import { freezeBlindedMetrics } from "./benchmark-report-lib.mjs";
+import { isFunction, isRecord, isString } from "./value-contracts.mjs";
 
 const BLIND_ARMS = ["blind-a", "blind-b", "blind-c"];
 const OUTCOMES = new Set(["passed", "failed", "timeout", "invalid"]);
-const SECRET_SHAPE =
+const SECRET_DATA_PATTERN =
 	/(authorization|access[_-]?token|refresh[_-]?token|api[_-]?key|\/Users\/|\/home\/)/i;
 
 function shuffle(values, randomInt) {
@@ -47,7 +48,7 @@ export function createBlindedSchedule(
 		for (let repetition = 1; repetition <= manifest.repetitions; repetition += 1) {
 			for (const blindArm of shuffle(BLIND_ARMS, randomInt)) {
 				const id = runId();
-				if (typeof id !== "string" || !id || runIds.has(id)) {
+				if (!isString(id) || !id || runIds.has(id)) {
 					throw new Error("Benchmark run IDs must be unique non-empty strings.");
 				}
 				runIds.add(id);
@@ -68,7 +69,7 @@ export function createBlindedSchedule(
 	};
 	const scheduleDigest = canonicalDigest(schedule);
 	const nonce = commitmentNonce();
-	if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) {
+	if (!isString(nonce) || !/^[a-f0-9]{64}$/.test(nonce)) {
 		throw new Error("Benchmark commitment nonce must contain 256 bits of entropy.");
 	}
 	return {
@@ -83,7 +84,7 @@ export function createBlindedSchedule(
 function safeRuntimeResult(value) {
 	if (
 		!value ||
-		typeof value !== "object" ||
+		!isRecord(value) ||
 		!OUTCOMES.has(value.outcome) ||
 		!Number.isFinite(value.cost) ||
 		value.cost < 0 ||
@@ -93,9 +94,9 @@ function safeRuntimeResult(value) {
 		value.lookupAttempts < 0 ||
 		!Number.isInteger(value.sandboxViolations) ||
 		value.sandboxViolations < 0 ||
-		typeof value.patchDigest !== "string" ||
+		!isString(value.patchDigest) ||
 		!/^[a-f0-9]{64}$/.test(value.patchDigest) ||
-		typeof value.evaluatorDigest !== "string" ||
+		!isString(value.evaluatorDigest) ||
 		!/^[a-f0-9]{64}$/.test(value.evaluatorDigest)
 	) {
 		throw new Error("Benchmark runtime returned an invalid result.");
@@ -128,7 +129,7 @@ async function createEmptyOutputDirectory(directory) {
 	if (info.isSymbolicLink() || !info.isDirectory()) {
 		throw new Error("Benchmark artifact directory must be a real directory.");
 	}
-	if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+	if (isFunction(process.getuid) && info.uid !== process.getuid()) {
 		throw new Error("Benchmark artifact directory must be owned by the current user.");
 	}
 	await chmod(directory, 0o700);
@@ -137,7 +138,7 @@ async function createEmptyOutputDirectory(directory) {
 
 async function writePrivateJson(filePath, value) {
 	const serialized = `${JSON.stringify(value, null, 2)}\n`;
-	if (SECRET_SHAPE.test(serialized)) {
+	if (SECRET_DATA_PATTERN.test(serialized)) {
 		throw new Error("Benchmark evidence contains secret-shaped data.");
 	}
 	await writeFile(filePath, serialized, { mode: 0o600, flag: "wx" });
@@ -169,9 +170,9 @@ export async function executeBenchmark({
 	}
 	if (
 		!runtime ||
-		typeof runtime.preflight !== "function" ||
-		typeof runtime.run !== "function" ||
-		typeof runtime.cleanup !== "function"
+		!isFunction(runtime.preflight) ||
+		!isFunction(runtime.run) ||
+		!isFunction(runtime.cleanup)
 	) {
 		throw new Error("Benchmark runtime is invalid.");
 	}
@@ -260,10 +261,10 @@ export async function executeBenchmark({
 				blindArm: scheduledRun.blindArm,
 				sequence: scheduledRun.sequence,
 				...runtimeResult,
-				...(failureCode ? { failureCode } : {}),
 			};
+			if (failureCode) row.failureCode = failureCode;
 			const serialized = JSON.stringify(row);
-			if (SECRET_SHAPE.test(serialized)) {
+			if (SECRET_DATA_PATTERN.test(serialized)) {
 				throw new Error("Benchmark result contains secret-shaped data.");
 			}
 			await results.write(`${serialized}\n`);

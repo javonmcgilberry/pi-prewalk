@@ -1,3 +1,13 @@
+type DockerValue =
+	| null
+	| boolean
+	| number
+	| string
+	| DockerValue[]
+	| { [key: string]: DockerValue }
+	| undefined;
+type DockerRecord = { [key: string]: DockerValue };
+
 export interface DockerTask {
 	id: string;
 	repository: string;
@@ -39,11 +49,7 @@ export class DockerBenchmarkSandbox {
 		expected?: { task: DockerTask; role: "worker" | "evaluator" },
 	): Promise<void>;
 	createWorker(task: DockerTask, runId: string): Promise<DockerHandle>;
-	request(
-		handle: DockerHandle,
-		request: Record<string, unknown>,
-		timeoutMs?: number,
-	): Promise<Record<string, unknown>>;
+	request(handle: DockerHandle, request: DockerRecord, timeoutMs?: number): Promise<DockerRecord>;
 	evaluate(
 		task: DockerTask,
 		runId: string,

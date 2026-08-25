@@ -19,7 +19,7 @@ type DelegationAnalyticsLifecycle =
 	| "incomplete";
 type DelegationAnalyticsEvent = DelegationEvidence;
 
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, type DomainObject, isNumber, isRecord, isString } from "../guards.js";
 import type { DelegationEvidence, DelegationLifecycle, DelegationUsageSlice } from "./index.js";
 
 const LIFECYCLES: readonly DelegationAnalyticsLifecycle[] = [
@@ -63,37 +63,36 @@ const USAGE_KEYS = new Set([
 	"tokenCoverage",
 ]);
 
-function safeId(value: unknown, label: string): string {
-	if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(value)) {
+function safeId(value: BoundaryValue, label: string): string {
+	if (!isString(value) || !/^[A-Za-z0-9._:-]{1,256}$/.test(value)) {
 		throw new Error(`${label} must be a content-free identifier.`);
 	}
 	return value;
 }
-function integer(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+function integer(value: BoundaryValue, label: string): number {
+	if (!isNumber(value) || !Number.isSafeInteger(value) || value < 0) {
 		throw new Error(`${label} must be a non-negative integer.`);
 	}
 	return value;
 }
-function finite(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+function finite(value: BoundaryValue, label: string): number {
+	if (!isNumber(value) || !Number.isFinite(value) || value < 0) {
 		throw new Error(`${label} must be finite and non-negative.`);
 	}
 	return value;
 }
-function exact(record: Record<string, unknown>, keys: Set<string>, label: string): void {
+function exact(record: DomainObject, keys: Set<string>, label: string): void {
 	const extras = Object.keys(record).filter((key) => !keys.has(key));
 	if (extras.length > 0)
 		throw new Error(`${label} contains unsupported fields: ${extras.join(", ")}`);
 }
-function enumValue<T extends string>(value: unknown, values: readonly T[], label: string): T {
+function enumValue<T extends string>(value: BoundaryValue, values: readonly T[], label: string): T {
 	const found = values.find((candidate) => candidate === value);
-	if (typeof value !== "string" || found === undefined)
-		throw new Error(`${label} is unsupported.`);
+	if (!isString(value) || found === undefined) throw new Error(`${label} is unsupported.`);
 	return found;
 }
 
-export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidence {
+export function parseDelegationAnalyticsEvent(value: BoundaryValue): DelegationEvidence {
 	if (!isRecord(value)) throw new Error("Delegation analytics event must be an object.");
 	exact(value, EVENT_KEYS, "Delegation analytics event");
 	if (value.version !== DELEGATION_ANALYTICS_VERSION)
@@ -130,7 +129,7 @@ export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidenc
 		) {
 			throw new Error("Partial delegation usage must contain only input and output tokens.");
 		}
-		return {
+		const usageSlice: DelegationUsageSlice = {
 			evidenceKey: safeId(item.evidenceKey, "evidenceKey"),
 			category: "child",
 			inputTokens,
@@ -139,11 +138,12 @@ export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidenc
 			turns: integer(item.turns, "turns"),
 			costUsd: finite(item.costUsd, "costUsd"),
 			tokenCoverage,
-			...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
-			...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
 		};
+		if (cacheReadTokens !== undefined) usageSlice.cacheReadTokens = cacheReadTokens;
+		if (cacheWriteTokens !== undefined) usageSlice.cacheWriteTokens = cacheWriteTokens;
+		return usageSlice;
 	});
-	return {
+	const evidence: DelegationEvidence = {
 		schemaVersion: DELEGATION_ANALYTICS_VERSION,
 		eventId: safeId(value.eventId, "eventId"),
 		phase,
@@ -154,12 +154,13 @@ export function parseDelegationAnalyticsEvent(value: unknown): DelegationEvidenc
 		delegationRunId: safeId(value.delegationRunId, "delegationRunId"),
 		childIndex: integer(value.childIndex, "childIndex"),
 		relationship: enumValue(value.relationship, RELATIONSHIPS, "relationship"),
-		...(value.childSessionId === undefined
-			? {}
-			: { childSessionId: safeId(value.childSessionId, "childSessionId") }),
 		observedAt: integer(value.observedAt, "observedAt"),
 		usage,
 	};
+	if (value.childSessionId !== undefined) {
+		evidence.childSessionId = safeId(value.childSessionId, "childSessionId");
+	}
+	return evidence;
 }
 
 export function delegationEvidenceKey(
@@ -236,15 +237,12 @@ export interface DelegationResultProjectionInput {
 	parentSessionId: string;
 	invocationId: string;
 	childCount: number;
-	details: unknown;
+	details: BoundaryValue;
 	isError: boolean;
 	observedAt?: number;
 }
 
-function resultLifecycle(
-	value: Record<string, unknown>,
-	isError: boolean,
-): DelegationAnalyticsLifecycle {
+function resultLifecycle(value: DomainObject, isError: boolean): DelegationAnalyticsLifecycle {
 	if (value.timedOut === true) return "timed-out";
 	if (value.stopped === true) return "stopped";
 	if (value.interrupted === true) return "interrupted";
@@ -253,18 +251,16 @@ function resultLifecycle(
 	return "completed";
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function nonEmptyString(value: BoundaryValue): string | undefined {
+	return isString(value) && value.trim() ? value.trim() : undefined;
 }
 
-function nonNegative(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+function nonNegative(value: BoundaryValue): number | undefined {
+	return isNumber(value) && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function nonNegativeInteger(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-		? value
-		: undefined;
+function nonNegativeInteger(value: BoundaryValue): number | undefined {
+	return isNumber(value) && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function boundedId(value: string, limit = 80): string {
@@ -278,7 +274,7 @@ function contentFreeId(value: string, namespace: string): string {
 }
 
 function projectedUsage(
-	value: Record<string, unknown>,
+	value: DomainObject,
 	delegationRunId: string,
 	childIndex: number,
 ): DelegationUsageSlice[] {
@@ -325,10 +321,10 @@ function eventId(
 	return `${boundedId(invocationId)}.${boundedId(delegationRunId)}.${childIndex}.${phase}.${observedAt}`;
 }
 
-function nestedRuns(results: unknown[]): Record<string, unknown>[] {
-	const runs: Record<string, unknown>[] = [];
+function nestedRuns(results: BoundaryValue[]): DomainObject[] {
+	const runs: DomainObject[] = [];
 	const seen = new Set<string>();
-	const visit = (value: unknown, depth: number): void => {
+	const visit = (value: BoundaryValue, depth: number): void => {
 		if (!isRecord(value) || depth > 32 || runs.length >= 1024) return;
 		const id = nonEmptyString(value.id);
 		if (id && !seen.has(id)) {
@@ -352,7 +348,7 @@ function nestedRuns(results: unknown[]): Record<string, unknown>[] {
 	return runs;
 }
 
-function nestedLifecycle(value: Record<string, unknown>): DelegationAnalyticsLifecycle {
+function nestedLifecycle(value: DomainObject): DelegationAnalyticsLifecycle {
 	if (value.timedOut === true) return "timed-out";
 	if (value.stopped === true || value.state === "stopped") return "stopped";
 	if (value.state === "queued" || value.state === "running" || value.state === "pending") {
@@ -364,7 +360,7 @@ function nestedLifecycle(value: Record<string, unknown>): DelegationAnalyticsLif
 	return "incomplete";
 }
 
-function nestedUsage(value: Record<string, unknown>, runId: string): DelegationUsageSlice[] {
+function nestedUsage(value: DomainObject, runId: string): DelegationUsageSlice[] {
 	if (!isRecord(value.totalCost)) return [];
 	const inputTokens = nonNegativeInteger(value.totalCost.inputTokens);
 	const outputTokens = nonNegativeInteger(value.totalCost.outputTokens);
@@ -449,7 +445,7 @@ export function projectDelegationToolResult(
 			: undefined;
 		const lifecycle = nestedLifecycle(nested);
 		const phase = lifecycle === "running" ? "start" : "terminal";
-		evidence.push({
+		const nestedEvidence: DelegationEvidence = {
 			schemaVersion: DELEGATION_ANALYTICS_VERSION,
 			eventId: eventId(invocationId, nestedRunId, nestedChildIndex, phase, observedAt),
 			phase,
@@ -459,11 +455,12 @@ export function projectDelegationToolResult(
 			delegationRunId: nestedRunId,
 			childIndex: nestedChildIndex,
 			relationship: "nested",
-			...(childSessionId === undefined ? {} : { childSessionId }),
 			lifecycle,
 			observedAt,
 			usage: nestedUsage(nested, nestedRunId),
-		});
+		};
+		if (childSessionId !== undefined) nestedEvidence.childSessionId = childSessionId;
+		evidence.push(nestedEvidence);
 		nestedChildIndex += 1;
 	}
 	return evidence;

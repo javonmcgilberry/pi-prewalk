@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 const DEFAULT_SOURCE = "/opt/task-base";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -89,7 +90,7 @@ async function git(workspace, args) {
 
 async function containedPath(workspace, relativePath, allowMissing = false) {
 	if (
-		typeof relativePath !== "string" ||
+		!isString(relativePath) ||
 		relativePath.length === 0 ||
 		path.isAbsolute(relativePath) ||
 		relativePath.includes("\0")
@@ -129,7 +130,7 @@ async function containedPath(workspace, relativePath, allowMissing = false) {
 }
 
 function parsePatch(patchText) {
-	if (typeof patchText !== "string" || Buffer.byteLength(patchText) > MAX_FRAME_BYTES) {
+	if (!isString(patchText) || Buffer.byteLength(patchText) > MAX_FRAME_BYTES) {
 		throw new Error("Worker frame exceeds the maximum size.");
 	}
 	const lines = patchText.trimEnd().split("\n");
@@ -327,7 +328,7 @@ function assertRequest(request) {
 	if (Buffer.byteLength(serialized) > MAX_FRAME_BYTES) {
 		throw new Error("Worker frame exceeds the maximum size.");
 	}
-	if (!request || typeof request !== "object" || typeof request.method !== "string") {
+	if (!request || !isRecord(request) || !isString(request.method)) {
 		throw new Error("Worker request is invalid.");
 	}
 }
@@ -351,7 +352,7 @@ export async function dispatchWorkerRequest(
 		};
 	}
 	if (request.method === "exec_command") {
-		if (typeof request.cmd !== "string") throw new Error("exec_command requires cmd.");
+		if (!isString(request.cmd)) throw new Error("exec_command requires cmd.");
 		if (PROHIBITED_COMMAND.test(request.cmd)) {
 			return {
 				ok: false,

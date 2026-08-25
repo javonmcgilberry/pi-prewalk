@@ -1,5 +1,15 @@
 import type { BenchmarkProtocol } from "./benchmark-contract.mjs";
 import type { BenchmarkRuntimeResult, ScheduledRun } from "./benchmark-controller.mjs";
+
+type RuntimeValue =
+	| null
+	| boolean
+	| number
+	| string
+	| RuntimeValue[]
+	| { [key: string]: RuntimeValue }
+	| undefined;
+type RuntimeRecord = { [key: string]: RuntimeValue };
 interface RuntimeTask {
 	id: string;
 	prompt: string;
@@ -20,9 +30,9 @@ interface RuntimeSandbox {
 	createWorker(task: RuntimeTask, runId: string): Promise<{ containerId: string; role: string }>;
 	request(
 		handle: { containerId: string; role: string },
-		request: Record<string, unknown>,
+		request: RuntimeRecord,
 		timeoutMs?: number,
-	): Promise<Record<string, unknown>>;
+	): Promise<RuntimeRecord>;
 	evaluate(
 		task: RuntimeTask,
 		runId: string,
@@ -48,14 +58,14 @@ export function createBenchmarkRuntime(options: {
 		env: NodeJS.ProcessEnv;
 		timeoutMs: number;
 	}) => {
-		events: Record<string, unknown>[];
+		events: RuntimeRecord[];
 		stderr: string;
-		send(command: Record<string, unknown>): Promise<Record<string, unknown>>;
+		send(command: RuntimeRecord): Promise<RuntimeRecord>;
 		waitFor(
-			predicate: (event: Record<string, unknown>) => boolean,
+			predicate: (event: RuntimeRecord) => boolean,
 			timeoutMs: number,
 			startIndex: number,
-		): Promise<Record<string, unknown>>;
+		): Promise<RuntimeRecord>;
 		close(): Promise<void>;
 	};
 	temporaryParent?: string;

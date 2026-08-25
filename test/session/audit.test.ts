@@ -106,8 +106,35 @@ describe("Prewalk audit records", () => {
 		).toBeUndefined();
 	});
 
-	it("rejects unknown fields, raw errors, and unsupported reasons", () => {
+	it("accepts approved mutation provenance and rejects nested trigger secrets", () => {
 		const record = createAuditRecord(run, "handoff-triggered");
+		const persisted = {
+			...record,
+			trigger: {
+				...record.trigger,
+				kind: "edit" as const,
+				source: "builtin" as const,
+				cellId: "cell-1",
+				traceId: "trace-1",
+				sessionId: 7,
+			},
+		};
+		const parsed = parseAuditRecord(persisted);
+		expect(parsed?.trigger).toEqual(persisted.trigger);
+		if (!parsed) throw new Error("Expected the approved trigger provenance to parse.");
+		expect(runFromAudit(parsed).trigger).toEqual(persisted.trigger);
+		expect(
+			parseAuditRecord({
+				...record,
+				trigger: { ...persisted.trigger, secret: "authorization-token" },
+			}),
+		).toBeUndefined();
+		expect(
+			parseAuditRecord({
+				...record,
+				trigger: { ...persisted.trigger, paths: ["private.txt"] },
+			}),
+		).toBeUndefined();
 		expect(parseAuditRecord({ ...record, headers: { authorization: "secret" } })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, rawError: "/private/path" })).toBeUndefined();
 		expect(parseAuditRecord({ ...record, reasonCode: "raw provider error" })).toBeUndefined();
@@ -127,6 +154,7 @@ describe("Prewalk audit records", () => {
 			schemaVersion: record.schemaVersion,
 			executor: record.executor,
 		});
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		expect(runFromAudit(parsed as NonNullable<typeof parsed>).config.analytics).toBeUndefined();
 	});
 });

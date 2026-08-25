@@ -4,6 +4,7 @@ import { type ExecutorProbe, resolveExecutorChain } from "../../src/executor/sel
 import type { ExecutorConfig } from "../../src/orchestration/coordinator.js";
 
 function model(provider: string, id: string, contextWindow = 272_000): Model<Api> {
+	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 	return {
 		id,
 		name: id,

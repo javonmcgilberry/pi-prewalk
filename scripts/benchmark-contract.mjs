@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 export const BENCHMARK_CONFIRMATION = "I_UNDERSTAND_AT_LEAST_60_PROVIDER_RUNS";
 export const ARMS = ["sol", "luna", "prewalk"];
@@ -54,7 +55,7 @@ const PINNED_IMAGE = /^[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$/;
 
 export function canonicalJson(value) {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
+	if (value && isRecord(value)) {
 		return `{${Object.keys(value)
 			.sort()
 			.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
@@ -116,7 +117,7 @@ export function validateBenchmarkOptions(options) {
 		["--output-dir", options.outputDirectory],
 		["--control-dir", options.controlDirectory],
 	]) {
-		if (typeof value !== "string" || !path.isAbsolute(value)) {
+		if (!isString(value) || !path.isAbsolute(value)) {
 			throw new Error(`Benchmark requires an absolute ${name}.`);
 		}
 	}
@@ -174,22 +175,22 @@ export function validateManifest(manifest) {
 	for (const task of manifest.tasks) {
 		if (
 			!task ||
-			typeof task.id !== "string" ||
+			!isString(task.id) ||
 			ids.has(task.id) ||
-			typeof task.repository !== "string" ||
-			!/^https:\/\/github\.com\//.test(task.repository) ||
-			typeof task.revision !== "string" ||
+			!isString(task.repository) ||
+			!task.repository.startsWith("https://github.com/") ||
+			!isString(task.revision) ||
 			!/^[a-f0-9]{40}$/.test(task.revision) ||
-			typeof task.prompt !== "string" ||
-			typeof task.sourceDigest !== "string" ||
+			!isString(task.prompt) ||
+			!isString(task.sourceDigest) ||
 			!/^[a-f0-9]{64}$/.test(task.sourceDigest) ||
-			typeof task.testCommand !== "string" ||
-			typeof task.workerImage !== "string" ||
+			!isString(task.testCommand) ||
+			!isString(task.workerImage) ||
 			!PINNED_IMAGE.test(task.workerImage) ||
-			typeof task.evaluatorImage !== "string" ||
+			!isString(task.evaluatorImage) ||
 			!PINNED_IMAGE.test(task.evaluatorImage) ||
 			task.workerImage === task.evaluatorImage ||
-			typeof task.environmentDigest !== "string" ||
+			!isString(task.environmentDigest) ||
 			!/^[a-f0-9]{64}$/.test(task.environmentDigest) ||
 			task.environmentDigest !== taskEnvironmentDigest(task) ||
 			!Number.isInteger(task.timeoutSeconds) ||

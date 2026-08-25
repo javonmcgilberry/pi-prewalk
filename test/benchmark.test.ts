@@ -12,6 +12,10 @@ import {
 	validateManifest,
 } from "../scripts/benchmark-contract.mjs";
 
+function castTestType<T>(value: T): T {
+	return value;
+}
+
 function task(index: number) {
 	const entry = {
 		id: `task-${index}`,
@@ -120,7 +124,10 @@ describe("directional benchmark contract", () => {
 		expect(() => validateManifest({ ...manifest(), corpusFrozen: false })).toThrow(/frozen/);
 		expect(() => validateManifest({ ...manifest(), repetitions: 3 })).toThrow(/one repetition/);
 		expect(() =>
-			validateManifest({ ...manifest(), schemaVersion: 1 } as unknown as BenchmarkManifest),
+			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+			validateManifest(
+				castTestType<BenchmarkManifest>({ ...manifest(), schemaVersion: 1 } as never),
+			),
 		).toThrow(/frozen/);
 		const invalid = manifest();
 		invalid.tasks[0].validation.goldPatchPassed = false;

@@ -30,7 +30,14 @@ import {
 	TemporaryModelController,
 	type TemporaryModelLease,
 } from "../executor/temporary-runtime.js";
-import { isRecord } from "../guards.js";
+import {
+	type BoundaryValue,
+	isBoolean,
+	isNumber,
+	isRecord,
+	isString,
+	parseBoundaryValue,
+} from "../guards.js";
 import { type HostRunIdentity, PiHostEventCorrelation } from "../host-event-correlation.js";
 import {
 	DEFAULT_EXECUTOR,
@@ -138,7 +145,7 @@ function childIdentity(): { agent: string; runId: string } | undefined {
 
 const prompts = loadPrompts();
 
-function isMissingFile(error: unknown): boolean {
+function isMissingFile<T>(error: T): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
@@ -149,7 +156,7 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	} catch (error) {
 		return isMissingFile(error) ? "disabled" : "invalid";
 	}
-	let config: unknown;
+	let config: BoundaryValue;
 	try {
 		config = JSON.parse(raw);
 	} catch {
@@ -159,12 +166,12 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	if (config.compaction === undefined) {
 		const legacyResponsesCompaction = config.responsesCompaction;
 		if (legacyResponsesCompaction === undefined) return "disabled";
-		if (typeof legacyResponsesCompaction !== "boolean") return "invalid";
+		if (!isBoolean(legacyResponsesCompaction)) return "invalid";
 		return legacyResponsesCompaction ? "enabled" : "disabled";
 	}
 	if (!isRecord(config.compaction)) return "invalid";
 	if (config.compaction.responsesCompaction === undefined) return "disabled";
-	if (typeof config.compaction.responsesCompaction !== "boolean") return "invalid";
+	if (!isBoolean(config.compaction.responsesCompaction)) return "invalid";
 	return config.compaction.responsesCompaction ? "enabled" : "disabled";
 }
 
@@ -211,7 +218,7 @@ function isPrewalkPrompt(
 
 function runIdFromMessage(message: AgentMessage): string | undefined {
 	if (!isPrewalkPrompt(message) || !isRecord(message.details)) return undefined;
-	return typeof message.details.runId === "string" ? message.details.runId : undefined;
+	return isString(message.details.runId) ? message.details.runId : undefined;
 }
 
 function lastAssistantMessage(
@@ -263,16 +270,16 @@ function estimateContextEventTokens(messages: readonly AgentMessage[]): number {
 	}
 }
 
-function delegatedAgent(value: unknown): string {
+function delegatedAgent(value: BoundaryValue): string {
 	if (!isRecord(value)) return "subagent";
-	const raw = typeof value.agent === "string" ? value.agent.trim() : "";
+	const raw = isString(value.agent) ? value.agent.trim() : "";
 	return raw ? raw.slice(0, 32) : "subagent";
 }
 
-function delegatedChildCount(value: unknown): number {
+function delegatedChildCount(value: BoundaryValue): number {
 	if (!isRecord(value)) return 1;
-	const requestedCount = (item: unknown): number => {
-		if (!isRecord(item) || typeof item.count !== "number" || !Number.isSafeInteger(item.count)) {
+	const requestedCount = (item: BoundaryValue): number => {
+		if (!isRecord(item) || !isNumber(item.count) || !Number.isSafeInteger(item.count)) {
 			return 1;
 		}
 		return Math.max(1, item.count);
@@ -280,19 +287,23 @@ function delegatedChildCount(value: unknown): number {
 	if (Array.isArray(value.tasks)) {
 		return Math.max(
 			1,
-			value.tasks.reduce((count, item) => count + requestedCount(item), 0),
+			value.tasks.reduce<number>(
+				(count: number, item: BoundaryValue) => count + requestedCount(item),
+				0,
+			),
 		);
 	}
 	if (Array.isArray(value.chain)) {
 		return Math.max(
 			1,
-			value.chain.reduce((count, step) => {
+			value.chain.reduce<number>((count: number, step: BoundaryValue) => {
 				if (!isRecord(step)) return count + 1;
 				return (
 					count +
 					(Array.isArray(step.parallel)
-						? step.parallel.reduce(
-								(parallelCount, item) => parallelCount + requestedCount(item),
+						? step.parallel.reduce<number>(
+								(parallelCount: number, item: BoundaryValue) =>
+									parallelCount + requestedCount(item),
 								0,
 							)
 						: 1)
@@ -304,16 +315,17 @@ function delegatedChildCount(value: unknown): number {
 }
 
 function delegationFromResult(
-	details: unknown,
+	details: BoundaryValue,
 	isError: boolean,
 	fallbackAgent: string,
 ): DelegationStatus {
 	if (!isRecord(details) || !Array.isArray(details.results)) {
-		return {
+		const status: DelegationStatus = {
 			agent: fallbackAgent,
 			state: isError ? "failed" : "completed",
-			...(isError ? { reason: "subagent-tool-failed" } : {}),
 		};
+		if (isError) status.reason = "subagent-tool-failed";
+		return status;
 	}
 	for (const value of details.results) {
 		if (!isRecord(value)) continue;
@@ -322,8 +334,8 @@ function delegationFromResult(
 			value.timedOut === true ||
 			value.stopped === true ||
 			value.interrupted === true ||
-			(typeof value.exitCode === "number" && value.exitCode !== 0) ||
-			typeof value.error === "string"
+			(isNumber(value.exitCode) && value.exitCode !== 0) ||
+			isString(value.error)
 		) {
 			return {
 				agent,
@@ -332,11 +344,12 @@ function delegationFromResult(
 			};
 		}
 	}
-	return {
+	const status: DelegationStatus = {
 		agent: fallbackAgent,
 		state: isError ? "failed" : "completed",
-		...(isError ? { reason: "subagent-tool-failed" } : {}),
 	};
+	if (isError) status.reason = "subagent-tool-failed";
+	return status;
 }
 
 function acceptsMutationEvidence(run: PrewalkRun | undefined): boolean {
@@ -486,7 +499,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	const recordDelegationProjection = async (
 		invocation: DelegationInvocation,
-		details: unknown,
+		details: BoundaryValue,
 		isError: boolean,
 	): Promise<void> => {
 		try {
@@ -507,7 +520,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.events.on("subagent:async-complete", (payload) => {
 		if (!isRecord(payload)) return;
-		const runId = typeof payload.runId === "string" ? payload.runId : undefined;
+		const runId = isString(payload.runId) ? payload.runId : undefined;
 		if (!runId) return;
 		const invocation = delegationInvocations.find(
 			(candidate) => candidate.delegationRunId === runId,
@@ -708,6 +721,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): Promise<ExecutorChainResolution> =>
 		resolveConfiguredExecutor(plannerProfile, config, ctx.model, ctx.modelRegistry);
 
+	type PrewalkPrompt = { content: string; event: AuditEventKind };
 	const sendPrompt = async (
 		type:
 			| typeof PREWALK_PLAN_MESSAGE_TYPE
@@ -719,7 +733,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const run = application.run;
 		if (!run) return;
-		let prompt: { content: string; event: AuditEventKind };
+		let prompt: PrewalkPrompt;
 		switch (type) {
 			case PREWALK_PLAN_MESSAGE_TYPE:
 				prompt = { content: prompts.plan, event: "plan-injected" };
@@ -1567,6 +1581,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		const details = parseBoundaryValue(event.details);
 		const run = application.run;
 		const runIdentity = correlationIdentity();
 		const correlation = hostCorrelation.observe(
@@ -1595,11 +1610,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				(candidate) => candidate.toolCallId === event.toolCallId,
 			);
 			if (invocation) {
-				await recordDelegationProjection(invocation, event.details, event.isError);
+				await recordDelegationProjection(invocation, details, event.isError);
 			}
 			if (!sameCapturedRun(runIdentity, application.run)) return;
 			delegation = delegationFromResult(
-				event.details,
+				details,
 				event.isError,
 				delegation?.agent ?? delegatedAgent(event.input),
 			);
@@ -1612,7 +1627,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			toolName: event.toolName,
 			input: event.input,
 			isError: event.isError,
-			details: event.details,
+			details,
 		});
 	});
 

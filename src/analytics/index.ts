@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { isRecord } from "../guards.js";
+import {
+	type BoundaryValue,
+	type DomainObject,
+	isBoolean,
+	isNumber,
+	isRecord,
+	isString,
+} from "../guards.js";
 
 export const ANALYTICS_SCHEMA_VERSION = 1;
 export const DEFAULT_RECENT_RECEIPT_COUNT = 10;
@@ -421,7 +428,7 @@ export function normalizeUsageObservations(
 		const evidenceKey = usageEvidenceKey(observation);
 		if (evidenceKeys.has(evidenceKey)) continue;
 		evidenceKeys.add(evidenceKey);
-		slices.push({
+		const slice: UsageSlice = {
 			sequence: observation.sequence,
 			provider: observation.provider,
 			model: observation.model,
@@ -430,13 +437,14 @@ export function normalizeUsageObservations(
 			outputTokens: observation.usage.output,
 			cacheReadTokens: observation.usage.cacheRead,
 			cacheWriteTokens: observation.usage.cacheWrite,
-			...(observation.usage.cacheWrite1h === undefined
-				? {}
-				: { cacheWrite1hTokens: observation.usage.cacheWrite1h }),
 			reasoningTokens: observation.usage.reasoning ?? 0,
 			totalTokens: observation.usage.totalTokens,
 			cost: { ...observation.usage.cost },
-		});
+		};
+		if (observation.usage.cacheWrite1h !== undefined) {
+			slice.cacheWrite1hTokens = observation.usage.cacheWrite1h;
+		}
+		slices.push(slice);
 	}
 
 	return slices;
@@ -869,7 +877,7 @@ const BENCHMARK_COMPARISON_KEYS = new Set([
 	"prewalkVsLunaSavings",
 ]);
 
-export function parseVerifiedBenchmarkSummary(value: unknown): VerifiedBenchmarkSummary {
+export function parseVerifiedBenchmarkSummary(value: BoundaryValue): VerifiedBenchmarkSummary {
 	const record = requireRecord(value, "Verified benchmark summary");
 	rejectUnknownKeys(record, VERIFIED_BENCHMARK_KEYS, "verified benchmark summary");
 	if (record.schemaVersion !== VERIFIED_BENCHMARK_SCHEMA_VERSION) {
@@ -944,7 +952,7 @@ export function parseVerifiedBenchmarkSummary(value: unknown): VerifiedBenchmark
 	};
 }
 
-export function serializeVerifiedBenchmarkSummary(value: unknown): string {
+export function serializeVerifiedBenchmarkSummary(value: BoundaryValue): string {
 	return JSON.stringify(parseVerifiedBenchmarkSummary(value));
 }
 
@@ -952,14 +960,14 @@ export function deserializeVerifiedBenchmarkSummary(value: string): VerifiedBenc
 	return parseVerifiedBenchmarkSummary(parseJson(value, "verified benchmark summary"));
 }
 
-export function parseAnalyticsConfig(value: unknown): AnalyticsConfig {
+export function parseAnalyticsConfig(value: BoundaryValue): AnalyticsConfig {
 	const record = requireRecord(value, "Analytics config");
 	rejectUnknownKeys(record, ANALYTICS_CONFIG_KEYS, "analytics config");
 	const schemaVersion = requireSchemaVersion(record.schemaVersion, "Analytics config");
-	if (typeof record.enabled !== "boolean") {
+	if (!isBoolean(record.enabled)) {
 		throw new Error("Analytics config enabled must be boolean.");
 	}
-	if (typeof record.catalogFallbackEnabled !== "boolean") {
+	if (!isBoolean(record.catalogFallbackEnabled)) {
 		throw new Error("Analytics config catalogFallbackEnabled must be boolean.");
 	}
 	const recentReceiptCount = requireNonNegativeInteger(
@@ -977,10 +985,10 @@ export function parseAnalyticsConfig(value: unknown): AnalyticsConfig {
 	};
 }
 
-export function parseRunJournal(value: unknown): RunJournal {
+export function parseRunJournal(value: BoundaryValue): RunJournal {
 	const record = requireRecord(value, "Analytics journal");
 	rejectUnknownKeys(record, JOURNAL_KEYS, "analytics journal");
-	return {
+	const journal: RunJournal = {
 		schemaVersion: requireSchemaVersion(record.schemaVersion, "Analytics journal"),
 		runId: requireSafeIdentifier(record.runId, "Analytics journal runId"),
 		epoch: requireSafeIdentifier(record.epoch, "Analytics journal epoch"),
@@ -992,20 +1000,20 @@ export function parseRunJournal(value: unknown): RunJournal {
 			record.lastObservedSequence,
 			"Analytics journal lastObservedSequence",
 		),
-		...(record.evidenceKeys === undefined
-			? {}
-			: { evidenceKeys: parseEvidenceKeys(record.evidenceKeys) }),
-		...(record.lineage === undefined ? {} : { lineage: parseSessionLineage(record.lineage) }),
 		outcome: requireRunOutcome(record.outcome, "Analytics journal outcome"),
 		handoffState: requireHandoffState(record.handoffState, "Analytics journal handoffState"),
 		usage: parseUsage(record.usage, "Analytics journal usage"),
 	};
+	if (record.evidenceKeys !== undefined)
+		journal.evidenceKeys = parseEvidenceKeys(record.evidenceKeys);
+	if (record.lineage !== undefined) journal.lineage = parseSessionLineage(record.lineage);
+	return journal;
 }
 
-export function parseRunReceipt(value: unknown): RunReceipt {
+export function parseRunReceipt(value: BoundaryValue): RunReceipt {
 	const record = requireRecord(value, "Analytics receipt");
 	rejectUnknownKeys(record, RECEIPT_KEYS, "analytics receipt");
-	const receipt = normalizeLegacyReceipt({
+	const receiptInput: RunReceipt = {
 		schemaVersion: requireSchemaVersion(record.schemaVersion, "Analytics receipt"),
 		runId: requireSafeIdentifier(record.runId, "Analytics receipt runId"),
 		epoch: requireSafeIdentifier(record.epoch, "Analytics receipt epoch"),
@@ -1021,21 +1029,22 @@ export function parseRunReceipt(value: unknown): RunReceipt {
 		actualCost: requireNonNegativeNumber(record.actualCost, "Analytics receipt actualCost"),
 		estimate: parseSavingsEstimate(record.estimate),
 		pricingEvidence: parsePricingEvidence(record.pricingEvidence),
-		...(record.pricing === undefined ? {} : { pricing: parseModelPricingPair(record.pricing) }),
-		...(record.evidenceKeys === undefined
-			? {}
-			: { evidenceKeys: parseReceiptEvidenceKeys(record.evidenceKeys) }),
-		...(record.lineage === undefined ? {} : { lineage: parseSessionLineage(record.lineage) }),
-	});
+	};
+	if (record.pricing !== undefined) receiptInput.pricing = parseModelPricingPair(record.pricing);
+	if (record.evidenceKeys !== undefined) {
+		receiptInput.evidenceKeys = parseReceiptEvidenceKeys(record.evidenceKeys);
+	}
+	if (record.lineage !== undefined) receiptInput.lineage = parseSessionLineage(record.lineage);
+	const receipt = normalizeLegacyReceipt(receiptInput);
 	validateReceiptFinancials(receipt);
 	return receipt;
 }
 
-export function serializeRunJournal(value: unknown): string {
+export function serializeRunJournal(value: BoundaryValue): string {
 	return JSON.stringify(parseRunJournal(value));
 }
 
-export function serializeRunReceipt(value: unknown): string {
+export function serializeRunReceipt(value: BoundaryValue): string {
 	return JSON.stringify(parseRunReceipt(value));
 }
 
@@ -1072,7 +1081,7 @@ function normalizeLegacyReceipt(receipt: RunReceipt): RunReceipt {
 	return receipt;
 }
 
-function parseRunConfiguration(value: unknown): RunConfigurationSnapshot {
+function parseRunConfiguration(value: BoundaryValue): RunConfigurationSnapshot {
 	const record = requireRecord(value, "Analytics run configuration");
 	rejectUnknownKeys(record, CONFIGURATION_KEYS, "analytics run configuration");
 	return {
@@ -1082,7 +1091,7 @@ function parseRunConfiguration(value: unknown): RunConfigurationSnapshot {
 	};
 }
 
-function parseModelIdentity(value: unknown, name: string): ModelIdentity {
+function parseModelIdentity(value: BoundaryValue, name: string): ModelIdentity {
 	const record = requireRecord(value, name);
 	rejectUnknownKeys(record, MODEL_KEYS, name.toLowerCase());
 	return {
@@ -1091,15 +1100,15 @@ function parseModelIdentity(value: unknown, name: string): ModelIdentity {
 	};
 }
 
-function parseEvidenceKeys(value: unknown): string[] {
+function parseEvidenceKeys(value: BoundaryValue): string[] {
 	return parseUniqueEvidenceKeys(value, "Analytics journal");
 }
 
-function parseReceiptEvidenceKeys(value: unknown): string[] {
+function parseReceiptEvidenceKeys(value: BoundaryValue): string[] {
 	return parseUniqueEvidenceKeys(value, "Analytics receipt");
 }
 
-function parseUniqueEvidenceKeys(value: unknown, label: string): string[] {
+function parseUniqueEvidenceKeys(value: BoundaryValue, label: string): string[] {
 	if (!Array.isArray(value)) throw new Error(`${label} evidenceKeys must be an array.`);
 	const keys = value.map((item, index) =>
 		requireSafeIdentifier(item, `${label} evidenceKeys[${index}]`),
@@ -1110,47 +1119,42 @@ function parseUniqueEvidenceKeys(value: unknown, label: string): string[] {
 	return keys;
 }
 
-function parseSessionLineage(value: unknown): SessionLineage {
+function parseSessionLineage(value: BoundaryValue): SessionLineage {
 	const record = requireRecord(value, "Analytics receipt lineage");
 	rejectUnknownKeys(record, SESSION_LINEAGE_KEYS, "analytics receipt lineage");
-	return {
+	const lineage: SessionLineage = {
 		rootSessionId: requireSafeIdentifier(
 			record.rootSessionId,
 			"Analytics receipt lineage rootSessionId",
 		),
-		...(record.parentSessionId === undefined
-			? {}
-			: {
-					parentSessionId: requireSafeIdentifier(
-						record.parentSessionId,
-						"Analytics receipt lineage parentSessionId",
-					),
-				}),
-		...(record.delegationRunId === undefined
-			? {}
-			: {
-					delegationRunId: requireSafeIdentifier(
-						record.delegationRunId,
-						"Analytics receipt lineage delegationRunId",
-					),
-				}),
-		...(record.childIndex === undefined
-			? {}
-			: {
-					childIndex: requireNonNegativeInteger(
-						record.childIndex,
-						"Analytics receipt lineage childIndex",
-					),
-				}),
 	};
+	if (record.parentSessionId !== undefined) {
+		lineage.parentSessionId = requireSafeIdentifier(
+			record.parentSessionId,
+			"Analytics receipt lineage parentSessionId",
+		);
+	}
+	if (record.delegationRunId !== undefined) {
+		lineage.delegationRunId = requireSafeIdentifier(
+			record.delegationRunId,
+			"Analytics receipt lineage delegationRunId",
+		);
+	}
+	if (record.childIndex !== undefined) {
+		lineage.childIndex = requireNonNegativeInteger(
+			record.childIndex,
+			"Analytics receipt lineage childIndex",
+		);
+	}
+	return lineage;
 }
 
-function parseUsage(value: unknown, name: string): UsageSlice[] {
+function parseUsage(value: BoundaryValue, name: string): UsageSlice[] {
 	if (!Array.isArray(value)) throw new Error(`${name} must be an array.`);
 	return value.map((item, index) => parseUsageSlice(item, `${name}[${index}]`));
 }
 
-function parseUsageSlice(value: unknown, name: string): UsageSlice {
+function parseUsageSlice(value: BoundaryValue, name: string): UsageSlice {
 	const record = requireRecord(value, name);
 	rejectUnknownKeys(record, USAGE_KEYS, name.toLowerCase());
 	const cacheWriteTokens = requireNonNegativeInteger(
@@ -1164,7 +1168,7 @@ function parseUsageSlice(value: unknown, name: string): UsageSlice {
 	if (cacheWrite1hTokens !== undefined && cacheWrite1hTokens > cacheWriteTokens) {
 		throw new Error(`${name} cacheWrite1hTokens cannot exceed cacheWriteTokens.`);
 	}
-	return {
+	const slice: UsageSlice = {
 		sequence: requireNonNegativeInteger(record.sequence, `${name} sequence`),
 		provider: requireNonEmptyString(record.provider, `${name} provider`),
 		model: requireNonEmptyString(record.model, `${name} model`),
@@ -1173,14 +1177,15 @@ function parseUsageSlice(value: unknown, name: string): UsageSlice {
 		outputTokens: requireNonNegativeInteger(record.outputTokens, `${name} outputTokens`),
 		cacheReadTokens: requireNonNegativeInteger(record.cacheReadTokens, `${name} cacheReadTokens`),
 		cacheWriteTokens,
-		...(cacheWrite1hTokens === undefined ? {} : { cacheWrite1hTokens }),
 		reasoningTokens: requireNonNegativeInteger(record.reasoningTokens, `${name} reasoningTokens`),
 		totalTokens: requireNonNegativeInteger(record.totalTokens, `${name} totalTokens`),
 		cost: parseUsageCost(record.cost, `${name} cost`),
 	};
+	if (cacheWrite1hTokens !== undefined) slice.cacheWrite1hTokens = cacheWrite1hTokens;
+	return slice;
 }
 
-function parseUsageCost(value: unknown, name: string): UsageCost {
+function parseUsageCost(value: BoundaryValue, name: string): UsageCost {
 	const record = requireRecord(value, name);
 	rejectUnknownKeys(record, COST_KEYS, name.toLowerCase());
 	const cost = {
@@ -1267,7 +1272,7 @@ function financiallyEqual(left: number, right: number): boolean {
 	return Math.abs(left - right) <= Number.EPSILON * 16 * scale;
 }
 
-function parseSavingsEstimate(value: unknown): SavingsEstimate {
+function parseSavingsEstimate(value: BoundaryValue): SavingsEstimate {
 	const record = requireRecord(value, "Analytics receipt estimate");
 	if (record.kind === "unavailable") {
 		rejectUnknownKeys(record, new Set(["kind", "reason"]), "analytics receipt estimate");
@@ -1295,7 +1300,7 @@ function parseSavingsEstimate(value: unknown): SavingsEstimate {
 	throw new Error("Analytics receipt estimate kind is invalid.");
 }
 
-function parseModelPricingPair(value: unknown): ModelPricingPair {
+function parseModelPricingPair(value: BoundaryValue): ModelPricingPair {
 	const record = requireRecord(value, "Analytics receipt pricing");
 	rejectUnknownKeys(record, PRICING_PAIR_KEYS, "analytics receipt pricing");
 	return {
@@ -1304,34 +1309,31 @@ function parseModelPricingPair(value: unknown): ModelPricingPair {
 	};
 }
 
-function parseModelPricingSchedule(value: unknown, name: string): ModelPricingSchedule {
+function parseModelPricingSchedule(value: BoundaryValue, name: string): ModelPricingSchedule {
 	const record = requireRecord(value, name);
 	rejectUnknownKeys(record, PRICING_SCHEDULE_KEYS, name);
 	if (record.tiers !== undefined && !Array.isArray(record.tiers)) {
 		throw new Error(`${name} tiers must be an array.`);
 	}
-	return {
-		...parseModelPricingRates(record, name),
-		...(record.tiers === undefined
-			? {}
-			: {
-					tiers: record.tiers.map((tier, index) => {
-						const tierName = `${name} tier ${index}`;
-						const tierRecord = requireRecord(tier, tierName);
-						rejectUnknownKeys(tierRecord, PRICING_TIER_KEYS, tierName);
-						return {
-							...parseModelPricingRates(tierRecord, tierName),
-							inputTokensAbove: requireNonNegativeNumber(
-								tierRecord.inputTokensAbove,
-								`${tierName} inputTokensAbove`,
-							),
-						};
-					}),
-				}),
-	};
+	const schedule: ModelPricingSchedule = parseModelPricingRates(record, name);
+	if (record.tiers !== undefined) {
+		schedule.tiers = record.tiers.map((tier, index) => {
+			const tierName = `${name} tier ${index}`;
+			const tierRecord = requireRecord(tier, tierName);
+			rejectUnknownKeys(tierRecord, PRICING_TIER_KEYS, tierName);
+			return {
+				...parseModelPricingRates(tierRecord, tierName),
+				inputTokensAbove: requireNonNegativeNumber(
+					tierRecord.inputTokensAbove,
+					`${tierName} inputTokensAbove`,
+				),
+			};
+		});
+	}
+	return schedule;
 }
 
-function parseModelPricingRates(record: Record<string, unknown>, name: string): ModelPricingRates {
+function parseModelPricingRates(record: DomainObject, name: string): ModelPricingRates {
 	const rates: ModelPricingRates = {};
 	for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
 		const value = record[key];
@@ -1341,7 +1343,7 @@ function parseModelPricingRates(record: Record<string, unknown>, name: string): 
 	return rates;
 }
 
-function parsePricingEvidence(value: unknown): PricingEvidence {
+function parsePricingEvidence(value: BoundaryValue): PricingEvidence {
 	const record = requireRecord(value, "Analytics receipt pricingEvidence");
 	if (record.source === "pi-reported-actual") {
 		rejectUnknownKeys(record, new Set(["source"]), "analytics receipt pricingEvidence");
@@ -1388,37 +1390,33 @@ function parsePricingEvidence(value: unknown): PricingEvidence {
 	throw new Error("Analytics receipt pricingEvidence source is invalid.");
 }
 
-function requireRecord(value: unknown, name: string): Record<string, unknown> {
+function requireRecord(value: BoundaryValue, name: string): DomainObject {
 	if (!isRecord(value)) throw new Error(`${name} must be a JSON object.`);
 	return value;
 }
 
-function rejectUnknownKeys(
-	record: Record<string, unknown>,
-	allowed: ReadonlySet<string>,
-	name: string,
-): void {
+function rejectUnknownKeys(record: DomainObject, allowed: ReadonlySet<string>, name: string): void {
 	const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key));
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown ${name} field: ${unknownKeys.join(", ")}.`);
 	}
 }
 
-function requireSchemaVersion(value: unknown, name: string): number {
+function requireSchemaVersion(value: BoundaryValue, name: string): number {
 	if (value !== ANALYTICS_SCHEMA_VERSION) {
 		throw new Error(`${name} schemaVersion ${String(value)} is unsupported.`);
 	}
 	return ANALYTICS_SCHEMA_VERSION;
 }
 
-function requireNonEmptyString(value: unknown, name: string): string {
-	if (typeof value !== "string" || value.length === 0) {
+function requireNonEmptyString(value: BoundaryValue, name: string): string {
+	if (!isString(value) || value.length === 0) {
 		throw new Error(`${name} must be a non-empty string.`);
 	}
 	return value;
 }
 
-function requireSafeIdentifier(value: unknown, name: string): string {
+function requireSafeIdentifier(value: BoundaryValue, name: string): string {
 	const identifier = requireNonEmptyString(value, name);
 	if (!/^[A-Za-z0-9._:-]+$/.test(identifier)) {
 		throw new Error(`${name} must be an opaque identifier without a filesystem path.`);
@@ -1426,7 +1424,7 @@ function requireSafeIdentifier(value: unknown, name: string): string {
 	return identifier;
 }
 
-function requireTimestamp(value: unknown, name: string): string {
+function requireTimestamp(value: BoundaryValue, name: string): string {
 	const timestamp = requireNonEmptyString(value, name);
 	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(timestamp)) {
 		throw new Error(`${name} must be an ISO 8601 UTC timestamp.`);
@@ -1434,12 +1432,12 @@ function requireTimestamp(value: unknown, name: string): string {
 	return timestamp;
 }
 
-function requireNullableTimestamp(value: unknown, name: string): string | null {
+function requireNullableTimestamp(value: BoundaryValue, name: string): string | null {
 	if (value === null) return null;
 	return requireTimestamp(value, name);
 }
 
-function requireDate(value: unknown, name: string): string {
+function requireDate(value: BoundaryValue, name: string): string {
 	const date = requireNonEmptyString(value, name);
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
 		throw new Error(`${name} must be an ISO 8601 date.`);
@@ -1447,26 +1445,26 @@ function requireDate(value: unknown, name: string): string {
 	return date;
 }
 
-function requireFiniteNumber(value: unknown, name: string): number {
-	if (typeof value !== "number" || !Number.isFinite(value)) {
+function requireFiniteNumber(value: BoundaryValue, name: string): number {
+	if (!isNumber(value) || !Number.isFinite(value)) {
 		throw new Error(`${name} must be a finite number.`);
 	}
 	return value;
 }
 
-function requireNonNegativeNumber(value: unknown, name: string): number {
+function requireNonNegativeNumber(value: BoundaryValue, name: string): number {
 	const number = requireFiniteNumber(value, name);
 	if (number < 0) throw new Error(`${name} must not be negative.`);
 	return number;
 }
 
-function requireNonNegativeInteger(value: unknown, name: string): number {
+function requireNonNegativeInteger(value: BoundaryValue, name: string): number {
 	const number = requireNonNegativeNumber(value, name);
 	if (!Number.isInteger(number)) throw new Error(`${name} must be an integer.`);
 	return number;
 }
 
-function requireRunOutcome(value: unknown, name: string): RunOutcome {
+function requireRunOutcome(value: BoundaryValue, name: string): RunOutcome {
 	if (value === "active") return "active";
 	if (value === "succeeded") return "succeeded";
 	if (value === "failed") return "failed";
@@ -1478,7 +1476,7 @@ function requireRunOutcome(value: unknown, name: string): RunOutcome {
 	throw new Error(`${name} is invalid.`);
 }
 
-function requireHandoffState(value: unknown, name: string): HandoffState {
+function requireHandoffState(value: BoundaryValue, name: string): HandoffState {
 	if (value === "not-started") return "not-started";
 	if (value === "pending") return "pending";
 	if (value === "completed") return "completed";
@@ -1486,7 +1484,7 @@ function requireHandoffState(value: unknown, name: string): HandoffState {
 	throw new Error(`${name} is invalid.`);
 }
 
-function requireUsageRole(value: unknown, name: string): UsageRole {
+function requireUsageRole(value: BoundaryValue, name: string): UsageRole {
 	if (value === "planner-primary") return "planner-primary";
 	if (value === "executor-primary") return "executor-primary";
 	if (value === "auxiliary") return "auxiliary";
@@ -1494,7 +1492,7 @@ function requireUsageRole(value: unknown, name: string): UsageRole {
 	throw new Error(`${name} is invalid.`);
 }
 
-function requireUnavailabilityReason(value: unknown, name: string): UnavailabilityReason {
+function requireUnavailabilityReason(value: BoundaryValue, name: string): UnavailabilityReason {
 	if (value === "run-not-successful") return "run-not-successful";
 	if (value === "pricing-missing") return "pricing-missing";
 	if (value === "pricing-incomplete") return "pricing-incomplete";
@@ -1505,9 +1503,9 @@ function requireUnavailabilityReason(value: unknown, name: string): Unavailabili
 	throw new Error(`${name} is invalid.`);
 }
 
-function parseJson(value: string, name: string): unknown {
+function parseJson(value: string, name: string): BoundaryValue {
 	try {
-		const parsed: unknown = JSON.parse(value);
+		const parsed: BoundaryValue = JSON.parse(value);
 		return parsed;
 	} catch {
 		throw new Error(`Stored ${name} is not valid JSON.`);

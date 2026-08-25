@@ -3,7 +3,7 @@ import {
 	DEFAULT_ANALYTICS_CONFIG,
 	parseAnalyticsConfig,
 } from "../analytics/index.js";
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, isBoolean, isNumber, isRecord, isString } from "../guards.js";
 import {
 	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	type EffectiveRoute,
@@ -56,10 +56,7 @@ export interface PrewalkAuditRecord {
 	continuePending: boolean;
 	todoActive: boolean;
 	todoSeen: boolean;
-	trigger?: {
-		toolCallId: string;
-		toolName: string;
-	};
+	trigger?: PersistedMutationTrigger;
 	reasonCode?: string;
 }
 
@@ -127,54 +124,145 @@ const AUDIT_KEYS = new Set([
 	"trigger",
 	"reasonCode",
 ]);
+const TRIGGER_KEYS = new Set([
+	"toolCallId",
+	"toolName",
+	"kind",
+	"source",
+	"cellId",
+	"traceId",
+	"sessionId",
+]);
+const MUTATION_KINDS = new Set(["edit", "write", "apply_patch"]);
+const MUTATION_SOURCES = new Set([
+	"builtin",
+	"direct",
+	"shell",
+	"powershell",
+	"exec_command",
+	"code_mode",
+	"adapter",
+]);
 
-function isEvent(value: unknown): value is AuditEventKind {
-	return typeof value === "string" && EVENTS.has(value);
+function isMutationKind(value: BoundaryValue): value is PersistedMutationTrigger["kind"] {
+	return isString(value) && MUTATION_KINDS.has(value);
 }
 
-function isPhase(value: unknown): value is RunPhase {
-	return typeof value === "string" && PHASES.has(value);
+function isMutationSource(value: BoundaryValue): value is PersistedMutationTrigger["source"] {
+	return isString(value) && MUTATION_SOURCES.has(value);
 }
 
-function isRoute(value: unknown): value is EffectiveRoute {
-	return typeof value === "string" && ROUTES.has(value);
+/**
+ * Persisted trigger provenance mirrors the mutation owner contract. `paths` is
+ * deliberately excluded because it can contain repository-sensitive details.
+ * The base fields remain sufficient for legacy audit records.
+ */
+export interface PersistedMutationTrigger {
+	toolCallId: string;
+	toolName: string;
+	kind?: "edit" | "write" | "apply_patch";
+	source?:
+		| "builtin"
+		| "direct"
+		| "shell"
+		| "powershell"
+		| "exec_command"
+		| "code_mode"
+		| "adapter";
+	cellId?: string;
+	traceId?: string;
+	sessionId?: number;
 }
 
-function isMode(value: unknown): value is RunMode {
-	return typeof value === "string" && MODES.has(value);
+function isEvent(value: BoundaryValue): value is AuditEventKind {
+	return isString(value) && EVENTS.has(value);
 }
 
-function isTrigger(value: unknown): value is { toolCallId: string; toolName: string } {
-	return (
-		isRecord(value) &&
-		Object.keys(value).every((key) => key === "toolCallId" || key === "toolName") &&
-		typeof value.toolCallId === "string" &&
-		typeof value.toolName === "string"
-	);
+function isPhase(value: BoundaryValue): value is RunPhase {
+	return isString(value) && PHASES.has(value);
 }
 
-function isPlannerProfile(value: unknown): value is PlannerProfile {
+function isRoute(value: BoundaryValue): value is EffectiveRoute {
+	return isString(value) && ROUTES.has(value);
+}
+
+function isMode(value: BoundaryValue): value is RunMode {
+	return isString(value) && MODES.has(value);
+}
+
+function parseTrigger(value: BoundaryValue): PersistedMutationTrigger | undefined {
+	if (
+		!isRecord(value) ||
+		Object.keys(value).some((key) => !TRIGGER_KEYS.has(key)) ||
+		!isString(value.toolCallId) ||
+		!isString(value.toolName)
+	) {
+		return undefined;
+	}
+	if (
+		(value.kind !== undefined && !isMutationKind(value.kind)) ||
+		(value.source !== undefined && !isMutationSource(value.source)) ||
+		(value.cellId !== undefined && !isString(value.cellId)) ||
+		(value.traceId !== undefined && !isString(value.traceId)) ||
+		(value.sessionId !== undefined &&
+			(!isNumber(value.sessionId) || !Number.isSafeInteger(value.sessionId)))
+	) {
+		return undefined;
+	}
+	return copyTrigger({
+		toolCallId: value.toolCallId,
+		toolName: value.toolName,
+		kind: isMutationKind(value.kind) ? value.kind : undefined,
+		source: isMutationSource(value.source) ? value.source : undefined,
+		cellId: isString(value.cellId) ? value.cellId : undefined,
+		traceId: isString(value.traceId) ? value.traceId : undefined,
+		sessionId: isNumber(value.sessionId) ? value.sessionId : undefined,
+	});
+}
+
+function copyTrigger(value: {
+	toolCallId: string;
+	toolName: string;
+	kind?: PersistedMutationTrigger["kind"];
+	source?: PersistedMutationTrigger["source"];
+	cellId?: string;
+	traceId?: string;
+	sessionId?: number;
+}): PersistedMutationTrigger {
+	const trigger: PersistedMutationTrigger = {
+		toolCallId: value.toolCallId,
+		toolName: value.toolName,
+	};
+	if (value.kind !== undefined) trigger.kind = value.kind;
+	if (value.source !== undefined) trigger.source = value.source;
+	if (value.cellId !== undefined) trigger.cellId = value.cellId;
+	if (value.traceId !== undefined) trigger.traceId = value.traceId;
+	if (value.sessionId !== undefined) trigger.sessionId = value.sessionId;
+	return trigger;
+}
+
+function isPlannerProfile(value: BoundaryValue): value is PlannerProfile {
 	return (
 		isRecord(value) &&
 		Object.keys(value).every(
 			(key) => key === "provider" || key === "model" || key === "reasoning",
 		) &&
-		typeof value.provider === "string" &&
-		typeof value.model === "string" &&
-		typeof value.reasoning === "string" &&
+		isString(value.provider) &&
+		isString(value.model) &&
+		isString(value.reasoning) &&
 		["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value.reasoning)
 	);
 }
 
-function isExecutorConfig(value: unknown): value is ExecutorConfig {
+function isExecutorConfig(value: BoundaryValue): value is ExecutorConfig {
 	return (
 		isRecord(value) &&
 		Object.keys(value).every(
 			(key) => key === "provider" || key === "model" || key === "reasoning",
 		) &&
-		typeof value.provider === "string" &&
-		typeof value.model === "string" &&
-		typeof value.reasoning === "string" &&
+		isString(value.provider) &&
+		isString(value.model) &&
+		isString(value.reasoning) &&
 		["minimal", "low", "medium", "high", "xhigh", "max"].includes(value.reasoning)
 	);
 }
@@ -188,10 +276,10 @@ function overlayFingerprint(planner: ModelConfig, executor: ExecutorConfig): str
 }
 
 function overlayMatchesVersion(
-	version: unknown,
+	version: BoundaryValue,
 	planner: ModelConfig,
 	executor: ExecutorConfig,
-	overlay: unknown,
+	overlay: BoundaryValue,
 ): boolean {
 	if (version === LEGACY_PREWALK_AUDIT_VERSION) {
 		return overlay === legacyOverlayFingerprint(planner, executor);
@@ -203,8 +291,8 @@ function overlayMatchesVersion(
 }
 
 function parsePlannerRecoveryAudit(
-	value: unknown,
-	version: unknown,
+	value: BoundaryValue,
+	version: BoundaryValue,
 ): PlannerRecoveryConfig | undefined {
 	if (value === undefined) {
 		return version === PREWALK_AUDIT_VERSION
@@ -223,7 +311,7 @@ function parsePlannerRecoveryAudit(
 }
 
 export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): PrewalkAuditRecord {
-	return {
+	const record: PrewalkAuditRecord = {
 		schemaVersion: PREWALK_AUDIT_VERSION,
 		runId: run.id,
 		epoch: run.epoch,
@@ -242,44 +330,39 @@ export function createAuditRecord(run: PrewalkRun, event: AuditEventKind): Prewa
 		continuePending: run.continuePending,
 		todoActive: run.todoActive,
 		todoSeen: run.todoSeen,
-		...(run.trigger
-			? {
-					trigger: {
-						toolCallId: run.trigger.toolCallId,
-						toolName: run.trigger.toolName,
-					},
-				}
-			: {}),
-		...(run.reasonCode ? { reasonCode: run.reasonCode } : {}),
 	};
+	if (run.trigger) record.trigger = copyTrigger(run.trigger);
+	if (run.reasonCode) record.reasonCode = run.reasonCode;
+	return record;
 }
 
-export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined {
+export function parseAuditRecord(value: BoundaryValue): PrewalkAuditRecord | undefined {
 	if (
 		!isRecord(value) ||
 		Object.keys(value).some((key) => !AUDIT_KEYS.has(key)) ||
 		(value.schemaVersion !== LEGACY_PREWALK_AUDIT_VERSION &&
 			value.schemaVersion !== PREVIOUS_PREWALK_AUDIT_VERSION &&
 			value.schemaVersion !== PREWALK_AUDIT_VERSION) ||
-		typeof value.runId !== "string" ||
-		typeof value.epoch !== "string" ||
+		!isString(value.runId) ||
+		!isString(value.epoch) ||
 		!isEvent(value.event) ||
 		!isPhase(value.phase) ||
 		!isRoute(value.effectiveRoute) ||
 		!isMode(value.mode) ||
 		!isPlannerProfile(value.planner) ||
 		!isExecutorConfig(value.executor) ||
-		typeof value.planningPromptInjected !== "boolean" ||
-		typeof value.continuePending !== "boolean" ||
-		typeof value.todoActive !== "boolean" ||
-		typeof value.todoSeen !== "boolean"
+		!isBoolean(value.planningPromptInjected) ||
+		!isBoolean(value.continuePending) ||
+		!isBoolean(value.todoActive) ||
+		!isBoolean(value.todoSeen)
 	) {
 		return undefined;
 	}
 	if (!overlayMatchesVersion(value.schemaVersion, value.planner, value.executor, value.overlay)) {
 		return undefined;
 	}
-	if (value.trigger !== undefined && !isTrigger(value.trigger)) return undefined;
+	const trigger = value.trigger === undefined ? undefined : parseTrigger(value.trigger);
+	if (value.trigger !== undefined && !trigger) return undefined;
 	const plannerRecovery = parsePlannerRecoveryAudit(value.plannerRecovery, value.schemaVersion);
 	if (!plannerRecovery) return undefined;
 	let analytics: AnalyticsConfig | undefined;
@@ -292,11 +375,11 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 	}
 	if (
 		value.reasonCode !== undefined &&
-		(typeof value.reasonCode !== "string" || !REASON_CODES.has(value.reasonCode))
+		(!isString(value.reasonCode) || !REASON_CODES.has(value.reasonCode))
 	) {
 		return undefined;
 	}
-	return {
+	const record: PrewalkAuditRecord = {
 		schemaVersion: PREWALK_AUDIT_VERSION,
 		runId: value.runId,
 		epoch: value.epoch,
@@ -307,19 +390,25 @@ export function parseAuditRecord(value: unknown): PrewalkAuditRecord | undefined
 		planner: value.planner,
 		executor: value.executor,
 		plannerRecovery,
-		...(analytics ? { analytics } : {}),
 		overlay: overlayFingerprint(value.planner, value.executor),
 		planningPromptInjected: value.planningPromptInjected,
 		continuePending: value.continuePending,
 		todoActive: value.todoActive,
 		todoSeen: value.todoSeen,
-		...(value.trigger ? { trigger: value.trigger } : {}),
-		...(value.reasonCode ? { reasonCode: value.reasonCode } : {}),
 	};
+	if (analytics) record.analytics = analytics;
+	if (trigger) record.trigger = trigger;
+	if (value.reasonCode) record.reasonCode = value.reasonCode;
+	return record;
 }
 
 export function runFromAudit(record: PrewalkAuditRecord): PrewalkRun {
-	return {
+	const config: PrewalkRun["config"] = {
+		executor: structuredClone(record.executor),
+		plannerRecovery: structuredClone(record.plannerRecovery),
+	};
+	if (record.analytics) config.analytics = structuredClone(record.analytics);
+	const run: PrewalkRun = {
 		id: record.runId,
 		epoch: record.epoch,
 		mode: record.mode,
@@ -330,12 +419,9 @@ export function runFromAudit(record: PrewalkAuditRecord): PrewalkRun {
 		continuePending: record.continuePending,
 		todoActive: record.todoActive,
 		todoSeen: record.todoSeen,
-		config: {
-			executor: structuredClone(record.executor),
-			plannerRecovery: structuredClone(record.plannerRecovery),
-			...(record.analytics ? { analytics: structuredClone(record.analytics) } : {}),
-		},
-		...(record.trigger ? { trigger: { ...record.trigger } } : {}),
-		...(record.reasonCode ? { reasonCode: record.reasonCode } : {}),
+		config,
 	};
+	if (record.trigger) run.trigger = copyTrigger(record.trigger);
+	if (record.reasonCode) run.reasonCode = record.reasonCode;
+	return run;
 }

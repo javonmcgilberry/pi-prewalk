@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { BoundaryValue } from "../guards.js";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import { needsContextCompaction } from "./context.js";
@@ -315,8 +316,8 @@ export class ContextPressureController {
 
 	beforeCompaction(
 		run: PrewalkRun | undefined,
-		compactedMessages: readonly unknown[],
-		isChecklistForRun: (message: unknown, runId: string) => boolean,
+		compactedMessages: readonly BoundaryValue[],
+		isChecklistForRun: (message: BoundaryValue, runId: string) => boolean,
 	): void {
 		this.#checklistRun =
 			this.#pending === undefined &&

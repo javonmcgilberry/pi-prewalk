@@ -37,6 +37,7 @@ describe("executor context watchdog", () => {
 	});
 
 	it("prefers the last assistant usage and adds trailing messages", () => {
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const context = {
 			systemPrompt: "ignored because assistant usage already covers it",
 			messages: [
@@ -66,6 +67,7 @@ describe("executor context watchdog", () => {
 	});
 
 	it("falls back to a conservative whole-request estimate without valid usage", () => {
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const context = {
 			systemPrompt: "s".repeat(400),
 			messages: [{ role: "user", content: "u".repeat(400), timestamp: 1 }],
@@ -75,6 +77,7 @@ describe("executor context watchdog", () => {
 	});
 
 	it("does not trust stale usage when the current prompt or tools grew", () => {
+		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const context = {
 			systemPrompt: "s".repeat(40_000),
 			tools: [

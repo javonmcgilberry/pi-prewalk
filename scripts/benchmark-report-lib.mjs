@@ -9,6 +9,7 @@ import {
 	RESULT_OUTCOMES,
 	validateManifest,
 } from "./benchmark-contract.mjs";
+import { isRecord, isString } from "./value-contracts.mjs";
 
 const BLIND_ARMS = ["blind-a", "blind-b", "blind-c"];
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
@@ -216,7 +217,7 @@ export function unblindFrozenMetrics(manifest, frozen, unblinding) {
 	validateMapping(unblinding.mapping);
 	if (
 		unblinding.unblindingCommitment !== frozen.unblindingCommitment ||
-		typeof unblinding.commitmentNonce !== "string" ||
+		!isString(unblinding.commitmentNonce) ||
 		!HEX_DIGEST.test(unblinding.commitmentNonce) ||
 		canonicalDigest({
 			scheduleDigest: frozen.scheduleDigest,
@@ -323,12 +324,7 @@ export function importVerifiedBenchmarkReport(
 }
 
 function metricRunCount(metric) {
-	if (
-		!metric ||
-		typeof metric !== "object" ||
-		!metric.outcomes ||
-		typeof metric.outcomes !== "object"
-	) {
+	if (!metric || !isRecord(metric) || !metric.outcomes || !isRecord(metric.outcomes)) {
 		throw new Error("Benchmark final report metrics are incomplete.");
 	}
 	const counts = Object.values(metric.outcomes);
@@ -346,5 +342,5 @@ function verifiedMetricCost(metric, arm) {
 }
 
 function isTimestamp(value) {
-	return typeof value === "string" && value.length > 0 && !Number.isNaN(Date.parse(value));
+	return isString(value) && value.length > 0 && !Number.isNaN(Date.parse(value));
 }

@@ -12,7 +12,7 @@ import {
 	parseAnalyticsConfig,
 } from "../analytics/index.js";
 import { isSameModelAtEffectiveReasoning } from "../executor/selection.js";
-import { isRecord } from "../guards.js";
+import { type BoundaryValue, isBoolean, isRecord, isString } from "../guards.js";
 import type {
 	ChildPrewalkConfig,
 	ChildPrewalkPolicy,
@@ -36,7 +36,7 @@ export function configPath(): string {
 	return path.join(getAgentDir(), "prewalk.json");
 }
 
-function isMissingFile(error: unknown): boolean {
+function isMissingFile<T>(error: T): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
@@ -89,11 +89,11 @@ const CHILD_POLICY_KEYS = new Set(["executor"]);
 const EXPERIMENTAL_CHILD_KEYS = new Set(["enabled", "agents"]);
 const EXPERIMENTAL_CHILD_TARGET_KEYS = new Set(["mode", "executor"]);
 const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
-function isReasoningLevel(value: unknown): value is ExecutorConfig["reasoning"] {
-	return typeof value === "string" && REASONING_LEVELS.some((level) => level === value);
+function isReasoningLevel(value: BoundaryValue): value is ExecutorConfig["reasoning"] {
+	return isString(value) && REASONING_LEVELS.some((level) => level === value);
 }
 
-export function parseConfig(value: unknown): ParsedPrewalkConfig {
+export function parseConfig(value: BoundaryValue): ParsedPrewalkConfig {
 	if (!isRecord(value)) {
 		throw new Error("Prewalk config must be a JSON object.");
 	}
@@ -101,7 +101,7 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config field: ${unknownKeys.join(", ")}.`);
 	}
-	if (value.enabled !== undefined && typeof value.enabled !== "boolean") {
+	if (value.enabled !== undefined && !isBoolean(value.enabled)) {
 		throw new Error("Prewalk config enabled must be a boolean.");
 	}
 	const executor = parseExecutorConfig(value.executor, "executor");
@@ -123,18 +123,19 @@ export function parseConfig(value: unknown): ParsedPrewalkConfig {
 			parseExperimentalChildConfig(value.experimentalChild),
 		);
 	}
-	return {
+	const config: ParsedPrewalkConfig = {
 		enabled: value.enabled ?? false,
 		executor,
-		...(executorFallbacks === undefined ? {} : { executorFallbacks }),
 		handoff,
 		plannerRecovery,
 		analytics,
-		...(children === undefined ? {} : { children }),
 	};
+	if (executorFallbacks !== undefined) config.executorFallbacks = executorFallbacks;
+	if (children !== undefined) config.children = children;
+	return config;
 }
 
-function parsePlannerRecoveryConfig(value: unknown): PlannerRecoveryConfig {
+function parsePlannerRecoveryConfig(value: BoundaryValue): PlannerRecoveryConfig {
 	if (value === undefined) return structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG);
 	if (!isRecord(value)) {
 		throw new Error("Prewalk config plannerRecovery must be an object.");
@@ -149,7 +150,7 @@ function parsePlannerRecoveryConfig(value: unknown): PlannerRecoveryConfig {
 	return { maxRetries: Number(value.maxRetries) };
 }
 
-function parseHandoffConfig(value: unknown): HandoffConfig {
+function parseHandoffConfig(value: BoundaryValue): HandoffConfig {
 	if (value === undefined) return structuredClone(DEFAULT_HANDOFF_CONFIG);
 	if (!isRecord(value)) throw new Error("Prewalk config handoff must be a JSON object.");
 	const unknownKeys = Object.keys(value).filter((key) => !HANDOFF_KEYS.has(key));
@@ -160,7 +161,7 @@ function parseHandoffConfig(value: unknown): HandoffConfig {
 		throw new Error("Prewalk config handoff.ignoreExtensions must be an array.");
 	}
 	const extensions = value.ignoreExtensions.map((extension) => {
-		if (typeof extension !== "string" || !/^\.[a-z0-9_-]+$/i.test(extension)) {
+		if (!isString(extension) || !/^\.[a-z0-9_-]+$/i.test(extension)) {
 			throw new Error(
 				"Prewalk config handoff.ignoreExtensions entries must be file extensions such as .md.",
 			);
@@ -170,7 +171,7 @@ function parseHandoffConfig(value: unknown): HandoffConfig {
 	return { ignoreExtensions: [...new Set(extensions)] };
 }
 
-function parseExecutorConfig(value: unknown, name: string): ExecutorConfig {
+function parseExecutorConfig(value: BoundaryValue, name: string): ExecutorConfig {
 	const model = parseModelConfig(value, name, EXECUTOR_KEYS);
 	if (!isRecord(value) || !isReasoningLevel(value.reasoning)) {
 		throw new Error(`Prewalk config ${name}.reasoning is invalid.`);
@@ -178,7 +179,7 @@ function parseExecutorConfig(value: unknown, name: string): ExecutorConfig {
 	return { ...model, reasoning: value.reasoning };
 }
 
-function parseExecutorFallbacks(value: unknown): ExecutorConfig[] | undefined {
+function parseExecutorFallbacks(value: BoundaryValue): ExecutorConfig[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
 		throw new Error("Prewalk config executorFallbacks must be an array.");
@@ -186,7 +187,7 @@ function parseExecutorFallbacks(value: unknown): ExecutorConfig[] | undefined {
 	return value.map((entry, index) => parseExecutorConfig(entry, `executorFallbacks[${index}]`));
 }
 
-function parseChildrenConfig(value: unknown): ChildPrewalkConfig {
+function parseChildrenConfig(value: BoundaryValue): ChildPrewalkConfig {
 	if (!isRecord(value)) throw new Error("Prewalk config children must be a JSON object.");
 	const unknownKeys = Object.keys(value).filter((key) => !CHILDREN_KEYS.has(key));
 	if (unknownKeys.length > 0) {
@@ -198,7 +199,7 @@ function parseChildrenConfig(value: unknown): ChildPrewalkConfig {
 	const agents: Record<string, ChildPrewalkPolicy> = {};
 	for (const [agent, policy] of Object.entries(value.agents)) {
 		if (!agent.trim()) throw new Error("Prewalk child agent names must be non-empty.");
-		if (typeof policy === "boolean") {
+		if (isBoolean(policy)) {
 			agents[agent] = policy;
 			continue;
 		}
@@ -220,13 +221,13 @@ function parseChildrenConfig(value: unknown): ChildPrewalkConfig {
 	return { agents };
 }
 
-function parseExperimentalChildConfig(value: unknown): ExperimentalChildConfig {
+function parseExperimentalChildConfig(value: BoundaryValue): ExperimentalChildConfig {
 	if (!isRecord(value)) throw new Error("Prewalk config experimentalChild must be a JSON object.");
 	const unknownKeys = Object.keys(value).filter((key) => !EXPERIMENTAL_CHILD_KEYS.has(key));
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config experimentalChild field: ${unknownKeys.join(", ")}.`);
 	}
-	if (typeof value.enabled !== "boolean") {
+	if (!isBoolean(value.enabled)) {
 		throw new Error("Prewalk config experimentalChild.enabled must be a boolean.");
 	}
 	if (!isRecord(value.agents)) {
@@ -271,16 +272,20 @@ function normalizeExperimentalChildConfig(value: ExperimentalChildConfig): Child
 	return { agents };
 }
 
-function parseModelConfig(value: unknown, name: string, keys: ReadonlySet<string>): ModelConfig {
+function parseModelConfig(
+	value: BoundaryValue,
+	name: string,
+	keys: ReadonlySet<string>,
+): ModelConfig {
 	if (!isRecord(value)) throw new Error(`Prewalk config ${name} must be a JSON object.`);
 	const unknownKeys = Object.keys(value).filter((key) => !keys.has(key));
 	if (unknownKeys.length > 0) {
 		throw new Error(`Unknown Prewalk config ${name} field: ${unknownKeys.join(", ")}.`);
 	}
-	if (typeof value.provider !== "string" || value.provider.length === 0) {
+	if (!isString(value.provider) || value.provider.length === 0) {
 		throw new Error(`Prewalk config ${name}.provider must be a non-empty string.`);
 	}
-	if (typeof value.model !== "string" || value.model.length === 0) {
+	if (!isString(value.model) || value.model.length === 0) {
 		throw new Error(`Prewalk config ${name}.model must be a non-empty string.`);
 	}
 	return { provider: value.provider, model: value.model };
@@ -413,17 +418,17 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 			recentReceiptCount: savedAnalytics.recentReceiptCount,
 			schemaVersion: ANALYTICS_SCHEMA_VERSION,
 		},
-		// The wizard only edits the primary executor. A hand-written fallback
-		// chain survives it rather than being silently dropped.
-		...(savedConfig?.executorFallbacks === undefined
-			? {}
-			: { executorFallbacks: savedConfig.executorFallbacks }),
 		handoff: structuredClone(savedConfig?.handoff ?? DEFAULT_HANDOFF_CONFIG),
 		plannerRecovery: structuredClone(
 			savedConfig?.plannerRecovery ?? DEFAULT_PLANNER_RECOVERY_CONFIG,
 		),
-		...(savedConfig?.children === undefined ? {} : { children: savedConfig.children }),
 	};
+	// The wizard only edits the primary executor. A hand-written fallback
+	// chain survives it rather than being silently dropped.
+	if (savedConfig?.executorFallbacks !== undefined) {
+		nextConfig.executorFallbacks = savedConfig.executorFallbacks;
+	}
+	if (savedConfig?.children !== undefined) nextConfig.children = savedConfig.children;
 	const confirmed = await ctx.ui.confirm(
 		"Save Prewalk configuration?",
 		`${planner.provider}/${planner.id} plans, then ${executorChoice} executes at ${reasoningChoice} reasoning. Automatic startup: ${automaticChoice}.`,

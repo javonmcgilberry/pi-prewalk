@@ -6,6 +6,7 @@ import {
 } from "../../src/executor/defaults.js";
 
 function model(provider: string, id: string): Model<Api> {
+	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 	return {
 		id,
 		name: id,

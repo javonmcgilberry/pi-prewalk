@@ -1,6 +1,16 @@
 import type { BenchmarkManifest } from "./benchmark-contract.mjs";
 import type { ScheduledRun } from "./benchmark-controller.mjs";
 
+type ReportValue =
+	| null
+	| boolean
+	| number
+	| string
+	| ReportValue[]
+	| { [key: string]: ReportValue }
+	| undefined;
+type ReportRecord = { [key: string]: ReportValue };
+
 export interface BlindedRow {
 	schemaVersion: number;
 	corpusDigest: string;
@@ -28,8 +38,8 @@ export interface FrozenMetrics {
 	rawResultsDigest: string;
 	metricsDigest: string;
 	runCount: number;
-	metrics: Record<string, Record<string, unknown>>;
-	confidenceIntervals: Record<string, unknown>;
+	metrics: ReportRecord;
+	confidenceIntervals: ReportRecord;
 }
 
 export function freezeBlindedMetrics(
@@ -97,7 +107,7 @@ export function importVerifiedBenchmarkReport(
 		final: boolean;
 		accepted: boolean;
 		completedAt: string;
-		report: unknown;
+		report: ReportRecord;
 	},
 ): {
 	schemaVersion: 1;
@@ -133,8 +143,8 @@ export function unblindFrozenMetrics(
 	rawResultsDigest: string;
 	metricsDigest: string;
 	runCount: number;
-	metrics: Record<string, unknown>;
-	confidenceIntervals: Record<string, unknown>;
+	metrics: ReportRecord;
+	confidenceIntervals: ReportRecord;
 	improvements: {
 		costImprovement: number;
 		timeImprovement: number;
