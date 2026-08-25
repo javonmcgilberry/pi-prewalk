@@ -1,101 +1,41 @@
 {
-  "test": "npx vitest run test/executor/provider-overlay.test.ts test/integration/extension.test.ts test/integration/agent-loop.test.ts test/orchestration/core.test.ts test/executor/executor-chain.test.ts test/executor/executor-context.test.ts",
+  "test": "npx vitest run test/executor/model-runtime.test.ts test/executor/executor-chain.test.ts test/executor/executor-context.test.ts test/integration/extension.test.ts test/integration/agent-loop.test.ts test/orchestration/core.test.ts",
   "mutations": [
     {
-      "name": "executor rides the planner's transport instead of its own",
-      "file": "src/executor/provider-overlay.ts",
-      "find": "\t\t\treturn {\n\t\t\t\tok: true,\n\t\t\t\tmodel: current,\n\t\t\t\tdelegate:\n\t\t\t\t\tmodelRegistry.getRegisteredProviderConfig(current.provider)?.streamSimple ??\n\t\t\t\t\tbuiltinStreamSimple,\n\t\t\t};",
-      "replace": "\t\t\treturn { ok: true, model: current, delegate };"
+      "name": "native route never switches to the executor",
+      "file": "src/executor/temporary-runtime.ts",
+      "find": "const desiredRoute = this.callbacks.shouldRouteToExecutor() ? \"executor\" : \"planner\";",
+      "replace": "const desiredRoute = \"planner\";"
     },
     {
-      "name": "overlay registers without an api, so only pre-configured providers arm",
-      "file": "src/executor/provider-overlay.ts",
-      "find": "\t\t\tapi: previous?.api ?? planner.api,\n",
-      "replace": ""
+      "name": "same-model no-op is accepted as an executor",
+      "file": "src/executor/selection.ts",
+      "find": "return { viable: false, reason: \"same-as-planner\" };",
+      "replace": "return { viable: true, model: executor };"
     },
     {
-      "name": "executor resolved once at install, going stale for the rest of the run",
-      "file": "src/executor/provider-overlay.ts",
-      "find": "\t\t\tconst resolved = resolveExecutor();",
-      "replace": "\t\t\tconst resolved = installTimeExecutor;"
-    },
-    {
-      "name": "a rejecting credential probe aborts the chain instead of skipping the candidate",
+      "name": "credential failure stops the executor fallback chain",
       "file": "src/executor/selection.ts",
       "find": "\ttry {\n\t\tif (!(await probe.hasAuth(executor))) {\n\t\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t\t}\n\t} catch {\n\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t}",
       "replace": "\tif (!(await probe.hasAuth(executor))) {\n\t\treturn { viable: false, reason: \"authorization-unavailable\" };\n\t}"
     },
     {
-      "name": "the planner's own model at its own effort is accepted as a no-op handoff",
-      "file": "src/executor/selection.ts",
-      "find": "\t\treturn { viable: false, reason: \"same-as-planner\" };",
-      "replace": "\t\treturn { viable: true, model: executor };"
-    },
-    {
-      "name": "an oversized executor request reaches transport instead of compaction",
-      "file": "src/executor/provider-overlay.ts",
-      "find": "\t\t\tif (\n\t\t\t\tneedsExecutorCompaction(\n\t\t\t\t\texecutorContextTokens,\n\t\t\t\t\texecutorModel,\n\t\t\t\t\tstate.getExecutorCompactionReserveTokens?.(),\n\t\t\t\t)\n\t\t\t) {",
-      "replace": "\t\t\tif (false) {"
-    },
-    {
-      "name": "executor threshold compaction is skipped after a turn",
+      "name": "executor context pressure loses its retry decision",
       "file": "src/executor/context-pressure.ts",
-      "find": "\t\t\tthis.#pressure = {\n\t\t\t\trunId: run.id,\n\t\t\t\tepoch: run.epoch,\n\t\t\t\tretry: stopReason !== \"stop\",\n\t\t\t};",
-      "replace": ""
+      "find": "retry: stopReason !== \"stop\",",
+      "replace": "retry: false,"
     },
     {
-      "name": "executor pressure compaction queues a duplicate checklist",
-      "file": "src/executor/context-pressure.ts",
-      "find": "\t\t\tthis.#pending === undefined &&\n\t\t\tactiveExecutorRun(run) &&",
-      "replace": "\t\t\t\tactiveExecutorRun(run) &&"
-    },
-    {
-      "name": "a settled executor failure is reported as a successful run",
+      "name": "failed executor settlement is reported as successful",
       "file": "src/pi/register-events.ts",
-      "find": "\t\tconst failedRun = run.phase === \"failed\";",
-      "replace": "\t\tconst failedRun = false;"
+      "find": "const failedRun = run.phase === \"failed\";",
+      "replace": "const failedRun = false;"
     },
     {
-      "name": "agent settlement resets a handoff while executor compaction is pending",
-      "file": "src/pi/register-events.ts",
-      "find": "\t\tif (\n\t\t\tpressureObservation === \"host-compacted\" ||\n\t\t\tpressureObservation === \"compaction-requested\" ||\n\t\t\tpressureObservation === \"compaction-pending\"\n\t\t) {\n\t\t\t// ctx.compact() aborts the active Agent loop before its completion callback\n\t\t\t// runs. The pressure controller keeps this handoff alive until that\n\t\t\t// callback settles and owns the only checklist retry.\n\t\t\tupdateStatus(ctx);\n\t\t\treturn;\n\t\t}",
-      "replace": "\t\tif (false) {}"
-    },
-    {
-      "name": "a retryable executor failure immediately tears down the route",
-      "file": "src/pi/register-events.ts",
-      "find": "\t\t\t\t\tcontextPressure.onExecutorStreamFailed(runIdentity);",
-      "replace": "\t\t\t\t\tfail(\"executor-stream-failed\", application.run?.effectiveRoute === \"executor\", ctx, runIdentity);"
-    },
-    {
-      "name": "a completed executor response always retries the checklist",
-      "file": "src/executor/context-pressure.ts",
-      "find": "\t\t\t\tonComplete: () => {\n\t\t\t\t\tif (this.#pending !== request) return;\n\t\t\t\t\tthis.#pending = undefined;\n\t\t\t\t\tthis.#pressure = undefined;\n\t\t\t\t\tconst current = host.currentRun();\n\t\t\t\t\tif (!sameIdentity(request, current) || !pressureEligibleRun(current)) return;\n\t\t\t\t\tif (request.retry) retryChecklist();",
-      "replace": "\t\t\t\tif (true) retryChecklist();"
-    },
-    {
-      "name": "an executor compaction retry can loop forever",
-      "file": "src/executor/context-pressure.ts",
-      "find": "\t\tif (\n\t\t\tretry &&\n\t\t\tpreviousRetry !== undefined &&\n\t\t\tsameValue(previousRetry, identity) &&\n\t\t\tpreviousRetry.count >= 1\n\t\t) {",
-      "replace": "\t\tif (false) {"
-    },
-    {
-      "name": "stale executor usage hides current prompt and tool growth",
+      "name": "request estimation ignores the current whole request",
       "file": "src/executor/context.ts",
-      "find": "\treturn Math.max(tokens, estimateWholeRequest(context));",
-      "replace": "\treturn tokens;"
-    },
-    {
-      "name": "a transient executor error is discarded before Pi can retry",
-      "file": "src/executor/provider-overlay.ts",
-      "find": "\t\t\t\t\t\tconst error = event.error;",
-      "replace": "\t\t\t\t\t\tconst error = failedAssistantMessage(executor);"
-    },
-    {
-      "name": "a failed or handoff-pending run receives a continuation",
-      "file": "src/orchestration/prewalk-application.ts",
-      "find": "\t\t\t(run.phase !== \"planning\" && run.phase !== \"ready\") ||",
-      "replace": "\t\t\tfalse ||"
+      "find": "Math.max(tokens, estimateWholeRequest(context))",
+      "replace": "tokens"
     }
   ]
 }

@@ -184,7 +184,20 @@ beforeEach(async () => {
 	);
 	await writeFile(
 		path.join(agentDir, "settings.json"),
-		`${JSON.stringify({ compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 0 } })}\n`,
+		`${JSON.stringify({
+			defaultProvider: "fixture",
+			defaultModel: "planner",
+			compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 0 },
+		})}\n`,
+	);
+	await writeFile(
+		path.join(agentDir, "auth.json"),
+		`${JSON.stringify({
+			"openai-codex": { type: "api_key", key: "integration-token" },
+			anthropic: { type: "api_key", key: "planner-token" },
+			google: { type: "api_key", key: "executor-token" },
+			fixture: { type: "api_key", key: "credential-free-fixture" },
+		})}\n`,
 	);
 	await writeFile(path.join(workDir, "target.txt"), "before\n");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -355,7 +368,7 @@ describe("stock Pi Agent-loop integration", () => {
 		expect(recoveryMessages).toContain("preserved planning trace");
 		expect(recoveryMessages).toContain("encrypted_content");
 		expect(recoveryMessages).toContain("This is autonomous recovery");
-		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
+		expect(session.model?.id).toBe(EXECUTOR_MODEL_ID);
 		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
 		const analyticsStore = new AnalyticsStore(agentDir);
 
@@ -430,6 +443,7 @@ describe("stock Pi Agent-loop integration", () => {
 			details: { asyncId: "delegation-pending", results: [] },
 		});
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		expect(session.model?.id).toBe(PLANNER_MODEL_ID);
 		const projected = await analyticsStore.listDelegationEvidence();
 		expect(projected).toHaveLength(3);
 		expect(projected.every((item) => item.parentSessionId === rootSessionId)).toBe(true);
@@ -605,8 +619,8 @@ describe("stock Pi Agent-loop integration", () => {
 		const trace = JSON.stringify(sessionManager.getEntries(), null, 2);
 		expect(anthropicCalls, trace).toEqual(["claude-opus-4-6", "claude-opus-4-6"]);
 		expect(googleCalls, trace).toEqual(["gemini-3.5-flash"]);
-		// The overlay substitutes the executor without changing what Pi has selected.
-		expect(session.model?.id).toBe("claude-opus-4-6");
+		// Native routing selects the executor for the active session.
+		expect(session.model?.id).toBe("gemini-3.5-flash");
 		expect(await readFile(path.join(workDir, "target.txt"), "utf8")).toBe("after\n");
 		// The executor received the planner's conversation, not a fresh one.
 		expect((executorContext?.messages.length ?? 0) > 1).toBe(true);

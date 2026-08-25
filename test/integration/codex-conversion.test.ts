@@ -30,7 +30,7 @@ afterEach(async () => {
 describe("installed Codex conversion composition", () => {
 	// biome-ignore format: keep the existing composition fixture diff small
 	it.each(["conversion-first", "prewalk-first"] as const)(
-		"composes Prewalk with the installed conversion in %s order",
+		"composes Prewalk with the installed conversion without wrapping its provider in %s order",
 		async (order) => {
 		const accessToken = `e30.${Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
@@ -130,7 +130,7 @@ describe("installed Codex conversion composition", () => {
 		expect(conversionApi).toBe("openai-codex-responses");
 		expect(conversionStream).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).toBeTypeOf("function");
-		expect(wrapped?.streamSimple).not.toBe(conversionStream);
+		expect(wrapped?.streamSimple).toBe(conversionStream);
 		const terminal = {
 			type: "response.completed",
 			response: {

@@ -327,7 +327,11 @@ export class ContextPressureController {
 				: undefined;
 	}
 
-	async afterCompaction(run: PrewalkRun | undefined, host: ContextPressureHost): Promise<void> {
+	async afterCompaction(
+		run: PrewalkRun | undefined,
+		host: ContextPressureHost,
+		willRetry = false,
+	): Promise<void> {
 		if (
 			run &&
 			this.#pending !== undefined &&
@@ -360,7 +364,7 @@ export class ContextPressureController {
 					};
 				}
 				this.#hostCompaction = pressure;
-				if (pressure.retry) {
+				if (pressure.retry && !willRetry) {
 					if (pressure.route === "planner") {
 						await host.sendRetryPlanning(identity);
 					} else if (!sameIdentity(this.#checklistRun, run)) {
@@ -369,10 +373,47 @@ export class ContextPressureController {
 				}
 			}
 		}
-		if (run && sameIdentity(this.#checklistRun, run) && activeExecutorRun(run)) {
+		if (run && !willRetry && sameIdentity(this.#checklistRun, run) && activeExecutorRun(run)) {
 			await host.sendRetryChecklist({ runId: run.id, epoch: run.epoch });
 		}
 		this.#checklistRun = undefined;
+	}
+
+	/**
+	 * Reconciles Pi 0.84.3's terminal compaction failure event. A compaction
+	 * requested through `ctx.compact()` still has a callback that owns its
+	 * semantic failure path; this method only clears the host-side checklist
+	 * marker there. Native compaction has no callback, so an active pressure
+	 * sequence fails closed unless Pi says it will retry the interrupted turn.
+	 */
+	compactionFailed(
+		run: PrewalkRun | undefined,
+		host: ContextPressureHost,
+		willRetry: boolean,
+	): void {
+		if (
+			run &&
+			this.#pending !== undefined &&
+			sameValue(this.#pending, { runId: run.id, epoch: run.epoch })
+		) {
+			this.#checklistRun = undefined;
+			return;
+		}
+
+		this.#checklistRun = undefined;
+		if (!run || willRetry) return;
+		const pressure = this.#pressure;
+		if (pressure === undefined || !sameIdentity(pressure, run)) return;
+		this.#pressure = undefined;
+		this.#hostCompaction = undefined;
+		host.notify(
+			`Prewalk ${pressure.route} compaction failed before Pi could retry the request.`,
+			"error",
+		);
+		host.fail(compactionFailureReason(pressure.route), false, {
+			runId: run.id,
+			epoch: run.epoch,
+		});
 	}
 
 	hasPendingCompaction(): boolean {

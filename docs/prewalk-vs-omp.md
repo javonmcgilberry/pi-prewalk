@@ -9,7 +9,7 @@ Those things depend on the models, the task, and the provider. This guide
 separates what the code does from what would still need a paid benchmark to
 prove.
 
-The current compatibility target is Pi **0.84.2**. Other Pi versions may work,
+The current compatibility target is Pi **0.84.3**. Other Pi versions may work,
 but they are not the version this release is tested against.
 
 ## The three names you need
@@ -100,22 +100,22 @@ A normal manual run works like this.
    halfway through parallel tool results. Before the executor's first request,
    Prewalk removes the planning-only instruction but keeps the conversation,
    checklist, usage, model identity, and stop reasons.
-6. **The executor takes the next regular model turn.** Prewalk routes that
-   request through a temporary provider overlay, a wrapper around the provider
-   call. Pi still displays the planner as its selected model, while the
-   provider call uses the executor.
+6. **The executor takes the next regular model turn.** Prewalk uses Pi 0.84.3's
+   session-local model selection for that request. Pi's own request pipeline,
+   authentication, transcript handling, and provider dispatch use the executor
+   while the run is active; the saved default is unchanged.
 7. **The route stays with the executor.** Later regular model turns continue there
    until you use `/prewalk release`, the run is cancelled, or the session is
    cleaned up. In `/prewalk status`, `completed` means the executor finished its
    first response successfully; it does not mean Prewalk knows the task is done.
    `/prewalk status` also shows the route and the reason for a failure.
 8. **Cleanup is explicit.** A failed pre-handoff run or `/prewalk cancel`
-   releases the temporary route before another run can start. After handoff,
-   `/prewalk release` returns the conversation to the planner without changing
-   Pi's saved model, closes the run, and allows another Prewalk pass in the same
-   conversation. With automatic mode enabled, the next substantial prompt can
-   start that pass without another `/prewalk run`. Closing Pi normally finalizes
-   the run as `session-ended`.
+   restores the session-local planner route before another run can start. After
+   handoff, `/prewalk release` returns the conversation to the planner without
+   changing Pi's saved model, closes the run, and allows another Prewalk pass in
+   the same conversation. With automatic mode enabled, the next substantial
+   prompt can start that pass without another `/prewalk run`. Closing Pi
+   normally finalizes the run as `session-ended`.
    If recovery later finds an unfinished journal entry after an unclean or
    stale exit, that recovery is recorded as `interrupted`. Reopening starts on
    the planner and does not silently restore the route.
@@ -132,19 +132,16 @@ built-in, temporary session model switch. In plain terms, OMP tells the session
 itself, "for now, use this other model," and the rest of OMP's code follows that
 switch.
 
-A standalone extension running on stock Pi does not have that public
-session-only switch. Pi's public `setModel()` changes the saved default, which
-would affect future sessions. Prewalk therefore leaves the planner selected
-and temporarily wraps Pi's provider `streamSimple` call for the active run.
-That wrapper is the **provider overlay**: it changes which provider request
-receives the turn without pretending that Pi's selected model changed.
+Pi 0.84.3 now exposes the same session-local operation through its public
+`setModel()` and `setThinkingLevel()` APIs. Prewalk uses those APIs for the
+active run, so Pi keeps ownership of authentication, provider dispatch,
+transcript persistence, and request construction. The saved default model is
+not changed, and an identity-aware lease prevents an ended run from restoring
+state into a replacement run.
 
-This is a real limitation, not a cosmetic implementation detail. It explains
-why OMP has stronger built-in integration for some model and compaction
-behavior, while Prewalk can still provide the same basic planner-to-executor
-flow without private Pi imports or a Pi patch. The temporary route is tied to
-an exact run identity, and an ended route cannot send results into a replacement
-run.
+This removes the earlier stock-Pi limitation rather than hiding it behind a
+transport shim. The route is still tied to an exact run identity, and an ended
+route cannot send results into a replacement run.
 
 ## Behavior at a glance
 
@@ -158,7 +155,7 @@ important rows below in user-facing language.
 
 | # | Behavior | OMP | This extension | What it means in practice |
 | --- | --- | --- | --- | --- |
-| 1 | Handoff mechanism | Native, temporary session model switch | Run-scoped provider overlay; Pi's selected model stays the planner | The flow is the same, but stock Pi forces a different mechanism. |
+| 1 | Handoff mechanism | Native, temporary session model switch | Native, temporary session-local model switch | Both routes change the active session without changing the saved default. |
 | 2 | Saved default model | Not changed | Not changed | A Prewalk run does not rewrite Pi's saved model. |
 | 2a | Persistent automatic startup | Opt-in `prewalk.enabled`, off by default, applied to fresh sessions | Opt-in `enabled` in `prewalk.json`, off by default, applied to fresh top-level sessions | Both remember the preference without silently restoring a prior executor route; this extension still runs its conservative admission check. |
 | 3 | What starts handoff | First `edit` or `write` after the todo gate | First positively proven mutation after the gate; patch surfaces and narrowly configured integrations can count too; ignored extensions default to `.md` | Prewalk waits for evidence that code actually changed, not a Markdown-only planning note. |
@@ -234,7 +231,7 @@ changing its permissions, or copying its discovery rules.
 | --- | --- | --- | --- | --- |
 | 21 | Manual release to the planner | Not present | `/prewalk release` | You can return to the planner after handoff without changing Pi's saved model. |
 | 22 | Local cost analytics and receipts | Not present | Included | `/prewalk stats` shows recorded spend and a separate price-based estimate. |
-| 23 | Provider ownership checks | Not needed by OMP's native switch | The overlay checks whether another extension replaced the provider route | Another extension cannot quietly replace the route underneath an active run. |
+| 23 | Native route ownership checks | Not needed by OMP's native switch | An identity-aware lease owns the session-local model route and detects drift before the next request | Another extension cannot quietly replace the route underneath an active run. |
 | 24 | Native Responses compaction | Supported | Refused when explicitly enabled with Pi Codex Conversion's own response-compaction hook | This protects the planning-context filter from hook-order surprises. |
 | 25 | Model display names | Generic | Special cases `gpt-5.6-sol` and `luna` in notices/status | This is a display difference, not a routing capability. |
 | 26 | Executor configuration wizard | No matching OMP wizard | `/prewalk configure` offers an in-place, fuzzy-searchable model picker plus child and analytics settings | Configuration is easier to inspect without editing JSON by hand. |
@@ -259,9 +256,9 @@ extension is better at everything.
   outgoing planner or executor request and asks Pi's public compaction API for
   help after the agent settles. This does not replace every provider's native
   overflow recovery.
-- It adds `/prewalk release`, local receipts, and a check that another
-  extension has not replaced the temporary provider route. Those features make
-  the route easier to stop, inspect, and protect.
+- It adds `/prewalk release`, local receipts, and identity-aware restoration for
+  the native session-local route. Those features make the route easier to stop,
+  inspect, and protect.
 - It accepts positively proven patch operations and narrowly scoped integrations
   in addition to the normal edit/write path. It never treats an
   unknown or merely printed result as a code change.
@@ -276,8 +273,8 @@ OMP controls the session code itself, so it has capabilities a standalone
 extension cannot safely recreate through public hooks.
 
 - Its built-in temporary model switch updates the session's model-tracking
-  code in one place. Prewalk's overlay changes provider requests while Pi still
-  thinks the planner is selected.
+  code in one place. Prewalk now uses Pi 0.84.3's public session-local model
+  switch, while keeping its own run identity, handoff, and restoration policy.
 - Its compaction and context-overflow recovery are integrated with the model
   that actually owns the session. Prewalk can guard requests and use public
   compaction, but an unknown provider-specific overflow can still fall outside
@@ -311,7 +308,7 @@ session.
 - `/prewalk cancel` cleans up a pre-handoff route. `/prewalk release` is the
   supported way to return after handoff. Selecting another model cancels the
   current route without changing that new selection.
-- The overlay uses a run ID and an epoch, which is a run-specific counter.
+- The native route uses a run ID and an epoch, which is a run-specific counter.
   Pi events do not carry those fields, so the facts layer records which run an
   event belonged to and rejects a delayed event from an old run instead of
   applying it to a replacement run. It records facts only; lifecycle,
@@ -341,7 +338,7 @@ the local test file for every non-excluded scenario.
 
 Second, the extension's tests cover the actual flow: planning and todo gates,
 mutation evidence, executor selection and fallbacks, model-clamping behavior,
-provider overlays, compaction boundaries, child isolation, cleanup, analytics,
+native model routing, compaction boundaries, child isolation, cleanup, analytics,
 and host-event attribution. The host-event correlation suite covers exact,
 stale, unowned, and unknown observations, retention, ordering, reset, discard,
 and compaction suppression.

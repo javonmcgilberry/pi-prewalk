@@ -6,13 +6,12 @@ Two bugs in this repository were shipped and survived under a full green suite.
 Neither was subtle in hindsight, and both had the same cause: a test that could
 not fail.
 
-**The `api` bug.** `src/executor/provider-overlay.ts` registered its overlay as
-`{ ...previous, streamSimple }`. Pi rejects a `streamSimple` registration that
-carries no `api`, and only a provider that another extension had already
-configured contributed one. Prewalk could therefore arm on `openai-codex` and
-nowhere else. Every unit test passed, because no test ever armed a run in a real
-Pi process; the RPC smoke test exercised `status`, `cancel`, and `reload`, none
-of which install the overlay.
+**The native-routing boundary.** Pi 0.84.3's `setModel()` and
+`setThinkingLevel()` are session-local. The runtime tests prove that Prewalk
+changes those values only at the executor boundary, restores the planner, and
+does not mistake its own events for external model drift. The cross-provider
+RPC smoke test proves that admission selects a real executor without changing
+the saved default or issuing a provider request.
 
 **Two false teeth checks.** While verifying that new tests actually caught
 regressions, two hand-run mutation checks reported success against builds that
@@ -59,7 +58,7 @@ find where the failure you care about actually surfaces:
 | Failure | Where it surfaces | Not visible in |
 | --- | --- | --- |
 | Prewalk refuses to arm | `prewalk-audit` entries in the session, UI notice | `stderr`, exit code |
-| Overlay routed to the wrong provider | which provider's `streamSimple` was called | the assistant message, which records the executor either way |
+| Native route selected the wrong model | the model and provider recorded by the request harness | the assistant message alone, which records the executor either way |
 | Executor rejected from the chain | `armed.executor` in the audit record | the notice text alone |
 
 `scripts/smoke-rpc-cross-provider.mjs` asserts against the audit trail for this
@@ -73,6 +72,8 @@ extension works, because the fake is shaped by the same assumptions as the code.
 Three layers are load-bearing here:
 
 - `test/executor/executor-chain.test.ts` — pure resolution rules
+- `test/executor/model-runtime.test.ts` — session-local model and thinking-level
+  switching, restoration, and stale-lease protection
 - `test/executor/executor-context.test.ts` and executor-focused extension tests — the
   request-time context watchdog and compaction retry boundary
 - `scripts/smoke-rpc-cross-provider.mjs` — a real Pi process arms a real run
