@@ -13,7 +13,6 @@ export interface DelegationStatus {
 }
 
 export interface SessionStatus {
-	mode: "manual" | "auto-ready";
 	lastOutcome?: "bypassed" | "completed" | "failed" | "released";
 }
 
@@ -31,31 +30,36 @@ export function compactStatus(
 	session?: SessionStatus,
 ): string | undefined {
 	if (!run) {
-		const outcome = session?.lastOutcome ? `; last ${session.lastOutcome}` : "";
-		return session ? `prewalk: ${session.mode}${outcome}` : undefined;
+		if (!session) return undefined;
+		return `prewalk: off${session.lastOutcome ? ` · last ${session.lastOutcome}` : ""}`;
 	}
 	const plannerSelected = isPlannerSelected(selectedModel, run.planner);
 	if (run.phase === "cancelled" && !plannerSelected) {
 		const selected = selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "none";
-		return `prewalk: ${modelLabel(run.planner)} / ${modelLabel(run.config.executor)} (cancelled; selected: ${selected})`;
+		return `prewalk: cancelled · selected ${selected}`;
 	}
 
-	const plannerLabel = `${modelLabel(run.planner)} · ${run.planner.reasoning}`;
-	const executorLabel = `${modelLabel(run.config.executor)} · ${run.config.executor.reasoning}`;
-	const planner = run.effectiveRoute === "planner" ? `[${plannerLabel}]` : plannerLabel;
-	const executor = run.effectiveRoute === "executor" ? `[${executorLabel}]` : executorLabel;
+	const planner = modelLabel(run.planner);
+	const executor = modelLabel(run.config.executor);
 	switch (run.phase) {
+		case "armed":
+			return `prewalk: armed · ${planner} → ${executor}`;
+		case "planning":
+			return `prewalk: planning · ${planner} → ${executor}`;
 		case "handoff-pending":
-			return `prewalk: ${planner} / ${executor} (switching after this turn)`;
+			return `prewalk: switching to ${executor}`;
 		case "cancelled":
-			return `prewalk: ${planner} / ${executor} (cancelled)`;
+			return "prewalk: cancelled";
 		case "failed":
-			return `prewalk: ${planner} / ${executor} (failed${run.reasonCode ? `: ${run.reasonCode.replaceAll("-", " ")}` : ""})`;
+			return `prewalk: failed${run.reasonCode ? ` · ${run.reasonCode.replaceAll("-", " ")}` : ""}`;
+		case "active":
+		case "completed":
+			return `prewalk: executor · ${executor}`;
 	}
 	if (run.phase === "ready") {
-		return `prewalk: ${planner} / ${executor} (waiting for this agent's first code change)`;
+		return `prewalk: ready · ${planner} → ${executor} · waiting for first code change`;
 	}
-	return `prewalk: ${planner} / ${executor}`;
+	return `prewalk: ${planner} → ${executor}`;
 }
 
 export function detailedStatus(

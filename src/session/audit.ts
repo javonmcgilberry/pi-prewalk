@@ -18,17 +18,9 @@ import {
 } from "../orchestration/coordinator.js";
 
 export const PREWALK_AUDIT_TYPE = "prewalk-audit";
-export const PREWALK_AUTO_MODE_TYPE = "prewalk-auto-mode";
 const PREWALK_AUDIT_VERSION = 4;
 const LEGACY_PREWALK_AUDIT_VERSION = 2;
 const PREVIOUS_PREWALK_AUDIT_VERSION = 3;
-const PREWALK_AUTO_MODE_VERSION = 1;
-
-export interface PrewalkAutoModeRecord {
-	schemaVersion: 1;
-	sessionId: string;
-	enabled: boolean;
-}
 
 export type AuditEventKind =
 	| "armed"
@@ -346,24 +338,4 @@ export function runFromAudit(record: PrewalkAuditRecord): PrewalkRun {
 		...(record.trigger ? { trigger: { ...record.trigger } } : {}),
 		...(record.reasonCode ? { reasonCode: record.reasonCode } : {}),
 	};
-}
-
-export function createAutoModeRecord(sessionId: string, enabled: boolean): PrewalkAutoModeRecord {
-	return { schemaVersion: PREWALK_AUTO_MODE_VERSION, sessionId, enabled };
-}
-
-export function parseAutoModeRecord(value: unknown): PrewalkAutoModeRecord | undefined {
-	if (
-		!isRecord(value) ||
-		Object.keys(value).some(
-			(key) => key !== "schemaVersion" && key !== "sessionId" && key !== "enabled",
-		) ||
-		value.schemaVersion !== PREWALK_AUTO_MODE_VERSION ||
-		typeof value.sessionId !== "string" ||
-		value.sessionId.length === 0 ||
-		typeof value.enabled !== "boolean"
-	) {
-		return undefined;
-	}
-	return { schemaVersion: 1, sessionId: value.sessionId, enabled: value.enabled };
 }

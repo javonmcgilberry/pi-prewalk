@@ -75,13 +75,13 @@ A normal manual run works like this.
 
 1. **Pi keeps its selected planner.** You select the planner in Pi and choose
    an executor in `prewalk.json`, or use the configured fallback chain.
-2. **You start manually or turn on automatic startup.** `/prewalk run` starts
-   the flow directly. Setting `enabled: true` in `prewalk.json` turns on
-   automatic mode when a fresh top-level session starts. `/prewalk auto` does
-   the same for only the current session. Prewalk still limits automatic runs
-   to larger implementation requests. Until a run or automatic assessment
-   starts, Prewalk keeps `prewalk_todo` and `prewalk_assess` out of Pi's active
-   tool list.
+2. **You start manually or arm automatic startup.** `/prewalk run` starts the
+   flow directly. Setting `enabled: true` in `prewalk.json` arms one automatic
+   run when a fresh top-level session starts. `/prewalk auto` does the same for
+   the current session. The run stays armed through research, questions, and
+   extension follow-ups; prompt wording does not gate it. After that one run
+   ends, another run requires `/prewalk auto` or `/prewalk run`. Until a run is
+   armed, Prewalk keeps `prewalk_todo` out of Pi's active tool list.
 3. **The planner gets a planning instruction.** In the normal top-level flow,
    it must use Prewalk's namespaced `prewalk_todo` checklist before handoff is
    possible. An independently configured mutation-capable child receives the
@@ -108,14 +108,16 @@ A normal manual run works like this.
    until you use `/prewalk release`, the run is cancelled, or the session is
    cleaned up. In `/prewalk status`, `completed` means the executor finished its
    first response successfully; it does not mean Prewalk knows the task is done.
-   `/prewalk status` also shows the route and the reason for a failure.
+   `/prewalk status` also shows the lifecycle state and the reason for a
+   failure. The compact footer uses `armed`, `planning`, `ready`, `executor`,
+   and concise terminal states rather than exposing the old admission policy.
 8. **Cleanup is explicit.** A failed pre-handoff run or `/prewalk cancel`
    releases the temporary route before another run can start. After handoff,
    `/prewalk release` returns the conversation to the planner without changing
    Pi's saved model, closes the run, and allows another Prewalk pass in the same
-   conversation. With automatic mode enabled, the next substantial prompt can
-   start that pass without another `/prewalk run`. Closing Pi normally finalizes
-   the run as `session-ended`.
+   conversation. Automatic mode is one-shot: after a terminal run, use
+   `/prewalk auto` or `/prewalk run` to start another pass. Closing Pi normally
+   finalizes the run as `session-ended`.
    If recovery later finds an unfinished journal entry after an unclean or
    stale exit, that recovery is recorded as `interrupted`. Reopening starts on
    the planner and does not silently restore the route.
@@ -160,7 +162,7 @@ important rows below in user-facing language.
 | --- | --- | --- | --- | --- |
 | 1 | Handoff mechanism | Native, temporary session model switch | Run-scoped provider overlay; Pi's selected model stays the planner | The flow is the same, but stock Pi forces a different mechanism. |
 | 2 | Saved default model | Not changed | Not changed | A Prewalk run does not rewrite Pi's saved model. |
-| 2a | Persistent automatic startup | Opt-in `prewalk.enabled`, off by default, applied to fresh sessions | Opt-in `enabled` in `prewalk.json`, off by default, applied to fresh top-level sessions | Both remember the preference without silently restoring a prior executor route; this extension still runs its conservative admission check. |
+| 2a | Persistent automatic startup | Opt-in `prewalk.enabled`, off by default, applied to fresh sessions | Opt-in `enabled` in `prewalk.json`, off by default, applied to fresh top-level sessions | Direct lifecycle parity; provider routing remains Pi-adapted. |
 | 3 | What starts handoff | First `edit` or `write` after the todo gate | First positively proven mutation after the gate; patch surfaces and narrowly configured integrations can count too; ignored extensions default to `.md` | Prewalk waits for evidence that code actually changed, not a Markdown-only planning note. |
 | 4 | Todo gate | Required | Required | Planning alone does not switch models. |
 | 5 | Planning nudge | Injected once | Injected once | Both give the planner a hidden instruction to plan deeply. |
@@ -331,13 +333,15 @@ It is written for maintainers, not as a second user manual.
 The repository keeps two kinds of evidence.
 
 First, the [machine-checked OMP parity fixture](https://github.com/javonmcgilberry/pi-prewalk/blob/main/test/fixtures/omp-prewalk-parity.json)
-pins an OMP revision and the hashes of the three copied prompt files. It lists
-19 upstream scenarios and classifies each one as direct, adapted for stock Pi,
-or excluded because the public API cannot provide the same fact. Four scenarios
-are excluded, including OMP-only auto-mode and virtual-device details. Here,
-**parity** means that a behavior matches the reference scenario. The parity
-test checks the revision, prompt hashes, scenario count, classifications, and
-the local test file for every non-excluded scenario.
+pins OMP `18.0.4` at revision
+`969a94c1eeccb1b7528cd5621934bca1908ab622`, the three copied prompt hashes, and
+the body hash for each of its 21 pinned test scenarios. Each row is classified
+as direct parity, forced stock-Pi adaptation, chosen divergence, addition, or
+unknown. **Parity** means that a behavior matches the reference scenario. The
+parity test checks the revision, prompt hashes, scenario count, classifications,
+and local test file for every direct row. The drift script additionally checks
+test names, apostrophe-safe bodies, prompt bytes, and the source revision; an
+unclassified change fails its normal validation path.
 
 Second, the extension's tests cover the actual flow: planning and todo gates,
 mutation evidence, executor selection and fallbacks, model-clamping behavior,
@@ -346,14 +350,10 @@ and host-event attribution. The host-event correlation suite covers exact,
 stale, unowned, and unknown observations, retention, ordering, reset, discard,
 and compaction suppression.
 
-For the accepted host-event refactor, the correlation and extension suites
-passed 149 focused tests. The docs milestone ran one slightly broader focused
-command that added the parity test, bringing that run to 150: 32
-host-event-correlation, 117 extension, and 1 parity. The full secret-free suite
-passed 510 tests with one Docker-dependent integration skipped, and 7 of 7
-agent-loop tests passed. Type checking, lint, link checks, package checks, and
-LSP checks also passed. This documentation update does not rerun provider
-canaries.
+The focused lifecycle, integration, parity, status, and audit suites are the
+regression gate for this behavior. Full validation also includes type checking,
+lint, link checks, package checks, and LSP diagnostics. Provider canaries are
+separate and are not implied by these tests.
 
 ## What is still unverified
 
@@ -369,7 +369,8 @@ claim.
   the model switch. Those need a reviewed task corpus and a cost-confirmed
   benchmark.
 - Some OMP scenarios were checked against source but not run in a live OMP
-  session. The parity fixture records which ones are adapted or excluded.
+  session. The parity fixture records the exact source body and whether each
+  row is direct, forced adaptation, chosen divergence, addition, or unknown.
 - Cross-provider history conversion was tested through Pi's shared
   normalization path and one third-party transport, not every provider or its
   exact request body sent to every provider.

@@ -17,12 +17,10 @@ import {
 /**
  * Turn-proof boundary for one Prewalk trajectory. It is the only owner of the
  * current checklist snapshot and the buffered mutation evidence used to open
- * handoff. Evaluation has a separate buffer because assessment turns are
- * read-only and must never satisfy the run's mutation gate.
+ * handoff.
  */
 export class TurnGate {
 	readonly #runMutations = new MutationTurnBuffer();
-	readonly #evaluationMutations = new MutationTurnBuffer();
 	#todoPhases: TodoPhase[] = [];
 
 	resetRun(): void {
@@ -32,10 +30,6 @@ export class TurnGate {
 
 	resetMutationEvidence(): void {
 		this.#runMutations.resetForRun();
-	}
-
-	resetEvaluation(): void {
-		this.#evaluationMutations.resetForRun();
 	}
 
 	restoreTodo(messages: readonly unknown[]): void {
@@ -64,22 +58,15 @@ export class TurnGate {
 		return hasActionableTodo(this.#todoPhases);
 	}
 
-	recordExecutionUpdate(event: MutationExecutionUpdate, evaluation = false): void {
-		(evaluation ? this.#evaluationMutations : this.#runMutations).recordExecutionUpdate(event);
+	recordExecutionUpdate(event: MutationExecutionUpdate): void {
+		this.#runMutations.recordExecutionUpdate(event);
 	}
 
-	recordResult(event: MutationToolResult, evaluation = false): void {
-		(evaluation ? this.#evaluationMutations : this.#runMutations).recordResult(event);
+	recordResult(event: MutationToolResult): void {
+		this.#runMutations.recordResult(event);
 	}
 
-	finishTurn(
-		message: unknown,
-		options: MutationTurnOptions,
-		evaluation = false,
-	): MutationTurnEvidence {
-		return (evaluation ? this.#evaluationMutations : this.#runMutations).finishTurn(
-			message,
-			options,
-		);
+	finishTurn(message: unknown, options: MutationTurnOptions): MutationTurnEvidence {
+		return this.#runMutations.finishTurn(message, options);
 	}
 }

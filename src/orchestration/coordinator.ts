@@ -42,7 +42,7 @@ export const DEFAULT_PLANNER_RECOVERY_CONFIG: PlannerRecoveryConfig = {
 
 export interface PrewalkConfig {
 	/**
-	 * Persisted opt-in for automatic admission in fresh top-level sessions.
+	 * Persisted opt-in for arming one automatic run in fresh top-level sessions.
 	 * Omitted is the safe, backward-compatible off default.
 	 */
 	enabled?: boolean;

@@ -146,7 +146,7 @@ afterEach(async () => {
 });
 
 describe("Prewalk and Autoresearch composition", () => {
-	it("does not admit an Autoresearch-shaped extension message into automatic Prewalk", async () => {
+	it("starts automatic planning after an Autoresearch-shaped extension message", async () => {
 		const { session, sessionManager, providerCalls } = await createFixtureSession([
 			"Build an end-to-end feature across multiple concerns.",
 		]);
@@ -157,13 +157,15 @@ describe("Prewalk and Autoresearch composition", () => {
 		await session.waitForIdle();
 
 		const entries = JSON.stringify(sessionManager.getEntries());
-		expect(providerCalls()).toBe(1);
+		expect(providerCalls()).toBeGreaterThan(1);
 		expect(entries).not.toContain("prewalk_assess");
-		expect(entries).not.toContain("Assess whether substantial implementation work remains");
+		expect(entries).toContain('"customType":"prewalk-plan"');
+		await session.prompt("/prewalk cancel");
+		await session.waitForIdle();
 		session.dispose();
 	});
 
-	it("admits one interactive substantial input before any extension continuation", async () => {
+	it("starts automatic planning after one interactive input", async () => {
 		const { session, sessionManager, providerCalls } = await createFixtureSession();
 		await session.prompt("/prewalk auto");
 		await session.waitForIdle();
@@ -171,13 +173,16 @@ describe("Prewalk and Autoresearch composition", () => {
 		await session.waitForIdle();
 
 		const entries = JSON.stringify(sessionManager.getEntries());
-		const assessments = entries.match(/"customType":"prewalk-assess"/g)?.length ?? 0;
-		expect(assessments).toBe(1);
-		expect(providerCalls()).toBe(1);
+		const plans = entries.match(/"customType":"prewalk-plan"/g)?.length ?? 0;
+		expect(plans).toBe(1);
+		expect(entries).not.toContain("prewalk_assess");
+		expect(providerCalls()).toBeGreaterThan(1);
+		await session.prompt("/prewalk cancel");
+		await session.waitForIdle();
 		session.dispose();
 	});
 
-	it("keeps a steered extension continuation outside automatic admission", async () => {
+	it("keeps a steered extension continuation compatible with automatic planning", async () => {
 		const followUp = "Build an end-to-end feature across multiple concerns.";
 		const { session, sessionManager, providerCalls } = await createFixtureSession(
 			[followUp],
@@ -189,9 +194,11 @@ describe("Prewalk and Autoresearch composition", () => {
 		await session.waitForIdle();
 
 		const entries = JSON.stringify(sessionManager.getEntries());
-		expect(providerCalls()).toBe(1);
+		expect(providerCalls()).toBeGreaterThan(1);
 		expect(entries).not.toContain("prewalk_assess");
-		expect(entries).not.toContain("Assess whether substantial implementation work remains");
+		expect(entries).toContain('"customType":"prewalk-plan"');
+		await session.prompt("/prewalk cancel");
+		await session.waitForIdle();
 		session.dispose();
 	});
 });

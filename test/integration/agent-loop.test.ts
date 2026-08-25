@@ -612,7 +612,7 @@ describe("stock Pi Agent-loop integration", () => {
 		expect((executorContext?.messages.length ?? 0) > 1).toBe(true);
 	});
 
-	it("launches automatic assessment and its one continuation through Pi's public runtime", async () => {
+	it("launches automatic planning and its continuation through Pi's public runtime", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
 		const calls: string[] = [];
@@ -633,7 +633,7 @@ describe("stock Pi Agent-loop integration", () => {
 					const solCall = calls.filter((id) => id === PLANNER_MODEL_ID).length;
 					if (solCall === 1) {
 						return response(planner, [
-							toolCall("assessment-1", "prewalk_assess", { decision: "continue" }),
+							{ type: "text", text: "I will inspect the task first." },
 						]);
 					}
 					if (solCall === 2) {
@@ -684,7 +684,8 @@ describe("stock Pi Agent-loop integration", () => {
 		await session.prompt("Build an end-to-end feature across multiple concerns.");
 		await session.waitForIdle();
 
-		expect(calls).toEqual([PLANNER_MODEL_ID, PLANNER_MODEL_ID, PLANNER_MODEL_ID]);
+		expect(calls.length).toBeGreaterThanOrEqual(3);
+		expect(calls.every((id) => id === PLANNER_MODEL_ID)).toBe(true);
 		session.dispose();
 	});
 

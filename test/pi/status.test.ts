@@ -43,47 +43,43 @@ function run(phase: RunPhase): PrewalkRun {
 }
 
 describe("Prewalk status", () => {
-	it("separates auto readiness from the last task outcome", () => {
+	it("keeps the last task outcome separate from the lifecycle state", () => {
 		expect(
 			compactStatus(undefined, selected(), "low", undefined, {
-				mode: "auto-ready",
 				lastOutcome: "bypassed",
 			}),
-		).toBe("prewalk: auto-ready; last bypassed");
+		).toBe("prewalk: off · last bypassed");
 		expect(
 			compactStatus(undefined, selected(), "low", undefined, {
-				mode: "manual",
 				lastOutcome: "completed",
 			}),
-		).toBe("prewalk: manual; last completed");
+		).toBe("prewalk: off · last completed");
 	});
 	it.each([
-		["armed", "prewalk: [5.6 Sol · low] / Luna · low"],
-		[
-			"ready",
-			"prewalk: [5.6 Sol · low] / Luna · low (waiting for this agent's first code change)",
-		],
-		["handoff-pending", "prewalk: [5.6 Sol · low] / Luna · low (switching after this turn)"],
-		["active", "prewalk: 5.6 Sol · low / [Luna · low]"],
-		["completed", "prewalk: 5.6 Sol · low / [Luna · low]"],
-		["cancelled", "prewalk: [5.6 Sol · low] / Luna · low (cancelled)"],
-		["failed", "prewalk: [5.6 Sol · low] / Luna · low (failed)"],
+		["armed", "prewalk: armed · 5.6 Sol → Luna"],
+		["planning", "prewalk: planning · 5.6 Sol → Luna"],
+		["ready", "prewalk: ready · 5.6 Sol → Luna · waiting for first code change"],
+		["handoff-pending", "prewalk: switching to Luna"],
+		["active", "prewalk: executor · Luna"],
+		["completed", "prewalk: executor · Luna"],
+		["cancelled", "prewalk: cancelled"],
+		["failed", "prewalk: failed"],
 	] satisfies Array<[RunPhase, string]>)("renders %s", (phase, expected) => {
 		expect(compactStatus(run(phase), selected(), "low")).toBe(expected);
 	});
 
 	it("shows the selected Pi model after cross-model cancellation", () => {
 		expect(compactStatus(run("cancelled"), selected("gpt-5.4"))).toBe(
-			"prewalk: 5.6 Sol / Luna (cancelled; selected: openai-codex/gpt-5.4)",
+			"prewalk: cancelled · selected openai-codex/gpt-5.4",
 		);
 	});
 
-	it("keeps Luna marked on a delegated failure", () => {
+	it("keeps failure details concise in the compact footer", () => {
 		const failed = run("failed");
 		failed.effectiveRoute = "executor";
 		failed.reasonCode = "executor-stream-failed";
 		expect(compactStatus(failed, selected(), "low")).toBe(
-			"prewalk: 5.6 Sol · low / [Luna · low] (failed: executor stream failed)",
+			"prewalk: failed · executor stream failed",
 		);
 		expect(detailedStatus(failed, selected(), "low")).toContain("reason=executor-stream-failed");
 	});
@@ -92,7 +88,7 @@ describe("Prewalk status", () => {
 		const failed = run("failed");
 		failed.reasonCode = "configuration-invalid";
 		expect(compactStatus(failed, selected(), "low")).toBe(
-			"prewalk: [5.6 Sol · low] / Luna · low (failed: configuration invalid)",
+			"prewalk: failed · configuration invalid",
 		);
 	});
 
@@ -102,7 +98,7 @@ describe("Prewalk status", () => {
 				agent: "worker",
 				state: "running",
 			}),
-		).toBe("prewalk: [5.6 Sol · low] / Luna · low (waiting for this agent's first code change)");
+		).toBe("prewalk: ready · 5.6 Sol → Luna · waiting for first code change");
 
 		const failed = run("failed");
 		failed.reasonCode = "configuration-invalid";
@@ -111,6 +107,6 @@ describe("Prewalk status", () => {
 				agent: "worker",
 				state: "running",
 			}),
-		).toContain("failed: configuration invalid");
+		).toContain("failed · configuration invalid");
 	});
 });

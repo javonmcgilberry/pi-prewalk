@@ -1,18 +1,19 @@
 {
-  "revision": "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7",
-  "promptSourceRevision": "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d",
+  "schemaVersion": 2,
+  "revision": "969a94c1eeccb1b7528cd5621934bca1908ab622",
+  "promptSourceRevision": "c101452bb5a6eb40490efc0d49035f201ee5aa21",
   "promptAssets": {
     "prewalk-plan.md": {
       "source": "packages/coding-agent/src/prompts/system/prewalk-plan.md",
-      "sha256": "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"
+      "sha256": "5daf4e727817fafa94fe4a1fcb84905da66aa28358328329a6eccc0aae8a41ee"
     },
     "prewalk-checklist.md": {
       "source": "packages/coding-agent/src/prompts/system/prewalk-checklist.md",
-      "sha256": "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"
+      "sha256": "0d4897f505957ff5e0466fe43f5e681e1b373eb8789c2ca976ea08deaa11d1cb"
     },
     "prewalk-continue.md": {
       "source": "packages/coding-agent/src/prompts/system/prewalk-continue.md",
-      "sha256": "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0"
+      "sha256": "769599ce9fc5db930b2db47dccd1d98e7528e720a35520ea8039b4acb4c97955"
     }
   },
   "sourceSuites": [
@@ -22,98 +23,157 @@
   "scenarios": [
     {
       "upstream": "prewalks at the first edit/write after the todo gate opens; bash and todo don't trigger",
-      "classification": "pi-adapted",
-      "local": "test/integration/agent-loop.test.ts"
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "5806647eb9e2922ed845341d92dffdbbb975c2139f97145e7b55ec8666e14740",
+      "classification": "direct",
+      "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "an edit before any todo call does not switch while a todo tool exists; the next edit after todo does",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "dcde024445805cce32d3718d176f01c683fc828d854fd20fe34a4b9db9f69ce5",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "keeps the todo gate closed after a failed todo call",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "0ed6ea5fca9a6cfece99fb9b574579c1ac625170698e1b3da13c9c757d69881f",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "forces a continuation when the plan nudge gets a text-only reply, instead of silently ending the run",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "d43803748b757fa144cb54ca37d437af0af3c0fb6c0b197fb2be4a14fac80e5e",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "bounds a completed bash-only task to a single continuation instead of looping",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "75ca32f9b4fbfe023bf7d62eebab563811b96fe2a4f77b007bb127094335ca04",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "does not switch on a read-only xd:// device dispatched through write (issue #7312)",
-      "classification": "excluded",
-      "rationale": "Stock Pi does not expose Oh My Pi's xd:// virtual-device mutation-tier contract, so Prewalk cannot distinguish read-only xd writes through public APIs."
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "228f3af672c7f3fe79d3f1942544346b445621c53c4cb0c93361f5ea55ae3f35",
+      "classification": "forced-pi-adaptation",
+      "rationale": "Stock Pi exposes no xd:// mutation-tier contract, so the extension cannot distinguish a read-only virtual-device write through its public API."
     },
     {
       "upstream": "switches on a write-tier xd:// device dispatched through write (issue #7312)",
-      "classification": "excluded",
-      "rationale": "Stock Pi does not expose Oh My Pi's xd:// virtual-device mutation-tier contract; support would require a public mutation-evidence adapter rather than guessed target semantics."
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "0a971492153bdbfc0b448c18ae2494e1ec3920359e2ffc0b43bfeedf53108d4a",
+      "classification": "forced-pi-adaptation",
+      "rationale": "Stock Pi exposes no xd:// mutation-tier contract, so the extension cannot distinguish a write-tier virtual-device write through its public API."
     },
     {
       "upstream": "re-arms continuation after tool progress between prose turns",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "6f9f114d8c2a515a6a749f9f89a53cec79d5c48653aab338603d2cb86d95addc",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "skips the todo gate when todo is registered but not active (subagent-style restricted slates)",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "b11119e8462eb8c24286523cbc8f35f889e69edc1db23a515422b3d6caca95f2",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
       "upstream": "armPrewalk (the /prewalk slash command) pre-arms the switch for the very next edit/write",
-      "classification": "pi-adapted",
-      "local": "test/integration/extension.test.ts"
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "34261fc5aa47cca56b2d787355ecb031cb49a3abdacf444f9031335599237af8",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/extension.test.ts",
+      "rationale": "Stock Pi's public extension API needs a run-scoped provider overlay instead of OMP's temporary session model switch."
     },
     {
-      "upstream": "effort-only prewalk on the same model downgrades the thinking level instead of silently skipping",
-      "classification": "pi-adapted",
-      "local": "test/integration/extension.test.ts"
+      "upstream": "armPrewalk rejects a same-model same-effort no-op",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "b5602d22df68391e6db3f45edf0a53da1e5e3d35d8c2ac8a0e1a081922aae287",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/extension.test.ts",
+      "rationale": "The extension resolves the no-op through its provider overlay and reports the safe unarmed outcome."
     },
     {
-      "upstream": "emits a notice and skips the checklist when the prewalk target is a genuine no-op",
-      "classification": "pi-adapted",
-      "local": "test/integration/extension.test.ts"
-    },
-    {
-      "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
-      "classification": "pi-adapted",
-      "local": "test/executor/executor-chain.test.ts"
-    },
-    {
-      "upstream": "switches when a same-model target clears auto mode even though efforts both resolve to undefined",
-      "classification": "excluded",
-      "rationale": "Stock Pi exposes the current concrete thinking level to extensions but not the configured auto-versus-fixed selector, so Prewalk cannot reproduce this auto-mode distinction through its public API."
-    },
-    {
-      "upstream": "leaves prewalk unarmed instead of crashing when the target has no configured auth",
-      "classification": "pi-adapted",
-      "local": "test/integration/extension.test.ts"
-    },
-    {
-      "upstream": "arms prewalk when the target resolves and has configured auth",
-      "classification": "pi-adapted",
-      "local": "test/integration/agent-loop.test.ts"
+      "upstream": "/prewalk reports success only when the requested arm remains active",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "475d04889e4e692a7008327effb5080512a1ae687ef517f96b0d84ef0dde474c",
+      "classification": "chosen-divergence",
+      "rationale": "The standalone command has no OMP arm-success return contract; it reports only actionable failures while the run owns its route."
     },
     {
       "upstream": "requires a fresh todo before a later explicit prewalk can hand off",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "ccc576bd4af381bebb5d60b8e6b8dcfb98712b65ea357c94539a60affdaf429d",
       "classification": "direct",
       "local": "test/orchestration/core.test.ts"
     },
     {
-      "upstream": "armPrewalk rejects a same-model same-effort no-op before injecting the plan nudge",
-      "classification": "pi-adapted",
+      "upstream": "effort-only prewalk on the same model downgrades the thinking level instead of silently skipping",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "8e3d86f27c0ace52dddb83fdf00b7aec063741d07d99bae017e55a952410c1d0",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/extension.test.ts",
+      "rationale": "The temporary route is a provider overlay, so effort changes are applied at the overlay boundary rather than through OMP's session model switch."
+    },
+    {
+      "upstream": "emits a notice when the prewalk target is a genuine no-op",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "f991487c16caabd712a5cddb57130725978b0f7be84f3cd2dd99b958c154a53e",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/extension.test.ts",
+      "rationale": "The extension keeps the session usable and leaves the planner selected when its resolved target is a no-op."
+    },
+    {
+      "upstream": "treats a target effort the model clamps back to the active effort as a no-op",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "858e07e48f8688f2e8081679df360fbc29a9ebc7fde6f3f8f3a63743066c69a2",
+      "classification": "forced-pi-adaptation",
+      "local": "test/executor/executor-chain.test.ts",
+      "rationale": "Pi exposes the effective thinking level at the extension seam, so the extension compares the clamped target before installing its route."
+    },
+    {
+      "upstream": "switches when a same-model target clears auto mode even though efforts both resolve to undefined",
+      "source": "packages/coding-agent/test/agent-session-prewalk.test.ts",
+      "bodySha256": "2e6e0d1b060605c2dd77185ba50af43ea7d827328d3af01af738bdbe34fa7009",
+      "classification": "forced-pi-adaptation",
+      "rationale": "Stock Pi exposes the current concrete thinking level but not OMP's configured auto-versus-fixed selector."
+    },
+    {
+      "upstream": "leaves prewalk unarmed instead of crashing when the target has no configured auth",
+      "source": "packages/coding-agent/test/prewalk-startup-degradation.test.ts",
+      "bodySha256": "bdfe052d0fff2d63c66e41436cd2b7c50370a4cf38d2840fae6f2b918d711dc9",
+      "classification": "direct",
       "local": "test/integration/extension.test.ts"
     },
     {
-      "upstream": "/prewalk reports success only when the requested arm remains active",
-      "classification": "excluded",
-      "rationale": "/prewalk run reports no success of its own; startRun notifies only on failure, so there is no success claim that could outlive a cancelled arm."
+      "upstream": "arms prewalk when the target resolves and has configured auth",
+      "source": "packages/coding-agent/test/prewalk-startup-degradation.test.ts",
+      "bodySha256": "dfe313cc22608a73603df8f1e83a9c22f020ad0875a2ebbc62e7d9bd874e5c22",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/agent-loop.test.ts",
+      "rationale": "The standalone extension verifies and installs its provider overlay through the stock Pi public provider registry."
+    },
+    {
+      "upstream": "does not implicitly re-arm configured prewalk while restoring a session",
+      "source": "packages/coding-agent/test/prewalk-startup-degradation.test.ts",
+      "bodySha256": "d7b26a2774045aa811849bb7b61a4a438ac672e4774ea1c91c25fd6c4bd77b64",
+      "classification": "direct",
+      "local": "test/integration/extension.test.ts"
+    },
+    {
+      "upstream": "honors an explicit prewalk flag while restoring a session",
+      "source": "packages/coding-agent/test/prewalk-startup-degradation.test.ts",
+      "bodySha256": "dd2602dd7331e9dfa651e6cfb2b99371eac93876c3dc2fe58a03cf2ee78f93f0",
+      "classification": "forced-pi-adaptation",
+      "local": "test/integration/extension.test.ts",
+      "rationale": "The standalone extension's explicit /prewalk auto command starts a run through its command adapter; restore remains a separate lifecycle boundary."
     }
   ]
 }

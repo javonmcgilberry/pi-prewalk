@@ -4,8 +4,6 @@ import type { PrewalkApplication } from "../orchestration/prewalk-application.js
 import { PREWALK_TODO_TOOL_NAME, type TodoInput } from "../turn/todo.js";
 import type { TurnGate } from "../turn/turn-gate.js";
 
-export const PREWALK_ASSESS_TOOL_NAME = "prewalk_assess";
-
 export const TodoParameters = Type.Object({
 	op: Type.Union([
 		Type.Literal("init"),
@@ -32,15 +30,6 @@ export const TodoParameters = Type.Object({
 	reason: Type.Optional(Type.String()),
 });
 
-export const AssessmentParameters = Type.Object({
-	decision: Type.Union([Type.Literal("continue"), Type.Literal("bypass")]),
-});
-
-export interface AssessmentState {
-	decision?: "continue" | "bypass";
-	invalid: boolean;
-}
-
 export interface PrewalkToolRegistration {
 	application: PrewalkApplication;
 	turnGate: TurnGate;
@@ -50,8 +39,6 @@ export interface PrewalkToolRegistration {
 		retryPlanning: boolean,
 	): void;
 	onTodoInitialized(): void;
-	getAssessment(): AssessmentState | undefined;
-	setAssessmentDecision(decision: "continue" | "bypass"): void;
 }
 
 const PREFERRED_CONSTRAINED_SAMPLING = {
@@ -59,7 +46,7 @@ const PREFERRED_CONSTRAINED_SAMPLING = {
 	strict: "prefer",
 } as const;
 
-/** Registers the two namespaced tools and keeps their schemas at the Pi seam. */
+/** Registers the namespaced checklist tool and keeps its schema at the Pi seam. */
 export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistration): void {
 	pi.registerTool({
 		name: PREWALK_TODO_TOOL_NAME,
@@ -88,27 +75,6 @@ export function registerPrewalkTools(pi: ExtensionAPI, deps: PrewalkToolRegistra
 				content: [{ type: "text", text: result.text }],
 				details: result.details,
 			};
-		},
-	});
-
-	pi.registerTool({
-		name: PREWALK_ASSESS_TOOL_NAME,
-		label: "Prewalk assessment",
-		description:
-			"Record whether substantial implementation work remains after bounded inspection.",
-		parameters: AssessmentParameters,
-		constrainedSampling: PREFERRED_CONSTRAINED_SAMPLING,
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			deps.assertCurrentToolExecution(toolCallId, ctx, false);
-			const evaluation = deps.getAssessment();
-			if (!evaluation || evaluation.invalid || evaluation.decision) {
-				throw new Error("Prewalk assessment is inactive.");
-			}
-			if (params.decision !== "continue" && params.decision !== "bypass") {
-				throw new Error("Prewalk assessment decision is invalid.");
-			}
-			deps.setAssessmentDecision(params.decision);
-			return { content: [{ type: "text", text: "Assessment recorded." }], details: {} };
 		},
 	});
 }

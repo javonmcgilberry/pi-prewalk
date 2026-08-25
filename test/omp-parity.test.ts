@@ -1,29 +1,37 @@
 import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
+type Classification =
+	| "direct"
+	| "forced-pi-adaptation"
+	| "chosen-divergence"
+	| "addition"
+	| "unknown";
+
 interface Scenario {
 	upstream: string;
-	classification: "direct" | "pi-adapted" | "excluded";
+	source: string;
+	bodySha256: string;
+	classification: Classification;
 	local?: string;
 	rationale?: string;
 }
 
 interface Matrix {
-	/** The OMP revision that owns the scenario behavior matrix. */
+	schemaVersion: 2;
 	revision: string;
-	/** Prompt byte provenance is pinned independently from scenario behavior. */
 	promptSourceRevision: string;
 	promptAssets: Record<string, { source: string; sha256: string }>;
 	sourceSuites: string[];
 	scenarios: Scenario[];
 }
 
-const behaviorRevision = "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7";
-const promptSourceRevision = "f559e7e9dc1e8818d5d8e15ace28da3d42f2457d";
+const behaviorRevision = "969a94c1eeccb1b7528cd5621934bca1908ab622";
+const promptSourceRevision = "c101452bb5a6eb40490efc0d49035f201ee5aa21";
 const promptHashes = new Map([
-	["prewalk-plan.md", "0a7442a41c2d8554f0683ac947323bc8a20d2cd6ebda049a9d9df323f2471a78"],
-	["prewalk-checklist.md", "045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1"],
-	["prewalk-continue.md", "9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0"],
+	["prewalk-plan.md", "5daf4e727817fafa94fe4a1fcb84905da66aa28358328329a6eccc0aae8a41ee"],
+	["prewalk-checklist.md", "0d4897f505957ff5e0466fe43f5e681e1b373eb8789c2ca976ea08deaa11d1cb"],
+	["prewalk-continue.md", "769599ce9fc5db930b2db47dccd1d98e7528e720a35520ea8039b4acb4c97955"],
 ]);
 
 describe("pinned OMP behavior parity matrix", () => {
@@ -35,6 +43,7 @@ describe("pinned OMP behavior parity matrix", () => {
 		const matrix = JSON.parse(raw) as Matrix;
 
 		expect(matrix.revision).toBe(behaviorRevision);
+		expect(matrix.schemaVersion).toBe(2);
 		expect(matrix.promptSourceRevision).toBe(promptSourceRevision);
 		expect(matrix.promptSourceRevision).not.toBe(matrix.revision);
 		expect(Object.keys(matrix.promptAssets)).toEqual([...promptHashes.keys()]);
@@ -44,20 +53,44 @@ describe("pinned OMP behavior parity matrix", () => {
 				sha256: hash,
 			});
 		}
+
 		expect(matrix.sourceSuites).toHaveLength(2);
-		expect(matrix.scenarios).toHaveLength(19);
-		expect(new Set(matrix.scenarios.map((scenario) => scenario.upstream)).size).toBe(19);
+		expect(matrix.scenarios).toHaveLength(21);
+		expect(new Set(matrix.scenarios.map((scenario) => scenario.upstream)).size).toBe(21);
+		expect(new Set(matrix.scenarios.map((scenario) => scenario.source))).toEqual(
+			new Set(matrix.sourceSuites),
+		);
 		expect(
-			matrix.scenarios.filter((scenario) => scenario.classification === "excluded"),
-		).toHaveLength(4);
+			matrix.scenarios.filter((scenario) => scenario.classification === "direct").length,
+		).toBe(10);
+		expect(
+			matrix.scenarios.filter((scenario) => scenario.classification === "forced-pi-adaptation")
+				.length,
+		).toBe(10);
+		expect(
+			matrix.scenarios.filter((scenario) => scenario.classification === "chosen-divergence")
+				.length,
+		).toBe(1);
 
 		for (const scenario of matrix.scenarios) {
-			if (scenario.classification === "excluded") {
-				expect(scenario.rationale?.length).toBeGreaterThan(20);
-			} else {
+			expect(scenario.bodySha256).toMatch(/^[a-f0-9]{64}$/);
+			if (scenario.classification === "direct") {
 				expect(scenario.local).toMatch(/^test\/.+\.test\.ts$/);
 				await access(new URL(`../${scenario.local}`, import.meta.url));
+			} else {
+				expect(scenario.rationale?.length).toBeGreaterThan(20);
 			}
 		}
+
+		const automaticRows = matrix.scenarios.filter((scenario) =>
+			/arm|re-arm|restoring|configured auth/i.test(scenario.upstream),
+		);
+		expect(automaticRows.map((scenario) => scenario.upstream)).toEqual(
+			expect.arrayContaining([
+				"armPrewalk (the /prewalk slash command) pre-arms the switch for the very next edit/write",
+				"does not implicitly re-arm configured prewalk while restoring a session",
+				"honors an explicit prewalk flag while restoring a session",
+			]),
+		);
 	});
 });

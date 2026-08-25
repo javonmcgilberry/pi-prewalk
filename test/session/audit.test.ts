@@ -6,13 +6,7 @@ import {
 	DEFAULT_PLANNER_RECOVERY_CONFIG,
 	type PrewalkRun,
 } from "../../src/orchestration/coordinator.js";
-import {
-	createAuditRecord,
-	createAutoModeRecord,
-	parseAuditRecord,
-	parseAutoModeRecord,
-	runFromAudit,
-} from "../../src/session/audit.js";
+import { createAuditRecord, parseAuditRecord, runFromAudit } from "../../src/session/audit.js";
 
 const run: PrewalkRun = {
 	id: "run-1",
@@ -134,12 +128,5 @@ describe("Prewalk audit records", () => {
 			executor: record.executor,
 		});
 		expect(runFromAudit(parsed as NonNullable<typeof parsed>).config.analytics).toBeUndefined();
-	});
-
-	it("round-trips only versioned, session-bound automatic mode", () => {
-		const record = createAutoModeRecord("session-1", true);
-		expect(parseAutoModeRecord(record)).toEqual(record);
-		expect(parseAutoModeRecord({ ...record, extra: true })).toBeUndefined();
-		expect(parseAutoModeRecord({ ...record, sessionId: "" })).toBeUndefined();
 	});
 });

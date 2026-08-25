@@ -10,7 +10,10 @@ The official project is [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi),
 - [`prompts/prewalk-continue.md`](../../prompts/prewalk-continue.md) matches [OMP `prewalk-continue.md`](https://github.com/can1357/oh-my-pi/blob/f559e7e9dc1e8818d5d8e15ace28da3d42f2457d/packages/coding-agent/src/prompts/system/prewalk-continue.md), SHA-256 `9af48cebe3490c679a6670968b8d59ed418d4a9a374a8d99f9be1165c93478f0`.
 - [`prompts/prewalk-checklist.md`](../../prompts/prewalk-checklist.md) matches [OMP `prewalk-checklist.md`](https://github.com/can1357/oh-my-pi/blob/f559e7e9dc1e8818d5d8e15ace28da3d42f2457d/packages/coding-agent/src/prompts/system/prewalk-checklist.md), SHA-256 `045383ef934fe8afc7b0c13ad647caf9ad0aed4d6f1af594657a968aabe660d1`.
 
-The other local prompt assets, including `prewalk-assess.md` and `todo.md`, are not identified or hash-pinned as OMP copies. The coordinator is described in the README as a stock-Pi public-API adaptation rather than copied OMP source.
+The other local prompt assets, including the former `prewalk-assess.md` and
+`todo.md`, are not identified or hash-pinned as OMP copies. The coordinator is
+described in the README as a stock-Pi public-API adaptation rather than copied
+OMP source.
 
 ## MIT obligation and current state
 
@@ -29,4 +32,3 @@ The package's `files` allowlist includes `LICENSE`, `THIRD_PARTY_NOTICES.md`, an
 ## Practical recommendation
 
 Keep the full OMP MIT text and the pinned provenance notice in every distributed form that contains the three prompts. If Prewalk needs a distinct copyright statement for its original code, add the local owner's notice without removing Mario Zechner's and Can Bölük's notices, or separate the project license from a complete OMP third-party license. The present root license contains only the upstream copyright holders, so clarifying local ownership would improve provenance even though it is separate from satisfying OMP's condition.
-

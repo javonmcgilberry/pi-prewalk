@@ -9,17 +9,23 @@ References are `file:line` at the time of writing.
 - **OMP** — `~/webdev/oh-my-pi`, `packages/coding-agent/src/session/prewalk.ts`
   and neighbors.
 - **Stock Pi** — `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai`
-  at 0.84.1, read from `node_modules`. Line numbers move between Pi releases;
-  the same statements sit 3 lines earlier at 0.82.1.
+  at the repository's current 0.84.2 target, read from `node_modules`. Line
+  numbers move between Pi releases; the behavior claims are kept separate from
+  the OMP source hashes.
 - **This extension** — `extensions/prewalk.ts`, `src/`.
 
 ## Relationship to the pinned parity fixture
 
 This document does not replace `test/fixtures/omp-prewalk-parity.json`. That
-fixture is the authority for *scenario* parity: it pins an Oh My Pi revision,
-hashes the three prompt assets, and classifies each upstream coordinator and
-degradation scenario as `direct`, `pi-adapted`, or `excluded` with a rationale.
-`test/omp-parity.test.ts` enforces it, so scenario drift fails a test run.
+fixture is the authority for *scenario* parity: it pins OMP `18.0.4` at commit
+`969a94c1eeccb1b7528cd5621934bca1908ab622`, hashes the three prompt assets,
+hashes each pinned upstream test body, and classifies every scenario as
+`direct`, `forced-pi-adaptation`, `chosen-divergence`, `addition`, or `unknown`.
+`test/omp-parity.test.ts` checks the fixture shape, while
+`scripts/compatibility/omp-drift.mjs` compares names, apostrophe-safe test
+bodies, prompt bytes, and the source revision. Unclassified drift fails the
+script unless an explicit report-only invocation is used by the scheduled
+issue reporter.
 
 This document covers what the fixture deliberately does not: architecture-level
 differences such as the handoff mechanism, compaction ownership, the context
@@ -27,13 +33,16 @@ window floor, and features that exist on only one side. Scenario-level claims
 belong in the fixture, where they are machine-checked. Add rows here only for
 behavior a scenario cannot express.
 
-The pinned fixture's model-clamping scenario is now `pi-adapted`: the executor
-resolver compares the configured target with the planner after Pi clamps both
-levels to the target model, and the configure wizard and per-agent child guard
-use the same helper. The remaining auto-mode scenario stays `excluded`:
-Stock Pi exposes the current concrete thinking level to extensions but not the
-configured auto-versus-fixed selector, so Prewalk cannot reproduce that
-distinction through its public API.
+The pinned fixture classifies the model-clamping rows as
+`forced-pi-adaptation`: the executor resolver compares the configured target
+with the planner after Pi clamps both levels to the target model, and the
+configure wizard and per-agent child guard use the same helper. The same-model
+auto-selector row has the same classification because Stock Pi exposes the
+current concrete thinking level to extensions but not the configured
+auto-versus-fixed selector. The fresh-session and restore rows now explicitly
+cover automatic lifecycle parity: enabled fresh sessions arm immediately,
+resumed sessions do not implicitly re-arm, and the standalone implementation
+does not use lexical prompt admission.
 
 ## The one difference everything else follows from
 
@@ -46,7 +55,7 @@ A stock Pi extension cannot perform a session-local model switch through the
 public `ExtensionAPI`. Its `setModel` writes the user's saved default
 (`agent-session.js:1197` calls `setDefaultModelAndProvider` at `:1205`), so
 using it would change the model for every future session. Checked again at
-0.84.1: `ExtensionAPI` still declares no session-only model setter. The
+0.84.2: `ExtensionAPI` still declares no session-only model setter. The
 limitation is recorded in
 `docs/research/prewalk-extension-only-feasibility.md`.
 
@@ -62,7 +71,7 @@ Several rows below are consequences of that, not preferences.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Handoff mechanism | Real session model switch, ephemeral | Run-scoped temporary-model lease over a provider `streamSimple` overlay; selected model never changes | **Forced** | OMP `session/prewalk.ts:138`; here `src/model-runtime.ts` |
 | 2 | Persists a new default model | No, `ephemeral: true` | No, nothing is written | Same outcome | `session/model-controls.ts:255`; overlay writes no settings |
-| 2a | Persistent automatic startup | `prewalk.enabled`, default off; fresh sessions only | `enabled` in `prewalk.json`, default off; fresh top-level sessions only | Same operator contract, Pi-adapted admission | OMP `config/settings-schema.ts`, `main.ts`; here `src/config/prewalk-config.ts`, `src/pi/register-events.ts` |
+| 2a | Persistent automatic startup | `prewalk.enabled`, default off; fresh sessions only | `enabled` in `prewalk.json`, default off; fresh top-level sessions only | Direct lifecycle parity; provider routing is forced Pi adaptation | OMP `config/settings-schema.ts`, `main.ts`; here `src/config/prewalk-config.ts`, `src/pi/register-events.ts` |
 | 3 | Handoff trigger | First `edit`/`write` tool result after the todo gate | First positively proven mutation after the gate; OMP's `edit`/`write` path is unchanged, while exact patch surfaces and source-owned adapters can supply equivalent evidence | Same core behavior, chosen extension seam | `session/prewalk.ts:22,101`; `src/mutation.ts`; `src/core.ts` `onTurnEnd` |
 | 4 | Todo gate before handoff | Yes | Yes | Same | `session/prewalk.ts:83,100`; `src/core.ts` |
 | 5 | Hidden deep-plan nudge | Injected once | Injected once | Same | `session/prewalk.ts:107`; `PREWALK_PLAN_MESSAGE_TYPE` |
@@ -82,12 +91,12 @@ Several rows below are consequences of that, not preferences.
 | 17 | Unresolvable or unauthorized target | Skips the handoff, session continues | **Stays unarmed with a notice, session continues** | Same | `main.ts:1007-1019` (issue #6064); `unavailableExecutorNotice` |
 | 18 | Subagent/child prewalk | Yes, per-agent frontmatter and settings | Opt-in under `children.agents`, default off | **Chosen** | OMP `docs/task-agent-discovery.md:39`; Prewalk `src/config/prewalk-config.ts`, `src/pi/register-events.ts` |
 | 19 | Plan-yolo | Yes, separate feature | Not implemented | **Chosen** | `session/prewalk.ts:238` |
-| 20 | Status line annotation | Yes | Yes | Same | `src/status.ts` |
+| 20 | Status line annotation | Yes | Yes | Same | `src/ui/status.ts` |
 | 21 | Manual release back to planner | Not present | `/prewalk release` | **Addition** | `extensions/prewalk.ts` `release` |
 | 22 | Local cost analytics and receipts | Not present | Yes | **Addition** | `src/analytics*.ts` |
 | 23 | Provider-ownership drift detection | Not needed | Yes, `provider-drift`, for both the planner registration and the executor model | **Forced** | `verifyOverlayOwnership`; `resolveExecutor` |
 | 24 | Native Responses compaction | Supported | Refused, `native-compaction-unsupported` | **Forced** | `nativeResponsesCompactionState` |
-| 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/status.ts:17`; `extensions/prewalk.ts` `modelLabelForNotice` |
+| 25 | Model display names | Generic | `gpt-5.6-sol`/`luna` special-cased | **Cosmetic gap** | `src/ui/status.ts:15`; `extensions/prewalk.ts` `modelLabelForNotice` |
 | 26 | `configure` offers cross-provider executors | n/a, no wizard | **Yes, planner's provider ranked first** | **Addition** | `extensions/prewalk.ts` `configure` |
 
 ## What the live smoke test caught
@@ -144,7 +153,7 @@ assistant message:
 - orphaned tool calls receive synthetic results
 
 Verified by direct execution, first against 0.82.1 and re-run unchanged against
-0.84.1, for anthropic to openai, openai to anthropic, and anthropic to google.
+0.84.2, for anthropic to openai, openai to anthropic, and anthropic to google.
 Every pair converted without throwing, and tool call/result pairing survived.
 
 **The load-bearing detail:** `openai/sol -> openai/luna`, a same-provider pair on
@@ -227,8 +236,8 @@ starting point a user can override rather than a set of permitted models.
 - Whether OMP's published guidance recommends a specific planner/executor pair.
   No such document was found in the repository; the `smol` and `slow` priority
   lists are the only in-repo signal.
-- Rows 5, 6, 7, 8, 18, 19, 20 were checked against OMP source but not executed
-  in a live OMP session.
+- The fixture pins source bodies, but it does not claim that every OMP row was
+  executed in a live OMP session.
 - Cross-family replay through `pi-messages.js`, and payload-level inspection of
   third-party transports that bypass Pi's provider-payload hook. Cursor routing
   and response completion are verified, but its serialized payload is not.

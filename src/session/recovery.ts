@@ -2,11 +2,8 @@ import type { RejectedExecutor } from "../executor/selection.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import {
 	PREWALK_AUDIT_TYPE,
-	PREWALK_AUTO_MODE_TYPE,
 	type PrewalkAuditRecord,
-	type PrewalkAutoModeRecord,
 	parseAuditRecord,
-	parseAutoModeRecord,
 	runFromAudit,
 } from "./audit.js";
 
@@ -46,18 +43,6 @@ export function latestAuditRecord(entries: readonly unknown[]): PrewalkAuditReco
 		const entry = entries[index];
 		if (!isCustomEntry(entry, PREWALK_AUDIT_TYPE)) continue;
 		const record = parseAuditRecord(entry.data);
-		if (record) return record;
-	}
-	return undefined;
-}
-
-export function latestAutoModeRecord(
-	entries: readonly unknown[],
-): PrewalkAutoModeRecord | undefined {
-	for (let index = entries.length - 1; index >= 0; index -= 1) {
-		const entry = entries[index];
-		if (!isCustomEntry(entry, PREWALK_AUTO_MODE_TYPE)) continue;
-		const record = parseAutoModeRecord(entry.data);
 		if (record) return record;
 	}
 	return undefined;

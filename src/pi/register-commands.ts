@@ -50,8 +50,8 @@ function helpText(): string {
 		"/prewalk stats reset  Confirm a new empty ledger generation.",
 		"/prewalk stats cleanup  Retry removal of retired ledger generations.",
 		"/prewalk run     Start a new manual Prewalk run after cancellation or failure.",
-		"/prewalk auto    Enable conservative automatic admission for this session.",
-		"/prewalk cancel  Disable automatic admission and stop the current Prewalk run.",
+		"/prewalk auto    Arm one automatic Prewalk run for this session.",
+		"/prewalk cancel  Cancel the current run and disarm automatic mode.",
 		"/prewalk release Restore the planner after a successful executor handoff.",
 		"/prewalk configure  Set automatic startup, executors, child agents, and analytics.",
 		"/prewalk children  Show which child agents may use Prewalk.",
@@ -61,11 +61,11 @@ function helpText(): string {
 		"/prewalk todos  Show the current Prewalk implementation checklist.",
 		"",
 		"Reset the current run: /prewalk cancel, then /prewalk run.",
-		"Type exactly stop or cancel to close only the current task; /prewalk cancel also disables session automatic mode.",
+		"Type exactly stop or cancel to close only the current task; /prewalk cancel also disarms the current automatic run.",
 		"Reload extension and config changes: /reload.",
 		`Configuration file: ${configPath()}`,
 		"Configuration is written atomically by /prewalk configure.",
-		"enabled: true makes automatic startup the default for startup, new, and forked sessions. Resume stays manual. /prewalk auto and /prewalk cancel override only the current session, and /reload preserves that override.",
+		"enabled: true arms one automatic run for startup, new, and forked sessions. Resume stays manual. /prewalk auto starts another explicit run after a terminal outcome.",
 		"Analytics stay local. Recorded spend is the cost Pi reports. The estimated difference prices recorded executor tokens at planner rates; runs finished before handoff are not compared, and missing inputs are named directly.",
 		"Disabling collection preserves existing receipts and does not change routing. Export refuses existing destinations. Reset excludes any active prior-generation run, and collection resumes on the next run.",
 		"",
@@ -186,13 +186,12 @@ export interface PrewalkCommandRegistration {
 	analytics: PrewalkAnalytics;
 	delegation(): DelegationStatus | undefined;
 	childDiagnostic(): string | undefined;
-	autoEnabled(): boolean;
 	lastOutcome(): "bypassed" | "completed" | "failed" | "released" | undefined;
-	setAutoEnabled(enabled: boolean, ctx: ExtensionContext): void;
 	updateStatus(ctx: ExtensionContext): void;
 	onCancel(ctx: ExtensionContext): Promise<void>;
 	onRelease(ctx: ExtensionContext): Promise<void>;
 	startManual(ctx: ExtensionContext): Promise<void>;
+	startAutomatic(ctx: ExtensionContext): Promise<void>;
 	onConfigure(ctx: ExtensionContext): Promise<void>;
 	loadSessionTitles(sessionIds?: readonly string[]): Promise<ReadonlyMap<string, string>>;
 	analyticsConfig(): AnalyticsConfig;
@@ -416,10 +415,7 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 						ctx.model,
 						ctx.thinkingLevel,
 						deps.delegation(),
-						{
-							mode: deps.autoEnabled() ? "auto-ready" : "manual",
-							...(deps.lastOutcome() ? { lastOutcome: deps.lastOutcome() } : {}),
-						},
+						deps.lastOutcome() ? { lastOutcome: deps.lastOutcome() } : undefined,
 					),
 					"info",
 				);
@@ -438,7 +434,7 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 					return;
 				}
 				await deps.onCancel(ctx);
-				ctx.ui.notify("Prewalk automatic mode disabled for this session.", "info");
+				ctx.ui.notify("Prewalk cancelled for this session.", "info");
 				return;
 			}
 			if (command === "release") {
@@ -466,13 +462,19 @@ export function registerPrewalkCommand(pi: ExtensionAPI, deps: PrewalkCommandReg
 				return;
 			}
 			if (command === "auto") {
-				if (deps.autoEnabled()) {
-					ctx.ui.notify("Prewalk automatic mode is already enabled for this session.", "info");
+				const run = deps.application.run;
+				if (run && run.phase !== "cancelled" && run.phase !== "failed") {
+					ctx.ui.notify("Prewalk is already armed or active.", "info");
 					return;
 				}
-				deps.setAutoEnabled(true, ctx);
-				deps.updateStatus(ctx);
-				ctx.ui.notify("Prewalk automatic mode enabled for this session.", "info");
+				if (!ctx.isIdle()) {
+					ctx.ui.notify(
+						"Prewalk cannot arm during an active agent turn. Wait for it to finish, then run /prewalk auto again.",
+						"error",
+					);
+					return;
+				}
+				await deps.startAutomatic(ctx);
 				return;
 			}
 			if (command === "configure") {

@@ -55,13 +55,13 @@ Select a planner, wait for Pi to become idle, then run:
 
 That is the smallest valid config. [`prewalk.example.json`](prewalk.example.json) shows executor fallbacks, analytics, child agents, and all common settings. You can also use `/prewalk configure`; it keeps changes in a draft until you choose **Save changes**.
 
-Automatic mode is off by default. Set `enabled` to `true` to check new sessions automatically, or use `/prewalk auto` for the current session. Resumed sessions stay manual. `/reload` keeps the current session choice.
-
-Automatic admission is deliberately conservative: it looks for clearly
-substantial implementation work and bypasses research, setup, operations,
-negated or quoted examples, and small isolated edits. Messages sent by another
-extension are not admitted automatically, so an extension such as an
-Autoresearch loop cannot accidentally start a second Prewalk trajectory.
+Automatic mode is off by default. Set `enabled` to `true` to arm one run in
+fresh top-level sessions, or use `/prewalk auto` to arm one run in the current
+session. Resumed sessions stay manual. Automatic mode does not classify prompt
+wording: research, questions, extension messages, and natural implementation
+requests all leave the run armed until its normal todo-and-mutation handoff.
+After a terminal outcome, start another run explicitly with `/prewalk auto` or
+`/prewalk run`.
 
 For local development:
 
@@ -80,7 +80,7 @@ pi install .
 4. Follow-up messages remain on the executor. When that task is done, run `/prewalk release` to return to the planner.
 5. For another planning pass in the same conversation, run `/prewalk run` again. A common second pass is to have the planner review and simplify the implementation, then let the executor make the cleanup edits.
 
-If automatic mode is enabled, step 5 does not need `/prewalk run`. After release, Prewalk checks the next substantial prompt automatically. Use `/prewalk status` whenever you are unsure which model is handling the conversation.
+If automatic mode is enabled, a fresh top-level session starts with one Prewalk run already armed. It stays armed through ordinary prompts, research, questions, and extension-delivered follow-ups; prompt wording does not decide whether it starts. After handoff, release, cancellation, or completion, it does not silently re-arm. Use `/prewalk auto` for another explicit run and `/prewalk status` whenever you are unsure which model is handling the conversation.
 
 ## Local usage estimates
 
@@ -95,16 +95,16 @@ These estimates come from real usage, not a control group or billing statement. 
 | Command | Purpose |
 | --- | --- |
 | `/prewalk run` | Start a manual run while Pi is idle. |
-| `/prewalk auto` | Enable automatic mode for this session. |
+| `/prewalk auto` | Arm one automatic Prewalk run for this session. |
 | `/prewalk status` | Show the planner, executor, gate, route, and failure. |
 | `/prewalk configure` | Configure startup, executor, children, and analytics. |
 | `/prewalk children` | Inspect or change child policies. |
-| `/prewalk cancel` | Cancel before handoff and disable automatic mode. |
+| `/prewalk cancel` | Cancel the current run and disarm automatic mode. |
 | `/prewalk release` | Restore the planner after handoff. |
 | `/prewalk stats` | View cost and model-switch estimates. |
 | `/prewalk todos` | Show the current implementation checklist. |
 
-Installing Prewalk does not add its tools to ordinary Pi turns. It enables `prewalk_todo` and `prewalk_assess` only during a manual run, automatic check, or opted-in child run, then removes them after bypass, cancellation, failure, completion, or release. Running `/prewalk auto` by itself does not expose either tool.
+Installing Prewalk does not add its tools to ordinary Pi turns. A manual run, an explicitly armed automatic run, a configured fresh-session run, or an opted-in child run enables only `prewalk_todo`; it is removed after cancellation, failure, completion, or release. Automatic mode is armed immediately, not admitted by a lexical prompt check.
 
 ## How the handoff works
 
