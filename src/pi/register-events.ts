@@ -1225,7 +1225,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			await startChildPrewalkRun(ctx);
 			return;
 		}
-		if (event.reason === "startup" || event.reason === "new" || event.reason === "fork") {
+		if (
+			ctx.mode === "tui" &&
+			(event.reason === "startup" || event.reason === "new" || event.reason === "fork")
+		) {
 			try {
 				const config = await readPrewalkConfig();
 				if (config.enabled) {

@@ -209,7 +209,7 @@ Analytics live under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/prewalk/analytics`
 - A failed pre-handoff run or explicit cancellation restores the session-local planner route before another run starts. After handoff, use `/prewalk release`.
 - Planner/provider mismatch, missing authorization, invalid config, todo conflict, and unsupported native compaction fail before executor use.
 - If an executor provider fails outside context pressure, Prewalk restores the planner, preserves the transcript and receipt, and does not replay a possibly partial tool turn automatically.
-- Hidden planning prompts stay out of normal model context and compaction input. While a Prewalk run is active, its native session-local model route and context watchdog govern planner and executor requests; inactive Pi sessions are untouched.
+- Hidden planning prompts stay out of normal model context and compaction input. Configured fresh-session startup runs only in the interactive TUI. RPC, print, and JSON side processes stay inactive unless they start Prewalk explicitly. Opted-in pi-subagents still follow their child policy. While a Prewalk run is active, its native session-local model route and context watchdog govern planner and executor requests; inactive Pi sessions are untouched.
 
 Use `/prewalk status` to see why a run failed. To start over, run `/prewalk cancel`, then `/prewalk run`.
 

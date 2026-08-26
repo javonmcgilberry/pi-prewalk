@@ -131,6 +131,7 @@ function createHarness(
 		todoVisible?: boolean;
 		activeTools?: string[];
 		executorContextWindow?: number;
+		mode?: ExtensionContext["mode"];
 		/** Model ids the registry pretends not to know, e.g. an executor gone missing. */
 		unresolvableModelIds?: string[];
 		/** Model ids for which the registry reports no configured credentials. */
@@ -384,6 +385,7 @@ function createHarness(
 	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 	const context = castTestType<ExtensionContext>({
 		cwd: process.cwd(),
+		mode: options.mode,
 		get model() {
 			return currentModel;
 		},
@@ -864,7 +866,7 @@ describe("Prewalk extension harness", () => {
 		);
 
 		for (const reason of ["startup", "new", "fork"]) {
-			const harness = createHarness({ sessionId: `${reason}-session` });
+			const harness = createHarness({ mode: "tui", sessionId: `${reason}-session` });
 			prewalkExtension(harness.pi);
 			await harness.emit("session_start", { type: "session_start", reason });
 
@@ -886,6 +888,22 @@ describe("Prewalk extension harness", () => {
 		expect(resumed.statuses.at(-1)).toBe(
 			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
 		);
+	});
+
+	it("keeps configured automatic mode out of RPC side sessions", async () => {
+		await writeFile(
+			path.join(agentDir, "prewalk.json"),
+			`${JSON.stringify({ enabled: true, executor: DEFAULT_EXECUTOR })}\n`,
+		);
+		const harness = createHarness({ mode: "rpc", sessionId: "rpc-side-session" });
+		prewalkExtension(harness.pi);
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(harness.entries).toEqual([]);
+		expect(harness.messages).toEqual([]);
+		expect(harness.activeTools()).toEqual(["edit", "write", "bash"]);
+		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 	});
 
 	it("arms and cancels an explicit automatic run", async () => {
