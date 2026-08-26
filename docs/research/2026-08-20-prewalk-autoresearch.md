@@ -119,22 +119,19 @@ persisted `prewalk_assess`; the candidate failed and was automatically restored.
 The final no-change control also reproduced zero violations and was discarded
 because it did not improve the existing best score.
 
-## Files and reproducibility
+## Campaign archive
 
-The experiment assets are under `.auto/`:
-
-- `prompt.md` defines scope, metrics, safety gates, and off-limits files.
-- `measure.sh` runs the active segment scorer.
-- `checks.sh` runs the focused tests and typecheck.
-- `context-calibration.json` and `admission-corpus.json` are the frozen
-  content-free inputs.
-- `log.jsonl` records all 20 experiments.
+The bounded campaign is complete. Its temporary `.auto/` harness, frozen
+corpora, scorers, checks, configuration, and run log were removed from the
+working tree after the accepted changes landed. Git history preserves those
+assets if the research is revisited later; they are no longer active repository
+tooling.
 
 One runner detail affected the rerun: the wrapper's separate checks process did
 not inherit the `AR_SEGMENT` environment assignment from the benchmark command.
 The admission and composition reruns therefore chained their segment-specific
-checks explicitly in the command as well as using the frozen `.auto/checks.sh`.
-The scorer, corpus, and check definitions were not changed.
+checks explicitly in the command as well as using the campaign's frozen checks.
+The scorer, corpus, and check definitions were not changed during those runs.
 
 The final repository checks remain separate from this campaign. The local
 analytics estimates in the README are not part of these measurements, and the

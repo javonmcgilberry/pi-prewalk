@@ -4,7 +4,6 @@ export default defineConfig({
 	ignorePatterns: [
 		".agent/**",
 		".agents/**",
-		".auto/**",
 		".claude/**",
 		".codex/**",
 		".continue/**",

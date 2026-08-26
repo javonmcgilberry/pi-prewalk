@@ -5,7 +5,6 @@
       "**/*",
       "!node_modules/**/*",
       "!.pi-subagents/**/*",
-      "!.auto/context-calibration.json",
       "!tools/oxlint/anti-slop/**/*",
       "!!node_modules",
       "!!.pi-subagents",
