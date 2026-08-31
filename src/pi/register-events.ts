@@ -176,12 +176,7 @@ function sameRunIdentity(
 	identity: HostRunIdentity | undefined,
 	run: PrewalkRun | undefined,
 ): run is PrewalkRun {
-	return (
-		identity !== undefined &&
-		run !== undefined &&
-		identity.runId === run.id &&
-		identity.epoch === run.epoch
-	);
+	return identity !== undefined && run?.id === identity.runId && run?.epoch === identity.epoch;
 }
 
 function sameCapturedRun(
