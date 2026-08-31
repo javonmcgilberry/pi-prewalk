@@ -1488,10 +1488,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
-		if (contextPressure.hasPlannerPressure(run)) {
-			updateStatus(ctx);
-			return;
-		}
+		if (contextPressure.hasPlannerPressure(run)) return updateStatus(ctx);
 		if (acceptsMutationEvidence(run)) {
 			const evidence = turnGate.finishTurn(event.message, {
 				todoActive: run.todoActive,
