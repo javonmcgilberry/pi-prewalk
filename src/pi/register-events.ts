@@ -1324,9 +1324,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
-		if (run.phase === "cancelled") {
-			return;
-		}
+		if (run.phase === "cancelled") return;
 		const pressureObservation = contextPressure.settle(run, contextPressureHost(ctx));
 		if (
 			pressureObservation === "host-compacted" ||
