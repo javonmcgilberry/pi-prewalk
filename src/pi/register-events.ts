@@ -418,9 +418,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			: [...baseline];
 		if (JSON.stringify(next) !== JSON.stringify(pi.getActiveTools())) pi.setActiveTools(next);
 	};
-	const correlationIdentity = (): HostRunIdentity | undefined => {
-		return identityOf(application.run);
-	};
 	const assertCurrentToolExecution = (
 		toolCallId: string,
 		ctx: ExtensionContext | undefined,
@@ -428,7 +425,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): void => {
 		const correlation = hostCorrelation.observe(
 			{ type: "tool", toolCallId },
-			correlationIdentity(),
+			identityOf(application.run),
 		);
 		if (correlation.decision !== "ignore") return;
 		if (retryPlanning && ctx) {
@@ -1453,7 +1450,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("tool_call", (event) => {
 		const correlation = hostCorrelation.observe(
 			{ type: "tool-claim", toolCallId: event.toolCallId },
-			correlationIdentity(),
+			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
 	});
@@ -1461,7 +1458,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("tool_execution_update", (event) => {
 		const correlation = hostCorrelation.observe(
 			{ type: "tool", toolCallId: event.toolCallId },
-			correlationIdentity(),
+			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
 		if (!acceptsMutationEvidence(application.run)) return;
@@ -1469,7 +1466,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", async (event, ctx) => {
-		const correlatedRun = correlationIdentity();
+		const correlatedRun = identityOf(application.run);
 		const correlation = hostCorrelation.observe(
 			{ type: "tool-claim", toolCallId: event.toolCallId },
 			correlatedRun,
@@ -1504,7 +1501,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event, ctx) => {
 		const details = parseBoundaryValue(event.details);
 		const run = application.run;
-		const runIdentity = correlationIdentity();
+		const runIdentity = identityOf(application.run);
 		const correlation = hostCorrelation.observe(
 			{ type: "tool", toolCallId: event.toolCallId },
 			runIdentity,
