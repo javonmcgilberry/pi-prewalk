@@ -183,12 +183,11 @@ export class ContextPressureController {
 		const failureReason = compactionFailureReason(pressure.route);
 		if (!this.#policy.enabled) {
 			this.#pressure = undefined;
-			host.notify(
-				`Prewalk stopped before an oversized ${pressure.route} request because Pi automatic compaction is disabled.`,
-				"error",
-			);
-			host.fail(failureReason, false, identity);
-			return;
+				host.notify(
+					`Prewalk stopped before an oversized ${pressure.route} request because Pi automatic compaction is disabled.`,
+					"error",
+				);
+				return host.fail(failureReason, false, identity);
 		}
 		if (!this.recordRetry(pressure)) return host.fail(failureReason, false, identity);
 		const request: CompactionRequest = { ...pressure, committed: false };
