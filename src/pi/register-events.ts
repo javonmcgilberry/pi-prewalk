@@ -1330,10 +1330,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		const settledRun = application.run;
 		const correlation = hostCorrelation.observe(
 			{ type: "agent-settled" },
-			identityOf(settledRun),
+			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
 		const run = application.run;
