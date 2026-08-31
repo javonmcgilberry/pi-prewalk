@@ -538,10 +538,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			!run ||
 			run.effectiveRoute !== "executor" ||
 			(run.phase !== "active" && run.phase !== "completed")
-		) {
-			ctx.ui.notify("Prewalk release is valid only after the executor handoff.", "error");
-			return;
-		}
+		)
+			return ctx.ui.notify("Prewalk release is valid only after the executor handoff.", "error");
 		const runIdentity = identityOf(run);
 		contextPressure.reset();
 		application.release();
