@@ -335,8 +335,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		return policy;
 	};
 	const deactivatePrewalkTools = (): void => {
-		const capturedSlate = prewalkToolSlate;
-		const baseline = capturedSlate ?? pi.getActiveTools();
+		const baseline = prewalkToolSlate ?? pi.getActiveTools();
 		prewalkToolSlate = undefined;
 		const next = baseline.filter(
 			(name) => name !== PREWALK_TODO_TOOL_NAME && name !== LEGACY_PREWALK_ASSESS_TOOL_NAME,
