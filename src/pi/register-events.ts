@@ -871,27 +871,23 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const identity = agent && runId ? { agent, runId } : undefined;
 		if (!identity) {
 			childDiagnostic = "identity-unavailable";
-			updateStatus(ctx);
-			return;
+			return updateStatus(ctx);
 		}
 		let config: PrewalkConfig;
 		try {
 			config = await readPrewalkConfig();
 		} catch {
 			childDiagnostic = "configuration-invalid";
-			updateStatus(ctx);
-			return;
+			return updateStatus(ctx);
 		}
 		const policy = config.children?.agents[identity.agent];
 		if (policy === undefined || policy === false) {
 			childDiagnostic = policy === false ? "child-disabled" : "agent-not-opted-in";
-			updateStatus(ctx);
-			return;
+			return updateStatus(ctx);
 		}
 		if (!hasRecognizedMutationPath(pi.getActiveTools())) {
 			childDiagnostic = "read-only";
-			updateStatus(ctx);
-			return;
+			return updateStatus(ctx);
 		}
 		const targetExecutor = policy === true ? config.executor : policy.executor;
 		const targetModel = ctx.modelRegistry.find(targetExecutor.provider, targetExecutor.model);
@@ -906,8 +902,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			)
 		) {
 			childDiagnostic = "equal-target";
-			updateStatus(ctx);
-			return;
+			return updateStatus(ctx);
 		}
 		childDiagnostic = undefined;
 		// A child runs the executor its own agent entry names. Session-level
