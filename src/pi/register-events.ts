@@ -482,9 +482,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		clearPlanningRetry();
 		planningRecoveryAttempts = 0;
 	};
-	const resetContextPressureState = (): void => {
-		contextPressure.reset();
-	};
 	type DelegationInvocation = {
 		toolCallId: string;
 		rootSessionId: string;
@@ -538,7 +535,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const failedIdentity = identityOf(failedRun);
 		resetPlanningRecovery();
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
-		resetContextPressureState();
+		contextPressure.reset();
 		if (!application.run) {
 			if (!ctx.model) {
 				ctx.ui.notify(failureNotice(reasonCode), "error");
@@ -581,7 +578,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const runIdentity = identityOf(run);
 		resetPlanningRecovery();
 		hostCorrelation.discardPendingForRun(runIdentity);
-		resetContextPressureState();
+		contextPressure.reset();
 		ctx.abort();
 		application.cancel(selectedModelIsPlanner);
 		turnGate.resetMutationEvidence();
@@ -604,7 +601,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		const runIdentity = identityOf(run);
-		resetContextPressureState();
+		contextPressure.reset();
 		application.release();
 		audit("manual-release", ctx);
 		await getRuntimeController(ctx).restore(runIdentity);
@@ -1039,7 +1036,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
-		resetContextPressureState();
+		contextPressure.reset();
 		await getRuntimeController(ctx).restore();
 		retainedCancelledRun = undefined;
 		refreshContextCompactionPolicy(ctx);
@@ -1210,7 +1207,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		resetContextPressureState();
+		contextPressure.reset();
 		activeSessionId = undefined;
 		delegation = undefined;
 		const run = application.run;
