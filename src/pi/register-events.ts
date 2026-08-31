@@ -1111,9 +1111,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		) {
 			try {
 				const config = await readPrewalkConfig();
-				if (config.enabled) {
+				if (config.enabled)
 					await startRun("automatic", ctx, false, config, undefined, true);
-				}
 			} catch {
 				// Missing or invalid configuration keeps the safe manual default. The
 				// normal run command reports the actionable configuration error.
