@@ -75,11 +75,7 @@ function pressureEligibleRun(run: PrewalkRun | undefined, route: PressureRoute):
 }
 
 function activeExecutorRun(run: PrewalkRun | undefined): boolean {
-	return (
-		run !== undefined &&
-		run.effectiveRoute === "executor" &&
-		(run.phase === "active" || run.phase === "completed")
-	);
+	return pressureEligibleRun(run, "executor");
 }
 
 /** Owns all mutable planner/executor pressure and compaction transaction state. */
