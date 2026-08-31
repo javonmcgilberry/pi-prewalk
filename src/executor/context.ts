@@ -131,7 +131,5 @@ function ceilTokens(characters: number): number {
 function safeJson(value: BoundaryValue): string {
 	try {
 		return JSON.stringify(value) ?? "undefined";
-	} catch {
-		return "[unserializable]";
-	}
+	} catch { return "[unserializable]"; }
 }
