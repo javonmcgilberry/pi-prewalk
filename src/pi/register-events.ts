@@ -1204,9 +1204,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			planningRetryStarted &&
 			planningRetry !== undefined &&
 			sameRunIdentity(planningRetry, application.run)
-		) {
+		)
 			clearPlanningRetry();
-		}
 		queuePlanningRetry(
 			ctx,
 			"next-turn",
