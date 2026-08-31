@@ -348,8 +348,7 @@ export class ContextPressureController {
 		willRetry: boolean,
 	): void {
 		this.#checklistRun = undefined;
-		if (sameIdentity(this.#pending, run)) return;
-		if (!run || willRetry) return;
+		if (sameIdentity(this.#pending, run) || !run || willRetry) return;
 		const pressure = this.#pressure;
 		if (pressure === undefined || !sameIdentity(pressure, run)) return;
 		this.#pressure = undefined;
