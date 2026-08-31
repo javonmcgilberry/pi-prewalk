@@ -295,8 +295,7 @@ export class ContextPressureController {
 				const identity = { runId: run.id, epoch: run.epoch };
 				if (!this.recordRetry(pressure)) {
 					this.#checklistRun = undefined;
-					host.fail(compactionFailureReason(pressure.route), false, identity);
-					return;
+					return host.fail(compactionFailureReason(pressure.route), false, identity);
 				}
 				this.#hostCompaction = pressure;
 				if (pressure.retry && !willRetry) {
