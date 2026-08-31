@@ -191,16 +191,6 @@ function sameCapturedRun(
 	return identity === undefined ? run === undefined : sameRunIdentity(identity, run);
 }
 
-function lastAssistantMessage(
-	messages: readonly AgentMessage[],
-): Extract<AgentMessage, { role: "assistant" }> | undefined {
-	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index];
-		if (message?.role === "assistant") return message;
-	}
-	return undefined;
-}
-
 function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined): boolean {
 	if (message.role !== "custom" || !PROMPT_TYPES.has(message.customType)) return true;
 	if (!isRecord(message.details)) return false;
@@ -1238,7 +1228,14 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
-		const lastAssistant = lastAssistantMessage(event.messages);
+		let lastAssistant: Extract<AgentMessage, { role: "assistant" }> | undefined;
+		for (let index = event.messages.length - 1; index >= 0; index -= 1) {
+			const message = event.messages[index];
+			if (message?.role === "assistant") {
+				lastAssistant = message;
+				break;
+			}
+		}
 		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
 		if (
 			planningRetryStarted &&
