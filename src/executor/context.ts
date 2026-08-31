@@ -56,8 +56,7 @@ export function estimateRequestTokens(context: Context): number {
 	const usageIndex = lastApplicableAssistantUsageIndex(context.messages);
 	if (usageIndex === null)
 		return estimateWholeRequest(context) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
-	const usageMessage = context.messages[usageIndex] as AssistantMessage;
-	let tokens = usageTokens(usageMessage);
+	let tokens = usageTokens(context.messages[usageIndex] as AssistantMessage);
 	for (let index = usageIndex + 1; index < context.messages.length; index++) {
 		tokens += estimateMessage(context.messages[index]);
 	}
