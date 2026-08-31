@@ -136,13 +136,6 @@ function loadPrompts(): PromptSet {
 	};
 }
 
-function childIdentity(): { agent: string; runId: string } | undefined {
-	if (process.env.PI_SUBAGENT_CHILD !== "1") return undefined;
-	const agent = process.env.PI_SUBAGENT_CHILD_AGENT?.trim();
-	const runId = process.env.PI_SUBAGENT_RUN_ID?.trim();
-	return agent && runId ? { agent, runId } : undefined;
-}
-
 const prompts = loadPrompts();
 
 function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
@@ -914,7 +907,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	const startChildPrewalkRun = async (ctx: ExtensionContext): Promise<void> => {
 		if (process.env.PI_SUBAGENT_CHILD !== "1") return;
-		const identity = childIdentity();
+		const agent = process.env.PI_SUBAGENT_CHILD_AGENT?.trim();
+		const runId = process.env.PI_SUBAGENT_RUN_ID?.trim();
+		const identity = agent && runId ? { agent, runId } : undefined;
 		if (!identity) {
 			childDiagnostic = "identity-unavailable";
 			updateStatus(ctx);
