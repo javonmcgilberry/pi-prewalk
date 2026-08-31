@@ -194,7 +194,7 @@ function identityOf(run: PrewalkRun | undefined): HostRunIdentity | undefined {
 function sameRunIdentity(
 	identity: HostRunIdentity | undefined,
 	run: PrewalkRun | undefined,
-): boolean {
+): run is PrewalkRun {
 	return (
 		identity !== undefined &&
 		run !== undefined &&
@@ -1604,12 +1604,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			event.message.role === "assistant" &&
 			!contextPressure.hasRetryPressure(run)
 		) {
-			const executor =
-				currentRun &&
-				ctx.modelRegistry.find(
-					currentRun.config.executor.provider,
-					currentRun.config.executor.model,
-				);
+			const executor = ctx.modelRegistry.find(
+				currentRun.config.executor.provider,
+				currentRun.config.executor.model,
+			);
 			const usage = ctx.getContextUsage();
 			if (currentRun && executor && usage?.tokens !== null && usage?.tokens !== undefined) {
 				contextPressure.observeContextUsage(
