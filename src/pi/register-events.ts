@@ -229,18 +229,6 @@ function isEphemeralPrewalkPrompt(message: AgentMessage): boolean {
 	);
 }
 
-function estimateContextEventTokens(messages: readonly AgentMessage[]): number {
-	try {
-		return estimateRequestTokens({
-			systemPrompt: "",
-			messages: convertToLlm([...messages]),
-			tools: [],
-		});
-	} catch {
-		return Number.POSITIVE_INFINITY;
-	}
-}
-
 function delegatedAgent(value: BoundaryValue): string {
 	if (!isRecord(value)) return "subagent";
 	const raw = isString(value.agent) ? value.agent.trim() : "";
@@ -1603,7 +1591,16 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("context", (event, ctx) => {
 		const run = application.run;
 		if (run && ctx.model) {
-			const tokens = estimateContextEventTokens(event.messages);
+			let tokens: number;
+			try {
+				tokens = estimateRequestTokens({
+					systemPrompt: "",
+					messages: convertToLlm([...event.messages]),
+					tools: [],
+				});
+			} catch {
+				tokens = Number.POSITIVE_INFINITY;
+			}
 			const pressure =
 				tokens > Math.max(0, ctx.model.contextWindow - contextPressure.reserveTokens());
 			const identity = identityOf(run);
