@@ -313,11 +313,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let lastOutcome: "bypassed" | "completed" | "failed" | "released" | undefined;
 	let runtimeController: TemporaryModelController | undefined;
 	const getRuntimeController = (ctx: ExtensionContext): TemporaryModelController => {
-		if (!runtimeController) {
-			runtimeController = new TemporaryModelController(() =>
-				createTemporaryModelRuntime(pi, ctx.modelRegistry),
-			);
-		}
+		runtimeController ??= new TemporaryModelController(() =>
+			createTemporaryModelRuntime(pi, ctx.modelRegistry),
+		);
 		return runtimeController;
 	};
 	let prewalkToolSlate: string[] | undefined;
