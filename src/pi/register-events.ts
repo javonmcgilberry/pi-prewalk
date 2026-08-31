@@ -1645,10 +1645,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		)
 			return;
 		const run = application.run;
-		if (!run) {
-			if (retainedCancelledRun) updateStatus(ctx);
-			return;
-		}
+		if (!run && retainedCancelledRun) updateStatus(ctx);
+		if (!run) return;
 		if (run.phase === "cancelled") return updateStatus(ctx);
 		const runIdentity = identityOf(run);
 		await cancel(isPlannerSelected(event.model, run.planner), ctx);
