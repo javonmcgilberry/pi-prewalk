@@ -369,13 +369,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision !== "ignore") return;
-		if (retryPlanning && ctx) {
+		if (retryPlanning && ctx)
 			queuePlanningRetry(
 				ctx,
 				"next-turn",
 				"Prewalk rejected a stale planning tool call; the preserved planning checkpoint was queued for recovery.",
 			);
-		}
 		throw new Error("Prewalk tool execution is stale.");
 	};
 	const analytics = new PrewalkAnalytics(getAgentDir());
