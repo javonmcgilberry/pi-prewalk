@@ -54,7 +54,8 @@ export function needsContextCompaction(
 export function estimateRequestTokens(context: Context): number {
 	const messages = context.messages;
 	const usageIndex = lastApplicableAssistantUsageIndex(messages);
-	if (usageIndex === null) return addSafetyMargin(estimateWholeRequest(context));
+	if (usageIndex === null)
+		return estimateWholeRequest(context) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
 	const usageMessage = messages[usageIndex] as AssistantMessage;
 	let tokens = usageTokens(usageMessage);
 	for (let index = usageIndex + 1; index < messages.length; index++) {
@@ -63,11 +64,7 @@ export function estimateRequestTokens(context: Context): number {
 	// The usage-bearing response may have been produced before the current
 	// system prompt or tool schemas changed. Keep the conservative whole-request
 	// estimate when it is larger rather than trusting stale prefix accounting.
-	return addSafetyMargin(Math.max(tokens, estimateWholeRequest(context)));
-}
-
-function addSafetyMargin(tokens: number): number {
-	return tokens + CONTEXT_ESTIMATE_SAFETY_MARGIN;
+	return Math.max(tokens, estimateWholeRequest(context)) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
 }
 
 function estimateWholeRequest(context: Context): number {
