@@ -1350,10 +1350,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (
 			run.effectiveRoute === "executor" &&
 			(run.phase === "active" || run.phase === "completed")
-		) {
-			updateStatus(ctx);
-			return;
-		}
+		)
+			return updateStatus(ctx);
 		const action = application.requestContinuation(turnGate.hasActionableTodo());
 		if (action.type === "send-continuation") {
 			await sendPrompt(PREWALK_CONTINUE_MESSAGE_TYPE, ctx, true);
