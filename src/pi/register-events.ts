@@ -627,7 +627,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): Promise<ExecutorChainResolution> =>
 		resolveConfiguredExecutor(plannerProfile, config, ctx.model, ctx.modelRegistry);
 
-	type PrewalkPrompt = { content: string; event: AuditEventKind };
 	const sendPrompt = async (
 		type:
 			| typeof PREWALK_PLAN_MESSAGE_TYPE
@@ -639,7 +638,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const run = application.run;
 		if (!run) return;
-		let prompt: PrewalkPrompt;
+		let prompt: { content: string; event: AuditEventKind };
 		switch (type) {
 			case PREWALK_PLAN_MESSAGE_TYPE:
 				prompt = { content: prompts.plan, event: "plan-injected" };
