@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model as PiModel } from "@earendil-works/pi-ai";
+import { modelsAreEqual, type Api, type Model as PiModel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { ExecutorConfig, PlannerProfile } from "../orchestration/coordinator.js";
@@ -44,10 +44,6 @@ type RuntimePi = {
 	getThinkingLevel(): ThinkingLevel;
 	setThinkingLevel(level: ThinkingLevel): void;
 };
-
-function sameModel(left: PiModel<Api>, right: PiModel<Api>): boolean {
-	return left.provider === right.provider && left.id === right.id;
-}
 
 function sameIdentity(left: HostRunIdentity | undefined, right: HostRunIdentity): boolean {
 	return left !== undefined && left.runId === right.runId && left.epoch === right.epoch;
@@ -131,7 +127,7 @@ class NativeTemporaryModelLease implements TemporaryModelLease {
 			if (!duringRestore) this.callbacks.onProviderDrift();
 			throw new Error(`Prewalk ${route} model is no longer registered.`);
 		}
-		if (route !== this.route || !sameModel(target, this.modelFor(this.route) ?? target)) {
+		if (route !== this.route || !modelsAreEqual(target, this.modelFor(this.route))) {
 			this.pendingModel = target;
 			try {
 				const selected = await this.pi.setModel(target);
@@ -182,7 +178,7 @@ class NativeTemporaryModelLease implements TemporaryModelLease {
 
 	consumeInternalModelSelect(model: PiModel<Api>, source: "set" | "cycle" | "restore"): boolean {
 		return (
-			source === "set" && this.pendingModel !== undefined && sameModel(this.pendingModel, model)
+			source === "set" && this.pendingModel !== undefined && modelsAreEqual(this.pendingModel, model)
 		);
 	}
 
