@@ -53,10 +53,6 @@ function sameValue(left: HostRunIdentity | undefined, right: HostRunIdentity): b
 	return left !== undefined && left.runId === right.runId && left.epoch === right.epoch;
 }
 
-function samePressure(left: RetryState | undefined, right: PressureState): boolean {
-	return sameValue(left, right) && left?.route === right.route;
-}
-
 function compactionFailureReason(route: PressureRoute): string {
 	return route === "planner" ? "planner-compaction-failed" : "executor-compaction-failed";
 }
@@ -286,7 +282,7 @@ export class ContextPressureController {
 	private recordRetry(pressure: PressureState): boolean {
 		if (!pressure.retry) return true;
 		const previous = this.#retry;
-		const repeated = previous !== undefined && samePressure(previous, pressure);
+		const repeated = sameValue(previous, pressure) && previous?.route === pressure.route;
 		if (repeated && previous.count >= 1) return false;
 		this.#retry = {
 			runId: pressure.runId,
