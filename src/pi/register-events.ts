@@ -1319,13 +1319,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			}
 		}
 		if (!analytics.hasStateFor(run)) return;
-		const role = analytics.usageRole(run, event.message.provider, event.message.model);
 		await analytics.recordUsage(
 			"assistant",
 			`message:${event.message.timestamp}:${event.message.provider}:${event.message.model}`,
 			event.message.provider,
 			event.message.model,
-			role,
+			analytics.usageRole(run, event.message.provider, event.message.model),
 			event.message.usage,
 			run,
 		);
