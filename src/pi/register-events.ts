@@ -950,15 +950,13 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		updateStatus,
 		onCancel: async (ctx) => {
 			updateStatus(ctx);
-			if (application.run) {
-				const cancelledRun = identityOf(application.run);
-				await cancel(true, ctx);
-				if (sameRunIdentity(cancelledRun, application.run)) {
-					deactivatePrewalkTools();
-					retainedCancelledRun = application.run;
-					application.reset();
-				}
-			}
+			if (!application.run) return;
+			const cancelledRun = identityOf(application.run);
+			await cancel(true, ctx);
+			if (!sameRunIdentity(cancelledRun, application.run)) return;
+			deactivatePrewalkTools();
+			retainedCancelledRun = application.run;
+			application.reset();
 		},
 		onRelease: release,
 		startManual: async (ctx) => {
