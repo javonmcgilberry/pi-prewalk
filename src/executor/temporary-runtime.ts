@@ -64,9 +64,7 @@ class StockPiTemporaryModelRuntime implements TemporaryModelRuntime {
 	) {}
 
 	mount(plan: TemporaryModelPlan, callbacks: TemporaryModelCallbacks): TemporaryModelLease {
-		if (this.activeLease) {
-			throw new Error("Prewalk temporary model runtime is already mounted.");
-		}
+		if (this.activeLease) throw new Error("Prewalk temporary model runtime is already mounted.");
 		const lease = new NativeTemporaryModelLease(
 			this,
 			plan.runId,
