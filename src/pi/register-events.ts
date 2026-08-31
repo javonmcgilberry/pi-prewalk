@@ -376,7 +376,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 		return runtimeController;
 	};
-	let primaryAgentStream = false;
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
@@ -585,7 +584,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		resetContextPressureState();
 		ctx.abort();
 		application.cancel(selectedModelIsPlanner);
-		primaryAgentStream = false;
 		turnGate.resetMutationEvidence();
 		audit("cancelled", ctx);
 		await getRuntimeController(ctx).restore(runIdentity, selectedModelIsPlanner);
@@ -1046,7 +1044,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		retainedCancelledRun = undefined;
 		refreshContextCompactionPolicy(ctx);
 		activeSessionId = ctx.sessionManager.getSessionId();
-		primaryAgentStream = false;
 		hostCorrelation.resetSession();
 		delegation = undefined;
 		delegationInvocations.length = 0;
@@ -1215,7 +1212,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (event, ctx) => {
 		resetContextPressureState();
 		activeSessionId = undefined;
-		primaryAgentStream = false;
 		delegation = undefined;
 		const run = application.run;
 		await getRuntimeController(ctx).restore();
@@ -1267,7 +1263,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
 		refreshContextCompactionPolicy(ctx);
-		primaryAgentStream = true;
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -1288,7 +1283,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
-		primaryAgentStream = false;
 		const lastAssistant = lastAssistantMessage(event.messages);
 		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
 		if (
@@ -1389,12 +1383,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(settledRun),
 		);
 		if (correlation.decision === "ignore") return;
-		primaryAgentStream = false;
 		const run = application.run;
 		if (!run) return;
 		const runIdentity = identityOf(run);
 		if (run.phase === "cancelled") {
-			primaryAgentStream = false;
 			return;
 		}
 		refreshContextCompactionPolicy(ctx);
@@ -1643,7 +1635,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("context", (event, ctx) => {
 		const run = application.run;
-		if (run && primaryAgentStream && ctx.model) {
+		if (run && ctx.model) {
 			const tokens = estimateContextEventTokens(event.messages);
 			const pressure =
 				tokens > Math.max(0, ctx.model.contextWindow - contextPressure.reserveTokens());
