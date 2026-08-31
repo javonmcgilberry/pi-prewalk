@@ -1,4 +1,5 @@
-import type { Api, AssistantMessage, Context, Message, Model, Usage } from "@earendil-works/pi-ai";
+import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
+import type { Api, AssistantMessage, Context, Message, Model } from "@earendil-works/pi-ai";
 import { type BoundaryValue, isString } from "../guards.js";
 
 /** Stock Pi's default reserveTokens value (see core/compaction/compaction.ts). */
@@ -97,9 +98,7 @@ function lastApplicableAssistantUsageIndex(messages: readonly Message[]): number
 }
 
 function usageTokens(message: AssistantMessage): number {
-	const usage: Usage = message.usage;
-	const total =
-		usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const total = calculateContextTokens(message.usage);
 	return Number.isFinite(total) && total > 0 ? total : 0;
 }
 
