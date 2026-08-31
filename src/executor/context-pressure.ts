@@ -17,7 +17,7 @@ export const DEFAULT_CONTEXT_COMPACTION_POLICY: ContextCompactionPolicy = {
 type PressureRoute = "planner" | "executor";
 type PressureState = HostRunIdentity & { route: PressureRoute; retry: boolean };
 type RetryState = HostRunIdentity & { route: PressureRoute; count: number };
-type CompactionRequest = PressureState;
+type CompactionRequest = PressureState & { committed: boolean };
 
 type CompactCallbacks = {
 	onComplete: () => void;
@@ -79,7 +79,6 @@ export class ContextPressureController {
 	#pressure: PressureState | undefined;
 	#hostCompaction: PressureState | undefined;
 	#pending: CompactionRequest | undefined;
-	#committed: CompactionRequest | undefined;
 	#retry: RetryState | undefined;
 	#pendingFailure: HostRunIdentity | undefined;
 	#checklistRun: HostRunIdentity | undefined;
@@ -96,7 +95,6 @@ export class ContextPressureController {
 		this.#pressure = undefined;
 		this.#hostCompaction = undefined;
 		this.#pending = undefined;
-		this.#committed = undefined;
 		this.#retry = undefined;
 		this.#pendingFailure = undefined;
 		this.#checklistRun = undefined;
@@ -216,9 +214,8 @@ export class ContextPressureController {
 			host.fail(failureReason, false, identity);
 			return;
 		}
-		const request: CompactionRequest = { ...pressure };
+		const request: CompactionRequest = { ...pressure, committed: false };
 		this.#pending = request;
-		this.#committed = undefined;
 		const resume = (): void => {
 			const resumed =
 				request.route === "planner"
@@ -240,7 +237,7 @@ export class ContextPressureController {
 					if (request.retry) resume();
 				},
 				onError: (error) => {
-					const committed = this.#committed === request;
+					const committed = request.committed;
 					if (!this.clearRequest(request)) return;
 					if (committed) {
 						const current = host.currentRun();
@@ -274,7 +271,6 @@ export class ContextPressureController {
 	private clearRequest(request: CompactionRequest): boolean {
 		if (this.#pending !== request) return false;
 		this.#pending = undefined;
-		this.#committed = undefined;
 		this.#pressure = undefined;
 		return true;
 	}
@@ -312,8 +308,8 @@ export class ContextPressureController {
 		host: ContextPressureHost,
 		willRetry = false,
 	): Promise<void> {
-		if (sameIdentity(this.#pending, run)) {
-			this.#committed = this.#pending;
+		if (this.#pending !== undefined && sameIdentity(this.#pending, run)) {
+			this.#pending.committed = true;
 		} else {
 			const pressure = this.#pressure;
 			if (run && pressure !== undefined && sameIdentity(pressure, run)) {
