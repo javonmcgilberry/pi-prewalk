@@ -377,7 +377,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		return runtimeController;
 	};
 	let primaryAgentStream = false;
-	let executorStreamStarted: HostRunIdentity | undefined;
 	let prewalkToolSlate: string[] | undefined;
 	let lastAuditKey: string | undefined;
 	let lastStatus: string | undefined;
@@ -541,7 +540,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		resetPlanningRecovery();
 		if (failedIdentity !== undefined) hostCorrelation.discardPendingForRun(failedIdentity);
 		resetContextPressureState();
-		executorStreamStarted = undefined;
 		if (!application.run) {
 			if (!ctx.model) {
 				ctx.ui.notify(failureNotice(reasonCode), "error");
@@ -588,7 +586,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		ctx.abort();
 		application.cancel(selectedModelIsPlanner);
 		primaryAgentStream = false;
-		executorStreamStarted = undefined;
 		turnGate.resetMutationEvidence();
 		audit("cancelled", ctx);
 		await getRuntimeController(ctx).restore(runIdentity, selectedModelIsPlanner);
@@ -611,7 +608,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const runIdentity = identityOf(run);
 		resetContextPressureState();
 		application.release();
-		executorStreamStarted = undefined;
 		audit("manual-release", ctx);
 		await getRuntimeController(ctx).restore(runIdentity);
 		await analytics.finalize("released", run).catch(() => {
@@ -1046,7 +1042,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		resetContextPressureState();
-		executorStreamStarted = undefined;
 		await getRuntimeController(ctx).restore();
 		retainedCancelledRun = undefined;
 		refreshContextCompactionPolicy(ctx);
@@ -1219,7 +1214,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		resetContextPressureState();
-		executorStreamStarted = undefined;
 		activeSessionId = undefined;
 		primaryAgentStream = false;
 		delegation = undefined;
@@ -1296,20 +1290,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (correlation.decision === "ignore") return;
 		primaryAgentStream = false;
 		const lastAssistant = lastAssistantMessage(event.messages);
-		const run = application.run;
-		const identity = identityOf(run);
-		if (
-			run &&
-			identity &&
-			lastAssistant?.role === "assistant" &&
-			lastAssistant.provider === run.config.executor.provider &&
-			lastAssistant.model === run.config.executor.model &&
-			lastAssistant.stopReason === "error"
-		) {
-			contextPressure.onExecutorStreamFailed(identity);
-			executorStreamStarted = undefined;
-			return;
-		}
 		if (lastAssistant?.role !== "assistant" || lastAssistant.stopReason !== "aborted") return;
 		if (
 			planningRetryStarted &&
@@ -1345,7 +1325,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		) {
 			try {
 				contextPressure.onExecutorStreamStarted(identity);
-				executorStreamStarted = identity;
 				if (run.phase === "handoff-pending") {
 					application.activateExecutor();
 					audit("executor-active", ctx);
@@ -1378,10 +1357,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (isExecutorMessage && identity !== undefined) {
 			if (event.message.stopReason === "error") {
 				contextPressure.onExecutorStreamFailed(identity);
-				executorStreamStarted = undefined;
-			} else if (executorStreamStarted && sameRunIdentity(executorStreamStarted, run)) {
+			} else {
 				contextPressure.onExecutorStreamSucceeded(identity);
-				executorStreamStarted = undefined;
 				if (run.phase === "active") {
 					try {
 						application.completeHandoff();
