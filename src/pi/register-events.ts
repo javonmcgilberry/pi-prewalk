@@ -743,9 +743,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			if (compactionState === "enabled") throw new Error("native-compaction-unsupported");
 			activatePlanningTools(undefined, requireTodo);
 			if (!ctx.model) throw new Error("model-unavailable");
-			if (!hasRecognizedMutationPath(pi.getActiveTools())) {
+			if (!hasRecognizedMutationPath(pi.getActiveTools()))
 				throw new Error(MUTATION_TOOLS_UNAVAILABLE_REASON);
-			}
 			const planner: PlannerProfile = {
 				provider: ctx.model.provider,
 				model: ctx.model.id,
