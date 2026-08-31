@@ -46,12 +46,7 @@ export type SettlementObservation =
 	| "none";
 
 function sameIdentity(identity: HostRunIdentity | undefined, run: PrewalkRun | undefined): boolean {
-	return (
-		identity !== undefined &&
-		run !== undefined &&
-		identity.runId === run.id &&
-		identity.epoch === run.epoch
-	);
+	return run !== undefined && sameValue(identity, { runId: run.id, epoch: run.epoch });
 }
 
 function sameValue(left: HostRunIdentity | undefined, right: HostRunIdentity): boolean {
