@@ -820,9 +820,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			}
 			turnGate.resetMutationEvidence();
 			audit("armed", ctx);
-			if (action.type === "send-planning") {
+			if (action.type === "send-planning")
 				await sendPrompt(PREWALK_PLAN_MESSAGE_TYPE, ctx, triggerTurn);
-			}
 			return "armed";
 		} catch (error) {
 			const currentRun = application.run;
