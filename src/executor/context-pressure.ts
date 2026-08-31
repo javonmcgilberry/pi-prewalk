@@ -198,9 +198,8 @@ export class ContextPressureController {
 					? host.sendRetryPlanning(identity)
 					: host.sendRetryChecklist(identity);
 			void resumed.catch(() => {
-				if (sameIdentity(identity, host.currentRun())) {
+				if (sameIdentity(identity, host.currentRun()))
 					host.fail(failureReason, false, identity);
-				}
 			});
 		};
 		try {
