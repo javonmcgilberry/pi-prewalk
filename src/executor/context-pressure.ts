@@ -101,14 +101,13 @@ export class ContextPressureController {
 	}
 
 	onExecutorStreamStarted(identity: HostRunIdentity): void {
-		if (sameValue(this.#pendingFailure ?? undefined, identity)) this.#pendingFailure = undefined;
+		if (sameValue(this.#pendingFailure, identity)) this.#pendingFailure = undefined;
 	}
 
 	onExecutorStreamSucceeded(identity: HostRunIdentity): void {
-		if (sameValue(this.#pendingFailure ?? undefined, identity)) this.#pendingFailure = undefined;
-		if (sameValue(this.#retry ?? undefined, identity) && this.#retry?.route === "executor") {
+		this.onExecutorStreamStarted(identity);
+		if (sameValue(this.#retry, identity) && this.#retry?.route === "executor")
 			this.#retry = undefined;
-		}
 	}
 
 	onExecutorStreamFailed(identity: HostRunIdentity): void {
@@ -121,9 +120,8 @@ export class ContextPressureController {
 	}
 
 	onPlannerContextSafe(identity: HostRunIdentity): void {
-		if (sameValue(this.#retry ?? undefined, identity) && this.#retry?.route === "planner") {
+		if (sameValue(this.#retry, identity) && this.#retry?.route === "planner")
 			this.#retry = undefined;
-		}
 	}
 
 	onExecutorContextPressure(identity: HostRunIdentity, retry: boolean): void {
