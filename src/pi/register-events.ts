@@ -656,11 +656,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	};
 
 	const plannerCanRecover = (run: PrewalkRun | undefined): run is PrewalkRun =>
-		Boolean(
-			run &&
-				run.effectiveRoute === "planner" &&
-				(run.phase === "planning" || run.phase === "ready"),
-		);
+		run?.effectiveRoute === "planner" && (run.phase === "planning" || run.phase === "ready");
 	const planningNeedsCheckpoint = (run: PrewalkRun | undefined): boolean =>
 		Boolean(plannerCanRecover(run) && run?.todoActive && !run.todoSeen);
 
