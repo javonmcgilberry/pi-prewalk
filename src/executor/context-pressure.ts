@@ -61,7 +61,10 @@ function compactionFailureReason(route: PressureRoute): string {
 	return route === "planner" ? "planner-compaction-failed" : "executor-compaction-failed";
 }
 
-function pressureEligibleRun(run: PrewalkRun | undefined, route: PressureRoute): boolean {
+function pressureEligibleRun(
+	run: PrewalkRun | undefined,
+	route: PressureRoute,
+): run is PrewalkRun {
 	if (!run) return false;
 	if (route === "planner") {
 		return (
@@ -72,10 +75,6 @@ function pressureEligibleRun(run: PrewalkRun | undefined, route: PressureRoute):
 		run.phase === "handoff-pending" ||
 		(run.effectiveRoute === "executor" && (run.phase === "active" || run.phase === "completed"))
 	);
-}
-
-function activeExecutorRun(run: PrewalkRun | undefined): boolean {
-	return pressureEligibleRun(run, "executor");
 }
 
 /** Owns all mutable planner/executor pressure and compaction transaction state. */
@@ -164,7 +163,7 @@ export class ContextPressureController {
 		messageModel: string,
 		stopReason: string,
 	): void {
-		if (!activeExecutorRun(run)) return;
+		if (!pressureEligibleRun(run, "executor")) return;
 		if (
 			messageProvider !== run.config.executor.provider ||
 			messageModel !== run.config.executor.model
@@ -305,7 +304,7 @@ export class ContextPressureController {
 	): void {
 		this.#checklistRun =
 			this.#pending === undefined &&
-			activeExecutorRun(run) &&
+			pressureEligibleRun(run, "executor") &&
 			run !== undefined &&
 			compactedMessages.some((message) => isChecklistForRun(message, run.id))
 				? { runId: run.id, epoch: run.epoch }
@@ -343,7 +342,7 @@ export class ContextPressureController {
 				}
 			}
 		}
-		if (run && !willRetry && sameIdentity(this.#checklistRun, run) && activeExecutorRun(run)) {
+		if (!willRetry && sameIdentity(this.#checklistRun, run) && pressureEligibleRun(run, "executor")) {
 			await host.sendRetryChecklist({ runId: run.id, epoch: run.epoch });
 		}
 		this.#checklistRun = undefined;
