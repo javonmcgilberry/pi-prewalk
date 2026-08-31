@@ -316,11 +316,7 @@ export class ContextPressureController {
 		host: ContextPressureHost,
 		willRetry = false,
 	): Promise<void> {
-		if (
-			run &&
-			this.#pending !== undefined &&
-			sameValue(this.#pending, { runId: run.id, epoch: run.epoch })
-		) {
+		if (sameIdentity(this.#pending, run)) {
 			this.#committed = this.#pending;
 		} else {
 			const pressure = this.#pressure;
@@ -360,11 +356,7 @@ export class ContextPressureController {
 		host: ContextPressureHost,
 		willRetry: boolean,
 	): void {
-		if (
-			run &&
-			this.#pending !== undefined &&
-			sameValue(this.#pending, { runId: run.id, epoch: run.epoch })
-		) {
+		if (sameIdentity(this.#pending, run)) {
 			this.#checklistRun = undefined;
 			return;
 		}
