@@ -177,9 +177,7 @@ class NativeTemporaryModelLease implements TemporaryModelLease {
 	}
 
 	consumeInternalModelSelect(model: PiModel<Api>, source: "set" | "cycle" | "restore"): boolean {
-		return (
-			source === "set" && this.pendingModel !== undefined && modelsAreEqual(this.pendingModel, model)
-		);
+		return source === "set" && modelsAreEqual(this.pendingModel, model);
 	}
 
 	consumeInternalThinkingLevel(_level: ThinkingLevel): boolean {
