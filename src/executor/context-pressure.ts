@@ -162,14 +162,13 @@ export class ContextPressureController {
 		) {
 			return;
 		}
-		if (needsContextCompaction(usageTokens, executor, this.#policy.reserveTokens)) {
-			this.#pressure = {
-				runId: run.id,
-				epoch: run.epoch,
-				route: "executor",
-				retry: stopReason !== "stop",
-			};
-		}
+		if (!needsContextCompaction(usageTokens, executor, this.#policy.reserveTokens)) return;
+		this.#pressure = {
+			runId: run.id,
+			epoch: run.epoch,
+			route: "executor",
+			retry: stopReason !== "stop",
+		};
 	}
 
 	/** Handles the settled boundary after a guarded stream. */
