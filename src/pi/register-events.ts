@@ -1299,11 +1299,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		)
 			return;
 		const identity = identityOf(run);
-		const isExecutorMessage =
-			identity !== undefined &&
+		if (
 			event.message.provider === run.config.executor.provider &&
-			event.message.model === run.config.executor.model;
-		if (isExecutorMessage && identity !== undefined) {
+			event.message.model === run.config.executor.model
+		) {
 			if (event.message.stopReason === "error") {
 				contextPressure.onExecutorStreamFailed(identity);
 			} else {
