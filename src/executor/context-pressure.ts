@@ -17,8 +17,6 @@ type PressureState = HostRunIdentity & { route: PressureRoute; retry: boolean };
 type RetryState = HostRunIdentity & { route: PressureRoute; count: number };
 type CompactionRequest = PressureState & { committed: boolean };
 
-type CompactCallbacks = Required<Pick<CompactOptions, "onComplete" | "onError">>;
-
 /**
  * Host capabilities used by the primary-route pressure transaction. The adapter
  * supplies Pi's compactor and notices; this module owns the ordering between
@@ -26,7 +24,7 @@ type CompactCallbacks = Required<Pick<CompactOptions, "onComplete" | "onError">>
  */
 export interface ContextPressureHost {
 	currentRun(): PrewalkRun | undefined;
-	compact(callbacks: CompactCallbacks): void;
+	compact(callbacks: Required<Pick<CompactOptions, "onComplete" | "onError">>): void;
 	notify(message: string, level: "error" | "warning"): void;
 	fail(reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity): void;
 	sendRetryPlanning(expected: HostRunIdentity): Promise<void>;
