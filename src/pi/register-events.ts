@@ -735,15 +735,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				(expectedCurrent === undefined ||
 					expectedCurrent.phase === "cancelled" ||
 					expectedCurrent.phase === "failed")
-			) {
+			)
 				hostCorrelation.observe({ type: "idle-boundary" }, undefined);
-			}
 			const config = configOverride ?? (await readPrewalkConfig());
 			const compactionState = nativeResponsesCompactionState();
 			if (compactionState === "invalid") throw new Error("configuration-invalid");
-			if (compactionState === "enabled") {
-				throw new Error("native-compaction-unsupported");
-			}
+			if (compactionState === "enabled") throw new Error("native-compaction-unsupported");
 			activatePlanningTools(undefined, requireTodo);
 			if (!ctx.model) throw new Error("model-unavailable");
 			if (!hasRecognizedMutationPath(pi.getActiveTools())) {
