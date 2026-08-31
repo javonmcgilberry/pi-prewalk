@@ -643,52 +643,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				shouldRouteToExecutor: () =>
 					application.run?.phase === "handoff-pending" ||
 					application.run?.effectiveRoute === "executor",
-				shouldGuardPlannerContext: () =>
-					application.run?.effectiveRoute === "planner" &&
-					(application.run.phase === "planning" || application.run.phase === "ready"),
-				isPrimaryAgentStream: () => primaryAgentStream,
-				getCompactionReserveTokens: () => contextPressure.reserveTokens(),
-				onPlannerContextPressure: () => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onPlannerContextPressure(runIdentity);
-				},
-				onPlannerContextSafe: () => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onPlannerContextSafe(runIdentity);
-				},
-				onExecutorStreamStarted: async () => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onExecutorStreamStarted(runIdentity);
-					if (application.run?.phase !== "handoff-pending") return;
-					try {
-						application.activateExecutor();
-						audit("executor-active", ctx);
-					} catch {
-						fail("provider-drift", false, ctx, runIdentity);
-						await analytics.waitForWrites();
-					}
-				},
-				onExecutorStreamSucceeded: async () => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onExecutorStreamSucceeded(runIdentity);
-					if (application.run?.phase !== "active") return;
-					try {
-						application.completeHandoff();
-						audit("handoff-completed", ctx);
-					} catch {
-						fail("provider-drift", true, ctx, runIdentity);
-						await analytics.waitForWrites();
-					}
-				},
-				onExecutorStreamFailed: async () => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onExecutorStreamFailed(runIdentity);
-					executorStreamStarted = undefined;
-				},
-				onExecutorContextPressure: (retry) => {
-					if (!sameRunIdentity(runIdentity, application.run)) return;
-					contextPressure.onExecutorContextPressure(runIdentity, retry);
-				},
 				onProviderDrift: () => {
 					if (!sameRunIdentity(runIdentity, application.run)) return;
 					fail(

@@ -12,23 +12,10 @@ export interface TemporaryModelPlan {
 	readonly hiddenPlanPrompt: string;
 }
 
-/**
- * Semantic callbacks owned by the Prewalk adapter. The native runtime only
- * uses the identity/route/drift callbacks; stream lifecycle remains in the Pi
- * event adapter because Pi now owns the actual model request.
- */
+/** Semantic callbacks used by the native session-local model route. */
 export interface TemporaryModelCallbacks {
 	isCurrent(): boolean;
 	shouldRouteToExecutor(): boolean;
-	shouldGuardPlannerContext?(): boolean;
-	isPrimaryAgentStream?(): boolean;
-	getCompactionReserveTokens?(): number | undefined;
-	onPlannerContextPressure?(): void | Promise<void>;
-	onPlannerContextSafe?(): void;
-	onExecutorStreamStarted?(): void | Promise<void>;
-	onExecutorStreamSucceeded?(): void | Promise<void>;
-	onExecutorStreamFailed?(): void | Promise<void>;
-	onExecutorContextPressure?(retry: boolean): void | Promise<void>;
 	onProviderDrift(): void;
 }
 
