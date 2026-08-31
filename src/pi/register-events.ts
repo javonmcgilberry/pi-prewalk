@@ -145,16 +145,13 @@ function childIdentity(): { agent: string; runId: string } | undefined {
 
 const prompts = loadPrompts();
 
-function isMissingFile<T>(error: T): boolean {
-	return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
 function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	let raw: string;
 	try {
 		raw = readFileSync(path.join(getAgentDir(), "pi-codex-conversion.json"), "utf8");
 	} catch (error) {
-		return isMissingFile(error) ? "disabled" : "invalid";
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return "disabled";
+		return "invalid";
 	}
 	let config: BoundaryValue;
 	try {
