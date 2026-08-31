@@ -1101,10 +1101,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				"error",
 			);
 		});
-		if (process.env.PI_SUBAGENT_CHILD === "1") {
-			await startChildPrewalkRun(ctx);
-			return;
-		}
+		if (process.env.PI_SUBAGENT_CHILD === "1") return startChildPrewalkRun(ctx);
 		if (
 			ctx.mode === "tui" &&
 			(event.reason === "startup" || event.reason === "new" || event.reason === "fork")
