@@ -50,20 +50,12 @@ function compactionFailureReason(route: PressureRoute): string {
 	return route === "planner" ? "planner-compaction-failed" : "executor-compaction-failed";
 }
 
-function pressureEligibleRun(
-	run: PrewalkRun | undefined,
-	route: PressureRoute,
-): run is PrewalkRun {
-	if (!run) return false;
-	if (route === "planner") {
-		return (
-			run.effectiveRoute === "planner" && (run.phase === "planning" || run.phase === "ready")
-		);
-	}
-	return (
-		run.phase === "handoff-pending" ||
-		(run.effectiveRoute === "executor" && (run.phase === "active" || run.phase === "completed"))
-	);
+function pressureEligibleRun(run: PrewalkRun | undefined, route: PressureRoute): run is PrewalkRun {
+	return route === "planner"
+		? run?.effectiveRoute === "planner" && (run.phase === "planning" || run.phase === "ready")
+		: run?.phase === "handoff-pending" ||
+				(run?.effectiveRoute === "executor" &&
+					(run.phase === "active" || run.phase === "completed"));
 }
 
 /** Owns all mutable planner/executor pressure and compaction transaction state. */
@@ -243,7 +235,10 @@ export class ContextPressureController {
 						return;
 					}
 					if (!sameIdentity(request, host.currentRun())) return;
-					host.notify(`Prewalk ${pressure.route} compaction failed: ${error.message}.`, "error");
+					host.notify(
+						`Prewalk ${pressure.route} compaction failed: ${error.message}.`,
+						"error",
+					);
 					host.fail(failureReason, false, identity);
 				},
 			});
