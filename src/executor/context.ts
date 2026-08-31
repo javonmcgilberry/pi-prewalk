@@ -53,14 +53,13 @@ export function needsContextCompaction(
  * heuristic rather than pretending to know a provider-specific tokenizer.
  */
 export function estimateRequestTokens(context: Context): number {
-	const messages = context.messages;
-	const usageIndex = lastApplicableAssistantUsageIndex(messages);
+	const usageIndex = lastApplicableAssistantUsageIndex(context.messages);
 	if (usageIndex === null)
 		return estimateWholeRequest(context) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
-	const usageMessage = messages[usageIndex] as AssistantMessage;
+	const usageMessage = context.messages[usageIndex] as AssistantMessage;
 	let tokens = usageTokens(usageMessage);
-	for (let index = usageIndex + 1; index < messages.length; index++) {
-		tokens += estimateMessage(messages[index]);
+	for (let index = usageIndex + 1; index < context.messages.length; index++) {
+		tokens += estimateMessage(context.messages[index]);
 	}
 	// The usage-bearing response may have been produced before the current
 	// system prompt or tool schemas changed. Keep the conservative whole-request
