@@ -794,14 +794,13 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					tools: [...prewalkToolSlate],
 				});
 			refreshContextCompactionPolicy(ctx);
-			ensureModelRuntime(ctx);
-			if (armedRun) {
-				await analytics.open(armedRun, analyticsHost(ctx)).catch(() => {
-					analytics.resetActive();
-					ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
-				});
-			}
-			if (
+				ensureModelRuntime(ctx);
+				if (armedRun)
+					await analytics.open(armedRun, analyticsHost(ctx)).catch(() => {
+						analytics.resetActive();
+						ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
+					});
+				if (
 				!armedRun ||
 				!sameRunIdentity(armedRunIdentity, application.run) ||
 				(armedRun.phase !== "armed" &&
