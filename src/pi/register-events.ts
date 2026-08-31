@@ -1041,8 +1041,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				case "terminal":
 					application.reset();
 					lastAuditKey = JSON.stringify(recovery.record);
-					updateStatus(ctx);
-					return;
+					return updateStatus(ctx);
 				case "restart":
 					application.reset();
 					if (record) lastAuditKey = JSON.stringify(record);
@@ -1054,8 +1053,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					turnGate.resetMutationEvidence();
 					deactivatePrewalkTools();
 					ctx.ui.notify(unavailableExecutorNotice(recovery.rejected), "error");
-					updateStatus(ctx);
-					return;
+					return updateStatus(ctx);
 				case "failed":
 					fail(
 						recovery.reason,
@@ -1063,8 +1061,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 						ctx,
 						identityOf(recovery.run),
 					);
-					updateStatus(ctx);
-					return;
+					return updateStatus(ctx);
 				case "restored":
 					if (
 						!recovery.analyticsRestored &&
@@ -1077,8 +1074,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 							"error",
 						);
 					}
-						updateStatus(ctx);
-						return;
+					return updateStatus(ctx);
 				case "none":
 					return startChildPrewalkRun(ctx);
 				}
@@ -1317,11 +1313,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			// ctx.compact() aborts the active Agent loop before its completion callback
 			// runs. The pressure controller keeps this handoff alive until that
 			// callback settles and owns the only checklist retry.
-			await analytics.waitForWrites().catch(() => {
-				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
-			});
-			updateStatus(ctx);
-			return;
+				await analytics.waitForWrites().catch(() => {
+					ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+				});
+				return updateStatus(ctx);
 		}
 		const retrySettled =
 			planningRetryStarted && planningRetry !== undefined && sameRunIdentity(planningRetry, run);
