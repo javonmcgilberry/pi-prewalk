@@ -102,10 +102,6 @@ export class ContextPressureController {
 		this.#policy = policy;
 	}
 
-	policy(): ContextCompactionPolicy {
-		return this.#policy;
-	}
-
 	reserveTokens(): number {
 		return this.#policy.reserveTokens;
 	}
@@ -415,9 +411,5 @@ export class ContextPressureController {
 			runId: run.id,
 			epoch: run.epoch,
 		});
-	}
-
-	hasPendingCompaction(): boolean {
-		return this.#pending !== undefined;
 	}
 }
