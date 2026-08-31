@@ -1116,20 +1116,18 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event, ctx) => {
 		const control = event.text.trim().toLowerCase();
-		if ((control === "stop" || control === "cancel") && event.source !== "extension") {
-			if (application.run) {
-				const cancelledRun = identityOf(application.run);
-				await cancel(true, ctx);
-				if (!sameRunIdentity(cancelledRun, application.run)) return { action: "handled" };
-				lastOutcome = "completed";
-				deactivatePrewalkTools();
-				application.reset();
-				updateStatus(ctx);
-				return { action: "handled" };
-			}
+		if ((control !== "stop" && control !== "cancel") || event.source === "extension") {
 			return { action: "continue" };
 		}
-		return { action: "continue" };
+		if (!application.run) return { action: "continue" };
+		const cancelledRun = identityOf(application.run);
+		await cancel(true, ctx);
+		if (!sameRunIdentity(cancelledRun, application.run)) return { action: "handled" };
+		lastOutcome = "completed";
+		deactivatePrewalkTools();
+		application.reset();
+		updateStatus(ctx);
+		return { action: "handled" };
 	});
 
 	pi.on("before_agent_start", () => {
