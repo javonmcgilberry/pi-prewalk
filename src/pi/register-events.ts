@@ -1202,9 +1202,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("turn_start", async (_event, ctx) => {
 		if (!application.run) return;
-		const lease = ensureModelRuntime(ctx);
 		try {
-			await lease.sync();
+			await ensureModelRuntime(ctx).sync();
 		} catch {
 			return;
 		}
