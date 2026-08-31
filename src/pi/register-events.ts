@@ -147,9 +147,7 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	let config: BoundaryValue;
 	try {
 		config = JSON.parse(raw);
-	} catch {
-		return "invalid";
-	}
+	} catch { return "invalid"; }
 	if (!isRecord(config)) return "invalid";
 	if (config.compaction === undefined) {
 		const legacyResponsesCompaction = config.responsesCompaction;
