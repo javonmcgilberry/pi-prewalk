@@ -83,12 +83,10 @@ function failureNotice(reasonCode: string): string {
 		const options = `${toolNames.slice(0, -1).join(", ")}, or ${toolNames[toolNames.length - 1]}`;
 		return `Prewalk failed: no active mutation-capable tool can prove the first edit. Enable ${options}.`;
 	}
-	if (reasonCode === "host-correlation-retry-failed") {
+	if (reasonCode === "host-correlation-retry-failed")
 		return "Prewalk could not recover its planning checkpoint after a stale host event. Run /prewalk run to retry safely.";
-	}
-	if (reasonCode === "planner-recovery-exhausted") {
+	if (reasonCode === "planner-recovery-exhausted")
 		return "Prewalk failed: planner recovery reached its configured retry limit.";
-	}
 	return `Prewalk failed: ${reasonCode}.`;
 }
 
