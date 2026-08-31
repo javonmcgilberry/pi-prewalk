@@ -1,14 +1,11 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { CompactOptions } from "@earendil-works/pi-coding-agent";
+import type { CompactOptions, CompactionSettings } from "@earendil-works/pi-coding-agent";
 import type { BoundaryValue } from "../guards.js";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import { needsContextCompaction } from "./context.js";
 
-export type ContextCompactionPolicy = {
-	enabled: boolean;
-	reserveTokens: number;
-};
+export type ContextCompactionPolicy = Required<Pick<CompactionSettings, "enabled" | "reserveTokens">>;
 
 export const DEFAULT_CONTEXT_COMPACTION_POLICY: ContextCompactionPolicy = {
 	enabled: true,
