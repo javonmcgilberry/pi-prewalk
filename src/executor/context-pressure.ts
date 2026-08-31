@@ -190,10 +190,7 @@ export class ContextPressureController {
 			host.fail(failureReason, false, identity);
 			return;
 		}
-		if (!this.recordRetry(pressure)) {
-			host.fail(failureReason, false, identity);
-			return;
-		}
+		if (!this.recordRetry(pressure)) return host.fail(failureReason, false, identity);
 		const request: CompactionRequest = { ...pressure, committed: false };
 		this.#pending = request;
 		const resume = (): void => {
