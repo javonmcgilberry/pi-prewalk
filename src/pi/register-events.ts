@@ -1611,9 +1611,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 
 	pi.on("session_before_tree", (_event, ctx) => {
 		const run = application.run;
-		if (!run || run.phase === "cancelled" || run.phase === "failed") {
-			return;
-		}
+		if (!run || run.phase === "cancelled" || run.phase === "failed") return;
 		ctx.ui.notify(
 			"Prewalk blocks session-tree navigation while its run is active; cancel or release first.",
 			"warning",
