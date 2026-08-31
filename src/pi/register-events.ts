@@ -213,11 +213,6 @@ function isPrewalkPrompt(
 	return message.role === "custom" && PROMPT_TYPES.has(message.customType);
 }
 
-function runIdFromMessage(message: AgentMessage): string | undefined {
-	if (!isPrewalkPrompt(message) || !isRecord(message.details)) return undefined;
-	return isString(message.details.runId) ? message.details.runId : undefined;
-}
-
 function lastAssistantMessage(
 	messages: readonly AgentMessage[],
 ): Extract<AgentMessage, { role: "assistant" }> | undefined {
@@ -230,7 +225,8 @@ function lastAssistantMessage(
 
 function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined): boolean {
 	if (!isPrewalkPrompt(message)) return true;
-	const messageRunId = runIdFromMessage(message);
+	if (!isRecord(message.details)) return false;
+	const messageRunId = isString(message.details.runId) ? message.details.runId : undefined;
 	if (!messageRunId) return false;
 	if (!run || messageRunId !== run.id || run.phase === "cancelled") return false;
 	if (
