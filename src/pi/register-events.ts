@@ -1191,9 +1191,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			planningRetryStarted = true;
 		}
 		if (application.run) {
-			const lease = ensureModelRuntime(ctx);
 			try {
-				await lease.sync();
+				await ensureModelRuntime(ctx).sync();
 			} catch {
 				return;
 			}
