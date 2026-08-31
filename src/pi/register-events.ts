@@ -1262,7 +1262,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			}
 		}
 		if (!verifyModelRuntimeOwnership(ctx)) return;
-		refreshContextCompactionPolicy(ctx);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -1389,7 +1388,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (run.phase === "cancelled") {
 			return;
 		}
-		refreshContextCompactionPolicy(ctx);
 		const pressureObservation = contextPressure.settle(run, contextPressureHost(ctx));
 		if (
 			pressureObservation === "host-compacted" ||
