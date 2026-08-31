@@ -702,7 +702,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		audit(prompt.event, ctx);
 	};
 
-	const plannerCanRecover = (run: PrewalkRun | undefined): boolean =>
+	const plannerCanRecover = (run: PrewalkRun | undefined): run is PrewalkRun =>
 		Boolean(
 			run &&
 				run.effectiveRoute === "planner" &&
@@ -719,7 +719,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		const run = application.run;
 		const identity = identityOf(run);
 		if (
-			!run ||
 			!plannerCanRecover(run) ||
 			!identity ||
 			(planningRetry !== undefined && sameRunIdentity(planningRetry, run))
