@@ -207,12 +207,6 @@ function sameCapturedRun(
 	return identity === undefined ? run === undefined : sameRunIdentity(identity, run);
 }
 
-function isPrewalkPrompt(
-	message: AgentMessage,
-): message is Extract<AgentMessage, { role: "custom" }> {
-	return message.role === "custom" && PROMPT_TYPES.has(message.customType);
-}
-
 function lastAssistantMessage(
 	messages: readonly AgentMessage[],
 ): Extract<AgentMessage, { role: "assistant" }> | undefined {
@@ -224,7 +218,7 @@ function lastAssistantMessage(
 }
 
 function shouldExposePrompt(message: AgentMessage, run: PrewalkRun | undefined): boolean {
-	if (!isPrewalkPrompt(message)) return true;
+	if (message.role !== "custom" || !PROMPT_TYPES.has(message.customType)) return true;
 	if (!isRecord(message.details)) return false;
 	const messageRunId = isString(message.details.runId) ? message.details.runId : undefined;
 	if (!messageRunId) return false;
