@@ -71,11 +71,11 @@ function addSafetyMargin(tokens: number): number {
 }
 
 function estimateWholeRequest(context: Context): number {
-	let tokens = estimateText(context.systemPrompt ?? "");
+	let tokens = ceilTokens((context.systemPrompt ?? "").length);
 	for (const message of context.messages) tokens += estimateMessage(message);
 	for (const tool of context.tools ?? []) {
-		tokens += estimateText(tool.name) + estimateText(tool.description);
-		tokens += estimateText(JSON.stringify(tool.parameters) ?? "");
+		tokens += ceilTokens(tool.name.length) + ceilTokens(tool.description.length);
+		tokens += ceilTokens((JSON.stringify(tool.parameters) ?? "").length);
 	}
 	return tokens;
 }
@@ -124,15 +124,11 @@ function estimateMessage(message: Message): number {
 }
 
 function estimateContent(content: string | readonly { type: string; text?: string }[]): number {
-	if (isString(content)) return estimateText(content);
+	if (isString(content)) return ceilTokens(content.length);
 	let characters = 0;
 	for (const block of content)
 		characters += block.type === "text" ? (block.text?.length ?? 0) : 4_800;
 	return ceilTokens(characters);
-}
-
-function estimateText(value: string): number {
-	return ceilTokens(value.length);
 }
 
 function ceilTokens(characters: number): number {
