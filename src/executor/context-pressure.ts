@@ -191,12 +191,11 @@ export class ContextPressureController {
 	): void {
 		if (!pressureEligibleRun(run, pressure.route) || this.#pending !== undefined) return;
 		const identity: HostRunIdentity = { runId: run.id, epoch: run.epoch };
-		const routeLabel = pressure.route === "planner" ? "planner" : "executor";
 		const failureReason = compactionFailureReason(pressure.route);
 		if (!this.#policy.enabled) {
 			this.#pressure = undefined;
 			host.notify(
-				`Prewalk stopped before an oversized ${routeLabel} request because Pi automatic compaction is disabled.`,
+				`Prewalk stopped before an oversized ${pressure.route} request because Pi automatic compaction is disabled.`,
 				"error",
 			);
 			host.fail(failureReason, false, identity);
@@ -239,21 +238,21 @@ export class ContextPressureController {
 						)
 							return;
 						host.notify(
-							`Prewalk ${routeLabel} compaction committed before the host reported an observer error (${error.message}); continuing from the compacted context.`,
+							`Prewalk ${pressure.route} compaction committed before the host reported an observer error (${error.message}); continuing from the compacted context.`,
 							"warning",
 						);
 						if (request.retry) resume();
 						return;
 					}
 					if (!sameIdentity(request, host.currentRun())) return;
-					host.notify(`Prewalk ${routeLabel} compaction failed: ${error.message}.`, "error");
+					host.notify(`Prewalk ${pressure.route} compaction failed: ${error.message}.`, "error");
 					host.fail(failureReason, false, identity);
 				},
 			});
 		} catch (error) {
 			if (!this.clearRequest(request)) return;
-			host.notify(
-				`Prewalk ${routeLabel} compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
+				host.notify(
+				`Prewalk ${pressure.route} compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
 				"error",
 			);
 			host.fail(failureReason, false, identity);
