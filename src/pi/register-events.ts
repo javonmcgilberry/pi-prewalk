@@ -976,9 +976,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				!run ||
 				run.effectiveRoute !== "executor" ||
 				(run.phase !== "active" && run.phase !== "completed")
-			) {
+			)
 				return undefined;
-			}
 			const currentIndex = REASONING_LEVELS.indexOf(run.config.executor.reasoning);
 			const next =
 				REASONING_LEVELS[(currentIndex + 1) % REASONING_LEVELS.length] ??
