@@ -595,9 +595,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			getRuntimeController(ctx).ownsRoute() ||
 			application.run?.phase === "cancelled" ||
 			application.run?.phase === "failed"
-		) {
+		)
 			return true;
-		}
 		fail("provider-drift", application.run?.effectiveRoute === "executor", ctx);
 		return false;
 	};
