@@ -217,12 +217,7 @@ export class TemporaryModelController {
 	}
 
 	async restore(runIdentity?: HostRunIdentity, restoreModel = true): Promise<void> {
-		if (
-			runIdentity !== undefined &&
-			(this.#leaseRun === undefined || !sameIdentity(this.#leaseRun, runIdentity))
-		) {
-			return;
-		}
+		if (runIdentity && !sameIdentity(this.#leaseRun, runIdentity)) return;
 		const lease = this.#lease;
 		await lease?.restore(restoreModel);
 		if (this.#lease === lease) {
