@@ -101,9 +101,8 @@ function usageTokens(message: AssistantMessage): number {
 }
 
 function estimateMessage(message: Message): number {
-	if (message.role === "user" || message.role === "toolResult") {
+	if (message.role === "user" || message.role === "toolResult")
 		return estimateContent(message.content);
-	}
 	let characters = 0;
 	for (const block of message.content) {
 		if (block.type === "text" || block.type === "thinking") {
