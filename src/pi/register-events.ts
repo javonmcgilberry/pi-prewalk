@@ -667,8 +667,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			run.config.plannerRecovery?.maxRetries ?? DEFAULT_PLANNER_RECOVERY_CONFIG.maxRetries;
 		if (planningRecoveryAttempts >= maxRetries) {
 			resetPlanningRecovery();
-			fail("planner-recovery-exhausted", false, ctx, identity);
-			return;
+			return fail("planner-recovery-exhausted", false, ctx, identity);
 		}
 		planningRecoveryAttempts += 1;
 		planningRetry = identity;
