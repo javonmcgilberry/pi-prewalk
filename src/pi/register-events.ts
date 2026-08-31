@@ -1467,9 +1467,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			const invocation = delegationInvocations.find(
 				(candidate) => candidate.toolCallId === event.toolCallId,
 			);
-			if (invocation) {
-				await recordDelegationProjection(invocation, details, event.isError);
-			}
+			if (invocation) await recordDelegationProjection(invocation, details, event.isError);
 			if (!sameCapturedRun(runIdentity, application.run)) return;
 			delegation = delegationFromResult(
 				details,
