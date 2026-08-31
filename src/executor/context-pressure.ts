@@ -144,9 +144,8 @@ export class ContextPressureController {
 		if (
 			messageProvider !== run.config.executor.provider ||
 			messageModel !== run.config.executor.model
-		) {
+		)
 			return;
-		}
 		if (!needsContextCompaction(usageTokens, executor, this.#policy.reserveTokens)) return;
 		this.#pressure = {
 			runId: run.id,
