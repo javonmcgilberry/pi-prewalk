@@ -165,15 +165,6 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	return config.compaction.responsesCompaction ? "enabled" : "disabled";
 }
 
-function defaultConfig(): PrewalkConfig {
-	return {
-		enabled: false,
-		executor: { ...DEFAULT_EXECUTOR },
-		analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
-		plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
-	};
-}
-
 function identityOf(run: PrewalkRun): HostRunIdentity;
 function identityOf(run: undefined): undefined;
 function identityOf(run: PrewalkRun | undefined): HostRunIdentity | undefined;
@@ -528,7 +519,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					model: ctx.model.id,
 					reasoning: ctx.thinkingLevel ?? "off",
 				},
-				defaultConfig(),
+				{
+					enabled: false,
+					executor: { ...DEFAULT_EXECUTOR },
+					analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
+					plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
+				},
 			);
 		}
 		application.fail(reasonCode, holdExecutorRoute);
