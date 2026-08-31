@@ -1084,12 +1084,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 							"error",
 						);
 					}
-					updateStatus(ctx);
-					return;
+						updateStatus(ctx);
+						return;
 				case "none":
-					await startChildPrewalkRun(ctx);
-					return;
-			}
+					return startChildPrewalkRun(ctx);
+				}
 		}
 		application.reset();
 		lastOutcome = undefined;
