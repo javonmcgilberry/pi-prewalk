@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { CompactOptions } from "@earendil-works/pi-coding-agent";
 import type { BoundaryValue } from "../guards.js";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
@@ -19,10 +20,7 @@ type PressureState = HostRunIdentity & { route: PressureRoute; retry: boolean };
 type RetryState = HostRunIdentity & { route: PressureRoute; count: number };
 type CompactionRequest = PressureState & { committed: boolean };
 
-type CompactCallbacks = {
-	onComplete: () => void;
-	onError: (error: Error) => void;
-};
+type CompactCallbacks = Required<Pick<CompactOptions, "onComplete" | "onError">>;
 
 /**
  * Host capabilities used by the primary-route pressure transaction. The adapter
