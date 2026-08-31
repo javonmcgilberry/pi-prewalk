@@ -804,12 +804,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				updateStatus(ctx);
 				return "executor-unavailable";
 			}
-			const todoActive = pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME);
 			const action = application.start(
 				randomUUID(),
 				randomUUID(),
 				mode,
-				todoActive,
+				pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME),
 				planner,
 				{ ...config, executor: resolution.executor },
 			);
