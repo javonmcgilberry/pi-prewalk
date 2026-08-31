@@ -217,27 +217,11 @@ export class ContextPressureController {
 			host.fail(failureReason, false, identity);
 			return;
 		}
-		const previousRetry = this.#retry;
-		if (
-			pressure.retry &&
-			previousRetry !== undefined &&
-			samePressure(previousRetry, pressure) &&
-			previousRetry.count >= 1
-		) {
+		if (!this.recordRetry(pressure)) {
 			host.fail(failureReason, false, identity);
 			return;
 		}
 		const request: CompactionRequest = { ...pressure };
-		if (pressure.retry) {
-			this.#retry = {
-				...identity,
-				route: pressure.route,
-				count:
-					(previousRetry !== undefined && samePressure(previousRetry, pressure)
-						? previousRetry.count
-						: 0) + 1,
-			};
-		}
 		this.#pending = request;
 		this.#committed = undefined;
 		const resume = (): void => {
@@ -301,6 +285,20 @@ export class ContextPressureController {
 		}
 	}
 
+	private recordRetry(pressure: PressureState): boolean {
+		if (!pressure.retry) return true;
+		const previous = this.#retry;
+		const repeated = previous !== undefined && samePressure(previous, pressure);
+		if (repeated && previous.count >= 1) return false;
+		this.#retry = {
+			runId: pressure.runId,
+			epoch: pressure.epoch,
+			route: pressure.route,
+			count: repeated ? previous.count + 1 : 1,
+		};
+		return true;
+	}
+
 	beforeCompaction(
 		run: PrewalkRun | undefined,
 		compactedMessages: readonly BoundaryValue[],
@@ -331,25 +329,10 @@ export class ContextPressureController {
 			if (run && pressure !== undefined && sameIdentity(pressure, run)) {
 				this.#pressure = undefined;
 				const identity = { runId: run.id, epoch: run.epoch };
-				if (pressure.retry) {
-					const previousRetry = this.#retry;
-					if (
-						previousRetry !== undefined &&
-						samePressure(previousRetry, pressure) &&
-						previousRetry.count >= 1
-					) {
-						this.#checklistRun = undefined;
-						host.fail(compactionFailureReason(pressure.route), false, identity);
-						return;
-					}
-					this.#retry = {
-						...identity,
-						route: pressure.route,
-						count:
-							(previousRetry !== undefined && samePressure(previousRetry, pressure)
-								? previousRetry.count
-								: 0) + 1,
-					};
+				if (!this.recordRetry(pressure)) {
+					this.#checklistRun = undefined;
+					host.fail(compactionFailureReason(pressure.route), false, identity);
+					return;
 				}
 				this.#hostCompaction = pressure;
 				if (pressure.retry && !willRetry) {
