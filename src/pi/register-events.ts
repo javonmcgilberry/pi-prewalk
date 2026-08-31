@@ -829,9 +829,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				(expectedRun === null
 					? currentRun !== undefined
 					: !sameRunIdentity(expectedRun, currentRun))
-			) {
+			)
 				return "failed";
-			}
 			if (
 				armedRunIdentity !== undefined &&
 				(!sameRunIdentity(armedRunIdentity, currentRun) ||
