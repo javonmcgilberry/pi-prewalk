@@ -1008,13 +1008,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				restoreRun: (restored) => {
 					application.restore(restored);
 					prewalkToolSlate = latestPrewalkToolSlate(entries, restored.id);
-					if (
-						restored.todoActive &&
-						restored.phase !== "cancelled" &&
-						restored.phase !== "failed"
-					) {
-						activatePlanningTools();
-					}
+						if (
+							restored.todoActive &&
+							restored.phase !== "cancelled" &&
+							restored.phase !== "failed"
+						)
+							activatePlanningTools();
 					if (record) lastAuditKey = JSON.stringify(record);
 				},
 				resolveExecutor: async (restored) => {
