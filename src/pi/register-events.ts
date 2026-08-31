@@ -1647,9 +1647,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (
 			event.source === "set" &&
 			runtimeController?.consumeInternalModelSelect(event.model, event.source)
-		) {
+		)
 			return;
-		}
 		const run = application.run;
 		if (!run) {
 			if (retainedCancelledRun) updateStatus(ctx);
