@@ -804,7 +804,6 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				updateStatus(ctx);
 				return "executor-unavailable";
 			}
-			const effectiveConfig: PrewalkConfig = { ...config, executor: resolution.executor };
 			const todoActive = pi.getActiveTools().includes(PREWALK_TODO_TOOL_NAME);
 			const action = application.start(
 				randomUUID(),
@@ -812,7 +811,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				mode,
 				todoActive,
 				planner,
-				effectiveConfig,
+				{ ...config, executor: resolution.executor },
 			);
 			retainedCancelledRun = undefined;
 			const armedRun = application.run;
