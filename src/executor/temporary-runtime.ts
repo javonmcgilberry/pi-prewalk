@@ -117,10 +117,6 @@ class NativeTemporaryModelLease implements TemporaryModelLease {
 		return this.modelRegistry.find(profile.provider, profile.model);
 	}
 
-	private thinkingFor(route: "planner" | "executor"): ThinkingLevel {
-		return route === "planner" ? this.plan.planner.reasoning : this.plan.executor.reasoning;
-	}
-
 	private async switchTo(route: "planner" | "executor", duringRestore: boolean): Promise<void> {
 		const target = this.modelFor(route);
 		if (!target) {
@@ -141,7 +137,8 @@ class NativeTemporaryModelLease implements TemporaryModelLease {
 				this.pendingModel = undefined;
 			}
 		}
-		const thinking = this.thinkingFor(route);
+		const thinking =
+			route === "planner" ? this.plan.planner.reasoning : this.plan.executor.reasoning;
 		if (this.pi.getThinkingLevel() !== thinking) {
 			this.pendingThinking = true;
 			try {
