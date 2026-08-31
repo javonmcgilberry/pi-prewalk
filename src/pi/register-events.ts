@@ -787,13 +787,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			retainedCancelledRun = undefined;
 			const armedRun = application.run;
 			armedRunIdentity = identityOf(armedRun);
-			if (armedRun && prewalkToolSlate) {
+			if (armedRun && prewalkToolSlate)
 				pi.appendEntry(PREWALK_TOOL_SLATE_TYPE, {
 					schemaVersion: 1,
 					runId: armedRun.id,
 					tools: [...prewalkToolSlate],
 				});
-			}
 			refreshContextCompactionPolicy(ctx);
 			ensureModelRuntime(ctx);
 			if (armedRun) {
