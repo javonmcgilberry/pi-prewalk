@@ -297,7 +297,6 @@ export class ContextPressureController {
 		this.#checklistRun =
 			this.#pending === undefined &&
 			pressureEligibleRun(run, "executor") &&
-			run !== undefined &&
 			compactedMessages.some((message) => isChecklistForRun(message, run.id))
 				? { runId: run.id, epoch: run.epoch }
 				: undefined;
