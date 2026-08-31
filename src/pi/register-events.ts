@@ -476,8 +476,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		contextPressure.reset();
 		if (!application.run) {
 			if (!ctx.model) {
-				ctx.ui.notify(failureNotice(reasonCode), "error");
-				return;
+				return ctx.ui.notify(failureNotice(reasonCode), "error");
 			}
 			application.start(
 				randomUUID(),
