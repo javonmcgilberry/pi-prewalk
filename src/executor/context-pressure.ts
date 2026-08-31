@@ -238,20 +238,16 @@ export class ContextPressureController {
 		try {
 			host.compact({
 				onComplete: () => {
-					if (this.#pending !== request) return;
-					this.#pending = undefined;
-					this.#pressure = undefined;
+					if (!this.clearRequest(request)) return;
 					const current = host.currentRun();
 					if (!sameIdentity(request, current) || !pressureEligibleRun(current, request.route))
 						return;
 					if (request.retry) resume();
 				},
 				onError: (error) => {
-					if (this.#pending !== request) return;
-					if (this.#committed === request) {
-						this.#pending = undefined;
-						this.#committed = undefined;
-						this.#pressure = undefined;
+					const committed = this.#committed === request;
+					if (!this.clearRequest(request)) return;
+					if (committed) {
 						const current = host.currentRun();
 						if (
 							!sameIdentity(request, current) ||
@@ -265,24 +261,27 @@ export class ContextPressureController {
 						if (request.retry) resume();
 						return;
 					}
-					this.#pending = undefined;
-					this.#pressure = undefined;
 					if (!sameIdentity(request, host.currentRun())) return;
 					host.notify(`Prewalk ${routeLabel} compaction failed: ${error.message}.`, "error");
 					host.fail(failureReason, false, identity);
 				},
 			});
 		} catch (error) {
-			if (this.#pending !== request) return;
-			this.#pending = undefined;
-			this.#committed = undefined;
-			this.#pressure = undefined;
+			if (!this.clearRequest(request)) return;
 			host.notify(
 				`Prewalk ${routeLabel} compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
 				"error",
 			);
 			host.fail(failureReason, false, identity);
 		}
+	}
+
+	private clearRequest(request: CompactionRequest): boolean {
+		if (this.#pending !== request) return false;
+		this.#pending = undefined;
+		this.#committed = undefined;
+		this.#pressure = undefined;
+		return true;
 	}
 
 	private recordRetry(pressure: PressureState): boolean {
