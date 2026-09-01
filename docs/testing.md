@@ -6,7 +6,7 @@ Two bugs in this repository were shipped and survived under a full green suite.
 Neither was subtle in hindsight, and both had the same cause: a test that could
 not fail.
 
-**The native-routing boundary.** Pi 0.84.3's `setModel()` and
+**The native-routing boundary.** Pi 0.84.4's `setModel()` and
 `setThinkingLevel()` are session-local. The runtime tests prove that Prewalk
 changes those values only at the executor boundary, restores the planner, and
 does not mistake its own events for external model drift. The cross-provider

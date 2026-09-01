@@ -69,6 +69,12 @@ describe("Prewalk audit records", () => {
 		});
 	});
 
+	it("round-trips a paused planning checkpoint", () => {
+		const record = createAuditRecord(run, "planning-paused");
+
+		expect(parseAuditRecord(record)).toEqual(record);
+	});
+
 	it("round-trips terminal lifecycle markers without changing run-state fields", () => {
 		for (const event of ["completed", "session-ended"] as const) {
 			const record = createAuditRecord(run, event);

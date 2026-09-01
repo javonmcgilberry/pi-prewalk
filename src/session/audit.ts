@@ -26,6 +26,7 @@ export type AuditEventKind =
 	| "armed"
 	| "plan-injected"
 	| "planning-retry"
+	| "planning-paused"
 	| "continuation"
 	| "progress"
 	| "planner-reasoning-changed"
@@ -64,6 +65,7 @@ const EVENTS = new Set<string>([
 	"armed",
 	"plan-injected",
 	"planning-retry",
+	"planning-paused",
 	"continuation",
 	"progress",
 	"planner-reasoning-changed",

@@ -1326,7 +1326,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
 	});
 
-	it("stops after the configured number of automatic planner recoveries", async () => {
+	it("pauses after the configured automatic recovery limit without discarding the plan", async () => {
 		await writeFile(
 			path.join(agentDir, "prewalk.json"),
 			`${JSON.stringify({ executor: DEFAULT_EXECUTOR, plannerRecovery: { maxRetries: 2 } })}\n`,
@@ -1357,12 +1357,44 @@ describe("Prewalk extension harness", () => {
 
 		expect(harness.messages).toHaveLength(initialMessages + 2);
 		expect(harness.entries.at(-1)?.data).toMatchObject({
-			event: "failed",
-			phase: "failed",
-			reasonCode: "planner-recovery-exhausted",
+			event: "planning-paused",
+			phase: "planning",
 		});
-		expect(harness.notifications.at(-1)).toContain("configured retry limit");
-		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
+		expect(harness.notifications.at(-1)).toContain(
+			"saved planning trace and checklist remain active",
+		);
+		expect(harness.statuses.at(-1)).toContain("Planning");
+		expect(harness.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
+
+		await harness.emit("input", {
+			type: "input",
+			text: "continue the saved plan",
+			source: "interactive",
+		});
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "continue the saved plan",
+			systemPrompt: "system",
+			systemPromptOptions: {},
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		const resumedAbort = {
+			...assistant(harness.planner),
+			stopReason: "aborted" as const,
+			errorMessage: "Operation aborted",
+			timestamp: 9_300,
+		};
+		await harness.emit("message_end", { type: "message_end", message: resumedAbort });
+		await harness.emit("agent_end", { type: "agent_end", messages: [resumedAbort] });
+
+		expect(harness.messages).toHaveLength(initialMessages + 3);
+		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_RECOVER_MESSAGE_TYPE);
+		expect(
+			harness.entries.some(
+				// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
+				(entry) => (entry.data as { event?: string }).event === "failed",
+			),
+		).toBe(false);
 	});
 
 	it("allows a direct registered-tool execution without a host claim via permissive unknown", async () => {
@@ -4670,6 +4702,29 @@ describe("Prewalk extension harness", () => {
 		await reopened.commands.get("prewalk")?.(`stats receipt ${runId}`, reopened.context);
 		expect(reopened.notifications.at(-1)).toContain("interrupted");
 	});
+
+	it.each(["startup", "resume"] as const)(
+		"restores an unfinished persisted planner run on %s",
+		async (reason) => {
+			const first = createHarness({ sessionId: "persisted-planning-session" });
+			prewalkExtension(first.pi);
+			await first.emit("session_start", { type: "session_start", reason: "startup" });
+			await first.commands.get("prewalk")?.("run", first.context);
+
+			const reopened = createHarness({ sessionId: "persisted-planning-session" });
+			reopened.setBranch(auditBranch(first));
+			prewalkExtension(reopened.pi);
+			await reopened.emit("session_start", { type: "session_start", reason });
+
+			expect(reopened.statuses.at(-1)).toContain("Planning");
+			expect(reopened.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
+			await reopened
+				.providerConfig()
+				?.streamSimple?.(reopened.planner, { messages: [] })
+				.result();
+			expect(reopened.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
+		},
+	);
 
 	it("leaves a recently written journal to the session that still owns it", async () => {
 		const owner = createHarness({ sessionId: "owner-session" });

@@ -1,5 +1,5 @@
-import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage, Context, Message, Model } from "@earendil-works/pi-ai";
+import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
 import { type BoundaryValue, isString } from "../guards.js";
 
 /** Stock Pi's default reserveTokens value (see core/compaction/compaction.ts). */
@@ -54,9 +54,11 @@ export function needsContextCompaction(
  */
 export function estimateRequestTokens(context: Context): number {
 	const usageIndex = lastApplicableAssistantUsageIndex(context.messages);
-	if (usageIndex === null)
+	if (usageIndex === null) return estimateWholeRequest(context) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
+	const usageMessage = context.messages[usageIndex];
+	if (usageMessage?.role !== "assistant")
 		return estimateWholeRequest(context) + CONTEXT_ESTIMATE_SAFETY_MARGIN;
-	let tokens = usageTokens(context.messages[usageIndex] as AssistantMessage);
+	let tokens = usageTokens(usageMessage);
 	for (let index = usageIndex + 1; index < context.messages.length; index++) {
 		tokens += estimateMessage(context.messages[index]);
 	}
@@ -131,5 +133,7 @@ function ceilTokens(characters: number): number {
 function safeJson(value: BoundaryValue): string {
 	try {
 		return JSON.stringify(value) ?? "undefined";
-	} catch { return "[unserializable]"; }
+	} catch {
+		return "[unserializable]";
+	}
 }

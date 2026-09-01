@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { modelsAreEqual, type Api, type Model as PiModel } from "@earendil-works/pi-ai";
+import { type Api, modelsAreEqual, type Model as PiModel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { ExecutorConfig, PlannerProfile } from "../orchestration/coordinator.js";
@@ -50,7 +50,7 @@ function sameIdentity(left: HostRunIdentity | undefined, right: HostRunIdentity)
 }
 
 /**
- * Pi 0.84.3 exposes model mutation as a session-local operation. This adapter
+ * Pi 0.84.4 exposes model mutation as a session-local operation. This adapter
  * deliberately delegates model selection, auth, provider dispatch, transcript
  * persistence, and request construction back to Pi instead of recreating them
  * in a second transport implementation.

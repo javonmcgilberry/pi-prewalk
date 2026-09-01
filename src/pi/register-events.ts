@@ -117,6 +117,11 @@ interface PromptSet {
 	todo: string;
 }
 
+interface PromptDispatch {
+	content: string;
+	event: AuditEventKind;
+}
+
 function promptFile(name: string): URL {
 	return new URL(`../../prompts/${name}`, import.meta.url);
 }
@@ -147,7 +152,9 @@ function nativeResponsesCompactionState(): "disabled" | "enabled" | "invalid" {
 	let config: BoundaryValue;
 	try {
 		config = JSON.parse(raw);
-	} catch { return "invalid"; }
+	} catch {
+		return "invalid";
+	}
 	if (!isRecord(config)) return "invalid";
 	if (config.compaction === undefined) {
 		const legacyResponsesCompaction = config.responsesCompaction;
@@ -323,6 +330,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	let planningRetry: HostRunIdentity | undefined;
 	let planningRetryStarted = false;
 	let planningRecoveryAttempts = 0;
+	let planningRecoveryPaused = false;
 	const contextPressure = new ContextPressureController();
 	let removeTerminalInputListener: (() => void) | undefined;
 	const refreshContextCompactionPolicy = (ctx: ExtensionContext): ContextCompactionPolicy => {
@@ -414,6 +422,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	const resetPlanningRecovery = (): void => {
 		clearPlanningRetry();
 		planningRecoveryAttempts = 0;
+		planningRecoveryPaused = false;
 	};
 	type DelegationInvocation = {
 		toolCallId: string;
@@ -471,7 +480,8 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		contextPressure.reset();
 		if (!application.run) {
 			if (!ctx.model) {
-				return ctx.ui.notify(failureNotice(reasonCode), "error");
+				ctx.ui.notify(failureNotice(reasonCode), "error");
+				return;
 			}
 			application.start(
 				randomUUID(),
@@ -611,7 +621,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const run = application.run;
 		if (!run) return;
-		let prompt: { content: string; event: AuditEventKind };
+		let prompt: PromptDispatch;
 		switch (type) {
 			case PREWALK_PLAN_MESSAGE_TYPE:
 				prompt = { content: prompts.plan, event: "plan-injected" };
@@ -653,14 +663,22 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		if (
 			!plannerCanRecover(run) ||
 			!identity ||
+			planningRecoveryPaused ||
 			(planningRetry !== undefined && sameRunIdentity(planningRetry, run))
 		)
 			return;
 		const maxRetries =
 			run.config.plannerRecovery?.maxRetries ?? DEFAULT_PLANNER_RECOVERY_CONFIG.maxRetries;
 		if (planningRecoveryAttempts >= maxRetries) {
-			resetPlanningRecovery();
-			return fail("planner-recovery-exhausted", false, ctx, identity);
+			clearPlanningRetry();
+			planningRecoveryPaused = true;
+			audit("planning-paused", ctx);
+			ctx.ui.notify(
+				"Prewalk paused automatic planner recovery after the configured retry limit. The saved planning trace and checklist remain active; send another message to continue or run /prewalk cancel to stop.",
+				"warning",
+			);
+			updateStatus(ctx);
+			return;
 		}
 		planningRecoveryAttempts += 1;
 		planningRetry = identity;
@@ -786,13 +804,13 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					tools: [...prewalkToolSlate],
 				});
 			refreshContextCompactionPolicy(ctx);
-				ensureModelRuntime(ctx);
-				if (armedRun)
-					await analytics.open(armedRun, analyticsHost(ctx)).catch(() => {
-						analytics.resetActive();
-						ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
-					});
-				if (
+			ensureModelRuntime(ctx);
+			if (armedRun)
+				await analytics.open(armedRun, analyticsHost(ctx)).catch(() => {
+					analytics.resetActive();
+					ctx.ui.notify("Prewalk analytics could not start; routing is unchanged.", "error");
+				});
+			if (
 				!armedRun ||
 				!sameRunIdentity(armedRunIdentity, application.run) ||
 				(armedRun.phase !== "armed" &&
@@ -988,20 +1006,25 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				.buildContextEntries()
 				.flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
 		);
-		if (event.reason === "reload") {
-			const entries = ctx.sessionManager.getBranch();
-			const record = latestAuditRecord(entries);
+		const entries = ctx.sessionManager.getBranch();
+		const record = latestAuditRecord(entries);
+		const canRestoreExistingPlan =
+			(event.reason === "startup" || event.reason === "resume") &&
+			record?.effectiveRoute === "planner" &&
+			(record.phase === "armed" || record.phase === "planning" || record.phase === "ready");
+		if (event.reason === "reload" || canRestoreExistingPlan) {
 			const recovery = await sessionRecovery.recover(record, {
 				nativeCompactionState: nativeResponsesCompactionState,
 				restoreRun: (restored) => {
 					application.restore(restored);
+					planningRecoveryPaused = record?.event === "planning-paused";
 					prewalkToolSlate = latestPrewalkToolSlate(entries, restored.id);
-						if (
-							restored.todoActive &&
-							restored.phase !== "cancelled" &&
-							restored.phase !== "failed"
-						)
-							activatePlanningTools();
+					if (
+						restored.todoActive &&
+						restored.phase !== "cancelled" &&
+						restored.phase !== "failed"
+					)
+						activatePlanningTools();
 					if (record) lastAuditKey = JSON.stringify(record);
 				},
 				resolveExecutor: async (restored) => {
@@ -1057,7 +1080,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					return updateStatus(ctx);
 				case "none":
 					return startChildPrewalkRun(ctx);
-				}
+			}
 		}
 		application.reset();
 		lastOutcome = undefined;
@@ -1076,8 +1099,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		) {
 			try {
 				const config = await readPrewalkConfig();
-				if (config.enabled)
-					await startRun("automatic", ctx, false, config, undefined, true);
+				if (config.enabled) await startRun("automatic", ctx, false, config, undefined, true);
 			} catch {
 				// Missing or invalid configuration keeps the safe manual default. The
 				// normal run command reports the actionable configuration error.
@@ -1088,6 +1110,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	pi.on("input", async (event, ctx) => {
 		const control = event.text.trim().toLowerCase();
 		if ((control !== "stop" && control !== "cancel") || event.source === "extension") {
+			if (event.source !== "extension" && plannerCanRecover(application.run)) {
+				resetPlanningRecovery();
+			}
 			return { action: "continue" };
 		}
 		if (!application.run) return { action: "continue" };
@@ -1292,10 +1317,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			// ctx.compact() aborts the active Agent loop before its completion callback
 			// runs. The pressure controller keeps this handoff alive until that
 			// callback settles and owns the only checklist retry.
-				await analytics.waitForWrites().catch(() => {
-					ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
-				});
-				return updateStatus(ctx);
+			await analytics.waitForWrites().catch(() => {
+				ctx.ui.notify("Prewalk analytics finalization failed; retrying is safe.", "error");
+			});
+			return updateStatus(ctx);
 		}
 		const retrySettled =
 			planningRetryStarted && planningRetry !== undefined && sameRunIdentity(planningRetry, run);

@@ -1,11 +1,13 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { CompactOptions, CompactionSettings } from "@earendil-works/pi-coding-agent";
+import type { CompactionSettings } from "@earendil-works/pi-coding-agent";
 import type { BoundaryValue } from "../guards.js";
 import type { HostRunIdentity } from "../host-event-correlation.js";
 import type { PrewalkRun } from "../orchestration/coordinator.js";
 import { needsContextCompaction } from "./context.js";
 
-export type ContextCompactionPolicy = Required<Pick<CompactionSettings, "enabled" | "reserveTokens">>;
+export type ContextCompactionPolicy = Required<
+	Pick<CompactionSettings, "enabled" | "reserveTokens">
+>;
 
 export const DEFAULT_CONTEXT_COMPACTION_POLICY: ContextCompactionPolicy = {
 	enabled: true,
@@ -24,7 +26,7 @@ type CompactionRequest = PressureState & { committed: boolean };
  */
 export interface ContextPressureHost {
 	currentRun(): PrewalkRun | undefined;
-	compact(callbacks: Required<Pick<CompactOptions, "onComplete" | "onError">>): void;
+	compact(callbacks: { onComplete: () => void; onError: (error: Error) => void }): void;
 	notify(message: string, level: "error" | "warning"): void;
 	fail(reason: string, holdExecutorRoute: boolean, expected: HostRunIdentity): void;
 	sendRetryPlanning(expected: HostRunIdentity): Promise<void>;
@@ -183,13 +185,17 @@ export class ContextPressureController {
 		const failureReason = compactionFailureReason(pressure.route);
 		if (!this.#policy.enabled) {
 			this.#pressure = undefined;
-				host.notify(
-					`Prewalk stopped before an oversized ${pressure.route} request because Pi automatic compaction is disabled.`,
-					"error",
-				);
-				return host.fail(failureReason, false, identity);
+			host.notify(
+				`Prewalk stopped before an oversized ${pressure.route} request because Pi automatic compaction is disabled.`,
+				"error",
+			);
+			host.fail(failureReason, false, identity);
+			return;
 		}
-		if (!this.recordRetry(pressure)) return host.fail(failureReason, false, identity);
+		if (!this.recordRetry(pressure)) {
+			host.fail(failureReason, false, identity);
+			return;
+		}
 		const request: CompactionRequest = { ...pressure, committed: false };
 		this.#pending = request;
 		const resume = (): void => {
@@ -238,7 +244,7 @@ export class ContextPressureController {
 			});
 		} catch (error) {
 			if (!this.clearRequest(request)) return;
-				host.notify(
+			host.notify(
 				`Prewalk ${pressure.route} compaction failed: ${error instanceof Error ? error.message : String(error)}.`,
 				"error",
 			);
@@ -306,14 +312,18 @@ export class ContextPressureController {
 				}
 			}
 		}
-		if (!willRetry && sameIdentity(this.#checklistRun, run) && pressureEligibleRun(run, "executor")) {
+		if (
+			!willRetry &&
+			sameIdentity(this.#checklistRun, run) &&
+			pressureEligibleRun(run, "executor")
+		) {
 			await host.sendRetryChecklist({ runId: run.id, epoch: run.epoch });
 		}
 		this.#checklistRun = undefined;
 	}
 
 	/**
-	 * Reconciles Pi 0.84.3's terminal compaction failure event. A compaction
+	 * Reconciles Pi 0.84.4's terminal compaction failure event. A compaction
 	 * requested through `ctx.compact()` still has a callback that owns its
 	 * semantic failure path; this method only clears the host-side checklist
 	 * marker there. Native compaction has no callback, so an active pressure
