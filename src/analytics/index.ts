@@ -1196,7 +1196,7 @@ function parseUsageCost(value: BoundaryValue, name: string): UsageCost {
 		total: requireNonNegativeNumber(record.total, `${name} total`),
 	};
 	const categorizedTotal = cost.input + cost.output + cost.cacheRead + cost.cacheWrite;
-	if (!financiallyEqual(cost.total, categorizedTotal)) {
+	if (categorizedTotal > 0 && !financiallyEqual(cost.total, categorizedTotal)) {
 		throw new Error(`${name} total does not reconcile with categorized costs.`);
 	}
 	return cost;

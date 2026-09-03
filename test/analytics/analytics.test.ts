@@ -9,6 +9,7 @@ import {
 	normalizeUsageObservations,
 	PRICING_SOURCES,
 	parseAnalyticsConfig,
+	parseRunJournal,
 	parseRunReceipt,
 	RUN_OUTCOMES,
 	type RunReceipt,
@@ -174,6 +175,33 @@ describe("analytics domain contract", () => {
 				estimate: { ...receipt.estimate, savings: 0.18 },
 			}),
 		).toThrow("savings does not reconcile");
+	});
+
+	it("accepts provider usage with an exact total but no categorized costs", () => {
+		const totalOnlyUsage = {
+			...receipt.usage[0],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.33 },
+		};
+
+		expect(
+			parseRunJournal({
+				schemaVersion: ANALYTICS_SCHEMA_VERSION,
+				runId: receipt.runId,
+				epoch: receipt.epoch,
+				sessionId: receipt.sessionId,
+				generation: receipt.generation,
+				configuration: {
+					analytics: DEFAULT_ANALYTICS_CONFIG,
+					planner: receipt.planner,
+					executor: receipt.executor,
+				},
+				startedAt: receipt.startedAt,
+				lastObservedSequence: 1,
+				outcome: "active",
+				handoffState: "completed",
+				usage: [totalOnlyUsage],
+			}),
+		).toMatchObject({ usage: [totalOnlyUsage] });
 	});
 
 	it("rejects a one-hour cache-write count larger than total cache writes", () => {
