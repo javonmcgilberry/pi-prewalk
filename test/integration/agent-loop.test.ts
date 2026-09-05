@@ -744,6 +744,106 @@ describe("stock Pi Agent-loop integration", () => {
 		session.dispose();
 	});
 
+	it("uses the session cwd for a built-in write and hands off exactly once", async () => {
+		const planner = model(PLANNER_MODEL_ID);
+		const executor = model(EXECUTOR_MODEL_ID);
+		const calls: string[] = [];
+		const relativeTarget = `prewalk-ctx-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
+		const processTarget = path.join(process.cwd(), relativeTarget);
+		await rm(processTarget, { force: true });
+		const provider: ExtensionFactory = (pi) => {
+			pi.registerProvider("openai-codex", {
+				api: "openai-codex-responses",
+				baseUrl: "https://example.test",
+				apiKey: "integration-token",
+				oauth: {
+					name: "OpenAI Codex",
+					login: async () => ({ access: "token", refresh: "refresh", expires: 1 }),
+					refreshToken: async (credentials) => credentials,
+					getApiKey: (credentials) => credentials.access,
+				},
+				models: [planner, executor],
+				streamSimple: (selected) => {
+					calls.push(selected.id);
+					if (selected.id === EXECUTOR_MODEL_ID)
+						return response(executor, [{ type: "text", text: "Executor completed." }]);
+					const plannerCalls = calls.filter((id) => id === PLANNER_MODEL_ID).length;
+					if (plannerCalls === 1)
+						return response(planner, [
+							toolCall("todo-cwd-1", PREWALK_TODO_TOOL_NAME, {
+								op: "init",
+								list: [{ phase: "Implement", items: ["Write in the session workspace"] }],
+							}),
+						]);
+					return response(planner, [
+						toolCall("write-cwd-1", "write", {
+							path: relativeTarget,
+							content: "written through the session cwd\n",
+						}),
+						toolCall("todo-cwd-2", PREWALK_TODO_TOOL_NAME, {
+							op: "done",
+							task: "Write in the session workspace",
+						}),
+					]);
+				},
+			});
+		};
+		const settings = SettingsManager.create(workDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: workDir,
+			agentDir,
+			settingsManager: settings,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			extensionFactories: [
+				{ name: "provider", factory: provider },
+				{ name: "prewalk", factory: prewalkExtension },
+			],
+		});
+		await loader.reload();
+		const runtime = await ModelRuntime.create({
+			authPath: path.join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const sessionManager = SessionManager.inMemory(workDir);
+		const { session } = await createAgentSession({
+			cwd: workDir,
+			agentDir,
+			modelRuntime: runtime,
+			model: planner,
+			thinkingLevel: "high",
+			resourceLoader: loader,
+			settingsManager: settings,
+			sessionManager,
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await session.bindExtensions({});
+
+		try {
+			await session.prompt("/prewalk run");
+			await session.waitForIdle();
+			await session.prompt("Write the requested file.");
+			await session.waitForIdle();
+
+			expect(workDir).not.toBe(process.cwd());
+			expect(await readFile(path.join(workDir, relativeTarget), "utf8")).toBe(
+				"written through the session cwd\n",
+			);
+			expect(existsSync(processTarget)).toBe(false);
+			expect(calls.filter((id) => id === EXECUTOR_MODEL_ID)).toHaveLength(1);
+			expect(session.model?.id).toBe(EXECUTOR_MODEL_ID);
+			const entries = JSON.stringify(sessionManager.getEntries());
+			expect(entries.match(/"event":"handoff-triggered"/g)).toHaveLength(1);
+			expect(entries.match(/"event":"executor-active"/g)).toHaveLength(1);
+		} finally {
+			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+			session.dispose();
+			await rm(processTarget, { force: true });
+		}
+	});
+
 	it("settles an Autoresearch agent-end continuation around one manual Prewalk handoff", async () => {
 		const planner = model(PLANNER_MODEL_ID);
 		const executor = model(EXECUTOR_MODEL_ID);
@@ -1021,7 +1121,7 @@ describe("stock Pi Agent-loop integration", () => {
 					"defaultContext: fresh",
 					"inheritProjectContext: false",
 					"inheritSkills: false",
-					"tools: read, edit, subagent",
+					"tools: read, edit, subagent, prewalk_todo",
 					`subagentOnlyExtensions: ${childExtensions}`,
 					"---",
 					"",
@@ -1119,14 +1219,14 @@ describe("stock Pi Agent-loop integration", () => {
 			expect(workerProviders[0]?.model).toBe("planner");
 			expect(reviewerProviders.every((record) => record.model === "planner")).toBe(true);
 			expect(workerTools).toEqual(expect.arrayContaining(["read", "edit", "subagent"]));
-			expect(workerTools).not.toContain("prewalk_todo");
+			expect(workerTools).toContain("prewalk_todo");
 			expect(reviewerTools).toEqual(expect.arrayContaining(["read", "edit"]));
 			expect(reviewerTools).not.toContain("prewalk_todo");
 			expect(
 				new Set(
 					providerRecords
 						.filter((record) => record.agent === "worker" || record.agent === "reviewer")
-						.map((record) => record.runId),
+						.map((record) => record.sessionId),
 				).size,
 			).toBe(2);
 			expect(

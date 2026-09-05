@@ -24,7 +24,7 @@ export interface SessionRecoveryHost {
 	resolveExecutor(
 		run: PrewalkRun,
 	): Promise<{ ok: true } | { ok: false; rejected: readonly RejectedExecutor[] }>;
-	installRuntime(run: PrewalkRun): void;
+	installRuntime(run: PrewalkRun): void | Promise<void>;
 	restoreAnalyticsJournal(run: PrewalkRun): Promise<void>;
 }
 
@@ -103,7 +103,7 @@ export class SessionRecovery {
 			if (!resolution.ok) {
 				return { type: "refused", run, rejected: resolution.rejected };
 			}
-			host.installRuntime(run);
+			await host.installRuntime(run);
 			if (run.phase === "failed") return { type: "restored", run, analyticsRestored: false };
 			try {
 				await host.restoreAnalyticsJournal(run);

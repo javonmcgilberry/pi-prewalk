@@ -77,6 +77,11 @@ const PROMPT_TYPES = new Set([
 	PREWALK_CHECKLIST_MESSAGE_TYPE,
 ]);
 
+function activeChildAgentFromSystemPrompt(systemPrompt?: string): string | undefined {
+	const match = systemPrompt?.match(/(?:^|\n)<active_agent name="([^"\r\n]+)"\/>/);
+	return match?.[1];
+}
+
 function failureNotice(reasonCode: string): string {
 	if (reasonCode === MUTATION_TOOLS_UNAVAILABLE_REASON) {
 		const toolNames = RECOGNIZED_MUTATION_TOOL_NAMES;
@@ -864,11 +869,15 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 	};
 
-	const startChildPrewalkRun = async (ctx: ExtensionContext): Promise<void> => {
-		if (process.env.PI_SUBAGENT_CHILD !== "1") return;
-		const agent = process.env.PI_SUBAGENT_CHILD_AGENT?.trim();
+	const startChildPrewalkRun = async (
+		ctx: ExtensionContext,
+		activeChildAgent?: string,
+	): Promise<void> => {
+		const isChildHost = process.env.PI_SUBAGENT_CHILD === "1";
+		if (!isChildHost && !activeChildAgent) return;
+		const agent = activeChildAgent?.trim() || process.env.PI_SUBAGENT_CHILD_AGENT?.trim();
 		const runId = process.env.PI_SUBAGENT_RUN_ID?.trim();
-		const identity = agent && runId ? { agent, runId } : undefined;
+		const identity = agent && (activeChildAgent || runId) ? { agent, runId } : undefined;
 		if (!identity) {
 			childDiagnostic = "identity-unavailable";
 			return updateStatus(ctx);
@@ -1035,9 +1044,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					);
 					return resolution.ok ? { ok: true } : { ok: false, rejected: resolution.rejected };
 				},
-				installRuntime: () => {
-					ensureModelRuntime(ctx);
-				},
+				installRuntime: () => ensureModelRuntime(ctx).sync(),
 				restoreAnalyticsJournal: (restored) => analytics.restore(restored, analyticsHost(ctx)),
 			});
 			switch (recovery.type) {
@@ -1079,7 +1086,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 					}
 					return updateStatus(ctx);
 				case "none":
-					return startChildPrewalkRun(ctx);
+					return startChildPrewalkRun(
+						ctx,
+						activeChildAgentFromSystemPrompt(ctx.getSystemPrompt?.() ?? ""),
+					);
 			}
 		}
 		application.reset();
@@ -1092,7 +1102,9 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 				"error",
 			);
 		});
-		if (process.env.PI_SUBAGENT_CHILD === "1") return startChildPrewalkRun(ctx);
+		const activeChildAgent = activeChildAgentFromSystemPrompt(ctx.getSystemPrompt?.() ?? "");
+		if (process.env.PI_SUBAGENT_CHILD === "1" || activeChildAgent)
+			return startChildPrewalkRun(ctx, activeChildAgent);
 		if (
 			ctx.mode === "tui" &&
 			(event.reason === "startup" || event.reason === "new" || event.reason === "fork")
@@ -1126,8 +1138,10 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		return { action: "handled" };
 	});
 
-	pi.on("before_agent_start", () => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		hostCorrelation.observe({ type: "before-agent" }, identityOf(application.run));
+		const childAgent = activeChildAgentFromSystemPrompt(event.systemPrompt);
+		if (childAgent && !application.run) await startChildPrewalkRun(ctx, childAgent);
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {

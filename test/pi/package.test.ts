@@ -188,10 +188,10 @@ describe("shipped package contract", () => {
 		});
 		expect(pkg.devDependencies).toMatchObject({
 			"@biomejs/biome": "2.3.5",
-			"@earendil-works/pi-agent-core": "0.84.4",
-			"@earendil-works/pi-ai": "0.84.4",
-			"@earendil-works/pi-coding-agent": "0.84.4",
-			"@earendil-works/pi-tui": "0.84.4",
+			"@earendil-works/pi-agent-core": "0.85.1",
+			"@earendil-works/pi-ai": "0.85.1",
+			"@earendil-works/pi-coding-agent": "0.85.1",
+			"@earendil-works/pi-tui": "0.85.1",
 			"@howaboua/pi-codex-conversion": "3.0.10",
 			"@oxlint/plugins": "1.80.0",
 			oxlint: "1.80.0",

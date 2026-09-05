@@ -50,7 +50,7 @@ function sameIdentity(left: HostRunIdentity | undefined, right: HostRunIdentity)
 }
 
 /**
- * Pi 0.84.4 exposes model mutation as a session-local operation. This adapter
+ * Pi 0.85.1 exposes model mutation as a session-local operation. This adapter
  * deliberately delegates model selection, auth, provider dispatch, transcript
  * persistence, and request construction back to Pi instead of recreating them
  * in a second transport implementation.

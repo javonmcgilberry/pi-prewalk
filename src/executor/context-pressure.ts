@@ -323,7 +323,7 @@ export class ContextPressureController {
 	}
 
 	/**
-	 * Reconciles Pi 0.84.4's terminal compaction failure event. A compaction
+	 * Reconciles Pi 0.85.1's terminal compaction failure event. A compaction
 	 * requested through `ctx.compact()` still has a callback that owns its
 	 * semantic failure path; this method only clears the host-side checklist
 	 * marker there. Native compaction has no callback, so an active pressure

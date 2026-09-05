@@ -9,7 +9,7 @@ Those things depend on the models, the task, and the provider. This guide
 separates what the code does from what would still need a paid benchmark to
 prove.
 
-The current compatibility target is Pi **0.84.4**. Other Pi versions may work,
+The current compatibility target is Pi **0.85.1**. Other Pi versions may work,
 but they are not the version this release is tested against.
 
 ## The three names you need
@@ -100,7 +100,7 @@ A normal manual run works like this.
    halfway through parallel tool results. Before the executor's first request,
    Prewalk removes the planning-only instruction but keeps the conversation,
    checklist, usage, model identity, and stop reasons.
-6. **The executor takes the next regular model turn.** Prewalk uses Pi 0.84.4's
+6. **The executor takes the next regular model turn.** Prewalk uses Pi 0.85.1's
    session-local model selection for that request. Pi's own request pipeline,
    authentication, transcript handling, and provider dispatch use the executor
    while the run is active; the saved default is unchanged.
@@ -134,7 +134,7 @@ built-in, temporary session model switch. In plain terms, OMP tells the session
 itself, "for now, use this other model," and the rest of OMP's code follows that
 switch.
 
-Pi 0.84.4 exposes the same session-local operation through its public
+Pi 0.85.1 exposes the same session-local operation through its public
 `setModel()` and `setThinkingLevel()` APIs. Prewalk uses those APIs for the
 active run, so Pi keeps ownership of authentication, provider dispatch,
 transcript persistence, and request construction. The saved default model is
@@ -275,7 +275,7 @@ OMP controls the session code itself, so it has capabilities a standalone
 extension cannot safely recreate through public hooks.
 
 - Its built-in temporary model switch updates the session's model-tracking
-  code in one place. Prewalk uses Pi 0.84.4's public session-local model
+  code in one place. Prewalk uses Pi 0.85.1's public session-local model
   switch, while keeping its own run identity, handoff, and restoration policy.
 - Its compaction and context-overflow recovery are integrated with the model
   that actually owns the session. Prewalk can guard requests and use public

@@ -3,13 +3,36 @@ import { isRecord, isString } from "../value-contracts.mjs";
 
 const STATUSES = new Set(["supported", "failed", "pending", "skipped", "yanked", "review"]);
 const MAX_SUMMARY = 2000;
+export const PI_PACKAGES = [
+	"@earendil-works/pi-agent-core",
+	"@earendil-works/pi-ai",
+	"@earendil-works/pi-coding-agent",
+	"@earendil-works/pi-tui",
+];
+export const CONVERSION_PACKAGE = "@howaboua/pi-codex-conversion";
+const REQUIRED_DEPENDENCIES = [...PI_PACKAGES, CONVERSION_PACKAGE].sort();
 
 export function stableVersion(version) {
 	return isString(version) && /^\d+\.\d+\.\d+$/.test(version);
 }
 
-function candidateVersion(version) {
+export function candidateVersion(version) {
 	return isString(version) && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version);
+}
+
+function validateDependencyContract(version, dependencies) {
+	const names = Object.keys(dependencies).sort();
+	if (JSON.stringify(names) !== JSON.stringify(REQUIRED_DEPENDENCIES)) {
+		throw new Error("dependency keys are invalid");
+	}
+	for (const packageName of PI_PACKAGES) {
+		if (dependencies[packageName] !== version) {
+			throw new Error("Pi dependency must match candidate version");
+		}
+	}
+	if (!candidateVersion(dependencies[CONVERSION_PACKAGE])) {
+		throw new Error("dependency version is invalid");
+	}
 }
 
 export function validateCandidateResult(value) {
@@ -45,6 +68,7 @@ export function validateCandidateResult(value) {
 			throw new Error("dependency entry is invalid");
 		}
 	}
+	validateDependencyContract(value.version, value.dependencies);
 	return structuredClone(value);
 }
 

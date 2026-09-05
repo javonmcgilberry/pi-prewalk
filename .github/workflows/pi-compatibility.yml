@@ -71,6 +71,7 @@ jobs:
           npm ci --ignore-scripts
           npm install --no-save --ignore-scripts "@earendil-works/pi-agent-core@$CANDIDATE" "@earendil-works/pi-ai@$CANDIDATE" "@earendil-works/pi-coding-agent@$CANDIDATE" "@earendil-works/pi-tui@$CANDIDATE"
           npm view "@earendil-works/pi-coding-agent@$CANDIDATE" dist.integrity --json > "$RUNNER_TEMP/integrity.json"
+          node scripts/compatibility/installed-dependencies.mjs "$CANDIDATE" > "$RUNNER_TEMP/dependencies.json"
       - name: Run isolated compatibility checks
         env:
           CANDIDATE: ${{ matrix.version }}
@@ -88,8 +89,9 @@ jobs:
           const fs=require("fs");
           const status=Number(process.env.STATUS)===0?"supported":"failed";
           const integrity=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/integrity.json","utf8"));
+          const dependencies=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/dependencies.json","utf8"));
           const summary=fs.readFileSync(process.env.RUNNER_TEMP+"/summary.txt","utf8").replace(/[\u0000-\u001f\u007f]/g," ").slice(-2000);
-          process.stdout.write(JSON.stringify({version:process.env.VERSION,status,integrity,testedAt:new Date().toISOString(),runId:process.env.RUN_ID,artifactId:`candidate-${process.env.VERSION}-${process.env.RUN_ID}`,summary,dependencies:{"@earendil-works/pi-coding-agent":process.env.VERSION,"@howaboua/pi-codex-conversion":"3.0.3"}}));
+          process.stdout.write(JSON.stringify({version:process.env.VERSION,status,integrity,testedAt:new Date().toISOString(),runId:process.env.RUN_ID,artifactId:`candidate-${process.env.VERSION}-${process.env.RUN_ID}`,summary,dependencies}));
           NODE
           node scripts/compatibility/validate-result.mjs "$RUNNER_TEMP/result.json" > /dev/null
       - uses: actions/upload-artifact@v4

@@ -64,6 +64,11 @@ function toolCall(id, name, args) {
 	return { type: "toolCall", id, name, arguments: args };
 }
 
+function activeAgentFromSystemPrompt(systemPrompt) {
+	const match = systemPrompt?.match(/(?:^|\n)<active_agent name="([^"\r\n]+)"\/>/);
+	return match?.[1];
+}
+
 function responseFor(agent, callNumber) {
 	if (agent === "parent") {
 		return callNumber === 1
@@ -89,10 +94,22 @@ function responseFor(agent, callNumber) {
 		}
 		if (callNumber === 2) {
 			return [
+				toolCall("todo-worker", "prewalk_todo", {
+					op: "init",
+					list: [{ phase: "Implement", items: ["Make the worker change"] }],
+				}),
+			];
+		}
+		if (callNumber === 3) {
+			return [
 				toolCall("edit-worker", "edit", {
 					path: `${workDir}/worker.txt`,
 					oldText: "before",
 					newText: "worker",
+				}),
+				toolCall("todo-worker-done", "prewalk_todo", {
+					op: "done",
+					task: "Make the worker change",
 				}),
 			];
 		}
@@ -112,16 +129,19 @@ function responseFor(agent, callNumber) {
 }
 
 export default function registerFixtureProvider(pi) {
+	const sessionIds = new Map();
 	pi.registerProvider("fixture", {
 		api: "openai-codex-responses",
 		baseUrl: "https://fixture.invalid",
 		apiKey: "credential-free-fixture",
 		models: [model("planner"), model("executor")],
-		streamSimple(selected) {
+		streamSimple(selected, context) {
+			const activeAgent = activeAgentFromSystemPrompt(context?.systemPrompt);
 			const agent =
-				process.env.PI_SUBAGENT_CHILD === "1"
+				activeAgent ||
+				(process.env.PI_SUBAGENT_CHILD === "1"
 					? process.env.PI_SUBAGENT_CHILD_AGENT || "unknown-child"
-					: "parent";
+					: "parent");
 			const callNumber = (calls.get(agent) ?? 0) + 1;
 			calls.set(agent, callNumber);
 			trace({
@@ -130,16 +150,20 @@ export default function registerFixtureProvider(pi) {
 				callNumber,
 				model: selected.id,
 				runId: process.env.PI_SUBAGENT_RUN_ID ?? null,
+				sessionId: sessionIds.get(agent) ?? null,
 			});
 			return stream(selected, responseFor(agent, callNumber));
 		},
 	});
 
-	pi.on("before_agent_start", () => {
+	pi.on("before_agent_start", (event, ctx) => {
+		const activeAgent = activeAgentFromSystemPrompt(event?.systemPrompt);
 		const agent =
-			process.env.PI_SUBAGENT_CHILD === "1"
+			activeAgent ||
+			(process.env.PI_SUBAGENT_CHILD === "1"
 				? process.env.PI_SUBAGENT_CHILD_AGENT || "unknown-child"
-				: "parent";
+				: "parent");
+		sessionIds.set(agent, ctx.sessionManager.getSessionId());
 		trace({
 			type: "before-agent-start",
 			agent,
@@ -148,15 +172,18 @@ export default function registerFixtureProvider(pi) {
 		});
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		const activeAgent = activeAgentFromSystemPrompt(ctx.getSystemPrompt());
 		const agent =
-			process.env.PI_SUBAGENT_CHILD === "1"
+			activeAgent ||
+			(process.env.PI_SUBAGENT_CHILD === "1"
 				? process.env.PI_SUBAGENT_CHILD_AGENT || "unknown-child"
-				: "parent";
+				: "parent");
 		trace({
 			type: "session-shutdown",
 			agent,
 			runId: process.env.PI_SUBAGENT_RUN_ID ?? null,
+			sessionId: sessionIds.get(agent) ?? ctx.sessionManager.getSessionId(),
 		});
 	});
 }
