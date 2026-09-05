@@ -150,9 +150,55 @@ been run.
 
 Keep `compaction.responsesCompaction` set to `false` when Pi Codex Conversion is installed. The legacy top-level `responsesCompaction` setting is recognized too. Prewalk refuses to arm, including while restoring an active run, when native Responses compaction is explicitly enabled; otherwise hook order could compact planning-only context before Prewalk filters it.
 
+### A streamed response starts over
+
+If a visible Codex response disappears and a different response starts in the
+same turn, check the provider transport. This can happen outside Prewalk. Pi
+Codex Conversion can retry a failed WebSocket request or fall back to SSE. A
+fresh provider attempt may replace output that was already visible, and Pi
+cannot restore an attempt that the provider adapter discarded before
+`message_end`.
+
+Use these Pi settings when preserving visible partial output matters more than
+automatic transport recovery:
+
+```json
+{
+  "httpIdleTimeoutMs": 0,
+  "transport": "sse",
+  "retry": {
+    "enabled": true,
+    "provider": {
+      "maxRetries": 0
+    }
+  }
+}
+```
+
+`retry.enabled` controls Pi's agent-level retry. The nested provider setting is
+separate and must be set explicitly for custom providers. SSE with zero provider
+retries prevents a WebSocket retry or fallback from replacing the active
+response. It also gives up automatic provider transport recovery.
+
+For Pi Codex Conversion, enable safe transport logs while investigating:
+
+```json
+{
+  "openai": {
+    "forceCachedWebSockets": false,
+    "cacheDiagnostics": "status-and-log"
+  }
+}
+```
+
+The logs are written under `~/.pi/agent/pi-codex-logs/`. They record transport,
+retry, and fallback events without prompts, response text, tool arguments,
+credentials, or response IDs. This is provider troubleshooting guidance, not a
+Prewalk runtime requirement.
+
 The optional `executorFallbacks` array lists backup executors in order. When it is missing, Prewalk builds a list from registered models and Oh My Pi's built-in `smol` preferences. An empty array turns that behavior off. A fallback must be registered, authorized, able to produce output, and different from the planner after reasoning-level limits are applied.
 
-Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. At an idle manual-run boundary, it removes only lifecycle facts left by an aborted, unowned agent; exact old-run facts remain stale. Until the checklist exists, an aborted planner stream, a rejected stale planning tool call, or a settled checklist-free turn queues another hidden recovery turn on the same run. Pi already saves any partial assistant content and signed reasoning it received. The same planner gets that history on recovery instead of starting over. Reasoning that never reached Pi cannot be recovered, but Prewalk keeps the saved transcript and run state. Prewalk retries automatically up to `plannerRecovery.maxRetries`, which defaults to 5. At that limit it pauses automatic recovery instead of discarding the run; the saved planning trace and checklist remain active, and the next user message grants a fresh bounded recovery window. Creating the checklist also resets the retry count, and `/prewalk cancel` stops recovery immediately. An unfinished planner run is restored from its session audit when an existing session starts or resumes, as well as after `/reload`; completed, failed, cancelled, and executor-routed runs keep their existing terminal or safe-start behavior. Prewalk uses Pi 0.84.4's public session-local `setModel()` and `setThinkingLevel()` APIs; it does not patch Pi or import private modules. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
+Executor routing belongs only to the current run, and Prewalk ignores stale events from older runs. At an idle manual-run boundary, it removes only lifecycle facts left by an aborted, unowned agent; exact old-run facts remain stale. Until the checklist exists, an aborted planner stream, a rejected stale planning tool call, or a settled checklist-free turn queues another hidden recovery turn on the same run. Pi saves partial assistant content and signed reasoning that reaches its finalized message. A provider adapter can still discard an earlier transport attempt before Pi persists it. The same planner gets the saved history on recovery instead of starting over. Reasoning or response text that never reached the saved message cannot be recovered, but Prewalk keeps the transcript and run state that Pi retained. Prewalk retries automatically up to `plannerRecovery.maxRetries`, which defaults to 5. At that limit it pauses automatic recovery instead of discarding the run; the saved planning trace and checklist remain active, and the next user message grants a fresh bounded recovery window. Creating the checklist also resets the retry count, and `/prewalk cancel` stops recovery immediately. An unfinished planner run is restored from its session audit when an existing session starts or resumes, as well as after `/reload`; completed, failed, cancelled, and executor-routed runs keep their existing terminal or safe-start behavior. Prewalk uses Pi 0.84.4's public session-local `setModel()` and `setThinkingLevel()` APIs; it does not patch Pi or import private modules. See the [plain-language guide](docs/prewalk-vs-omp.md) and [host-event architecture](docs/architecture/host-event-correlation.md) for the details.
 
 ## Child agents
 
