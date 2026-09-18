@@ -2580,12 +2580,25 @@ describe("Prewalk extension harness", () => {
 	});
 
 	it("starts a manual run, then routes Luna after the first mutation", async () => {
+		const configPath = path.join(agentDir, "prewalk.json");
+		const config = JSON.parse(await readFile(configPath, "utf8"));
+		await writeFile(configPath, JSON.stringify({ ...config, blockPlannerDelegation: true }));
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("prewalk")?.("run", harness.context);
 		expect(harness.delegated).toEqual([]);
+		const blockedLaunch = await harness.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "premature-worker",
+			toolName: "subagent",
+			input: { agent: "worker", task: "implement" },
+		});
+		expect(blockedLaunch).toContainEqual({
+			block: true,
+			reason: expect.stringContaining("first successful code edit"),
+		});
 		expect(harness.statuses.at(-1)).toBe(
 			"prewalk: Planning · Planner: 5.6 Sol (low reasoning) → Executor: 5.6 Luna (low reasoning)",
 		);
@@ -3041,7 +3054,10 @@ describe("Prewalk extension harness", () => {
 		);
 	});
 
-	it("leaves upstream child model, thinking, fallback, and scheduling inputs unchanged", async () => {
+	it("blocks planner dispatch without rewriting upstream child inputs", async () => {
+		const configPath = path.join(agentDir, "prewalk.json");
+		const config = JSON.parse(await readFile(configPath, "utf8"));
+		await writeFile(configPath, JSON.stringify({ ...config, blockPlannerDelegation: true }));
 		const harness = createHarness();
 		prewalkExtension(harness.pi);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
@@ -3069,7 +3085,7 @@ describe("Prewalk extension harness", () => {
 				toolName: "subagent",
 				input: launch,
 			}),
-		).toEqual([undefined]);
+		).toEqual([expect.objectContaining({ block: true })]);
 		expect(
 			await harness.emit("tool_call", {
 				type: "tool_call",
@@ -3077,7 +3093,7 @@ describe("Prewalk extension harness", () => {
 				toolName: "subagent",
 				input: schedule,
 			}),
-		).toEqual([undefined]);
+		).toEqual([expect.objectContaining({ block: true })]);
 		expect(launch).toEqual(launchSnapshot);
 		expect(schedule).toEqual(scheduleSnapshot);
 	});

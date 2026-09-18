@@ -212,6 +212,12 @@ Prewalk does not discover, define, or launch child agents. It does not rewrite t
 
 Child trajectories are separate. A child's checklist, mutation evidence, and executor route cannot arm the parent, and the parent's state cannot arm the child. Separate trajectories do not lock a shared checkout. Concurrent writers need launcher worktrees or explicit coordination.
 
+With `blockPlannerDelegation: true`, while a run is armed, planning, or ready for handoff, direct `subagent` dispatch,
+resume, and steering calls are blocked. Discovery, status, and stop operations
+remain available. Complete the first edit and executor handoff in the parent
+session before delegating. This guard does not sandbox commands or external
+process launchers.
+
 Child Prewalk is off by default and is not enabled by the portable setup. A child must load this extension through its upstream `extensions` or `subagentOnlyExtensions` configuration, then be opted in under `children.agents`. Standard roles are off until configured:
 
 | Role | Typical use |

@@ -73,6 +73,7 @@ export type ParsedPrewalkConfig = PrewalkConfig & {
 
 const CONFIG_KEYS = new Set([
 	"enabled",
+	"blockPlannerDelegation",
 	"executor",
 	"executorFallbacks",
 	"handoff",
@@ -105,6 +106,9 @@ export function parseConfig(value: BoundaryValue): ParsedPrewalkConfig {
 		throw new Error("Prewalk config enabled must be a boolean.");
 	}
 	const executor = parseExecutorConfig(value.executor, "executor");
+	if (value.blockPlannerDelegation !== undefined && !isBoolean(value.blockPlannerDelegation)) {
+		throw new Error("Prewalk config blockPlannerDelegation must be a boolean.");
+	}
 	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
 	const handoff = parseHandoffConfig(value.handoff);
 	const plannerRecovery = parsePlannerRecoveryConfig(value.plannerRecovery);
@@ -131,6 +135,8 @@ export function parseConfig(value: BoundaryValue): ParsedPrewalkConfig {
 		analytics,
 	};
 	if (executorFallbacks !== undefined) config.executorFallbacks = executorFallbacks;
+	if (isBoolean(value.blockPlannerDelegation))
+		config.blockPlannerDelegation = value.blockPlannerDelegation;
 	if (children !== undefined) config.children = children;
 	return config;
 }
@@ -425,6 +431,9 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	};
 	// The wizard only edits the primary executor. A hand-written fallback
 	// chain survives it rather than being silently dropped.
+	if (savedConfig?.blockPlannerDelegation !== undefined) {
+		nextConfig.blockPlannerDelegation = savedConfig.blockPlannerDelegation;
+	}
 	if (savedConfig?.executorFallbacks !== undefined) {
 		nextConfig.executorFallbacks = savedConfig.executorFallbacks;
 	}

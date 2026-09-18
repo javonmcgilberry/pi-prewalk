@@ -47,6 +47,7 @@ export interface PrewalkConfig {
 	 * Omitted is the safe, backward-compatible off default.
 	 */
 	enabled?: boolean;
+	blockPlannerDelegation?: boolean;
 	executor: ExecutorConfig;
 	/**
 	 * Alternates tried in order when the primary executor is unavailable, so a

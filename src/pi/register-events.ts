@@ -58,6 +58,7 @@ import { PrewalkApplication } from "../orchestration/prewalk-application.js";
 import { type AuditEventKind, createAuditRecord, PREWALK_AUDIT_TYPE } from "../session/audit.js";
 import { loadSessionTitlesForIds } from "../session/metadata.js";
 import { latestAuditRecord, latestPrewalkToolSlate, SessionRecovery } from "../session/recovery.js";
+import { blocksPlannerDelegation } from "../turn/delegation-guard.js";
 import { hasRecognizedMutationPath, RECOGNIZED_MUTATION_TOOL_NAMES } from "../turn/mutation.js";
 import { PREWALK_TODO_TOOL_NAME } from "../turn/todo.js";
 import { TurnGate } from "../turn/turn-gate.js";
@@ -1390,6 +1391,18 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			identityOf(application.run),
 		);
 		if (correlation.decision === "ignore") return;
+		if (
+			application.run?.config.blockPlannerDelegation === true &&
+			(acceptsMutationEvidence(application.run) ||
+				application.run.phase === "handoff-pending") &&
+			blocksPlannerDelegation(event.toolName, event.input)
+		) {
+			return {
+				block: true,
+				reason:
+					"Prewalk planning must stay in this session through the first successful code edit and executor handoff. Child edits cannot trigger the parent handoff. Discovery and stopping children remain available.",
+			};
+		}
 	});
 
 	pi.on("tool_execution_update", (event) => {
