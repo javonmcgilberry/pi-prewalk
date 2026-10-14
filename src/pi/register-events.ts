@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
 import path from "node:path";
 import { type AgentMessage, convertToLlm } from "@earendil-works/pi-agent-core";
 import {
@@ -83,11 +83,26 @@ function activeChildAgentFromSystemPrompt(systemPrompt?: string): string | undef
 	return match?.[1];
 }
 
+const NO_HANDOFF_NOTICE =
+	"Prewalk finished without handing off: no edit counted as the proving edit. Prewalk counts edit, write, and apply_patch, and shell commands only when they run apply_patch.";
+
+function commandOnPath(command: string): boolean {
+	return (process.env.PATH ?? "").split(path.delimiter).some((directory) => {
+		if (!directory) return false;
+		try {
+			accessSync(path.join(directory, command), fsConstants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	});
+}
+
 function failureNotice(reasonCode: string): string {
 	if (reasonCode === MUTATION_TOOLS_UNAVAILABLE_REASON) {
 		const toolNames = RECOGNIZED_MUTATION_TOOL_NAMES;
 		const options = `${toolNames.slice(0, -1).join(", ")}, or ${toolNames[toolNames.length - 1]}`;
-		return `Prewalk failed: no active mutation-capable tool can prove the first edit. Enable ${options}.`;
+		return `Prewalk failed: no active mutation-capable tool can prove the first edit. Enable ${options}. bash counts only when apply_patch is on PATH.`;
 	}
 	if (reasonCode === "host-correlation-retry-failed")
 		return "Prewalk could not recover its planning checkpoint after a stale host event. Run /prewalk run to retry safely.";
@@ -765,7 +780,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			if (compactionState === "enabled") throw new Error("native-compaction-unsupported");
 			activatePlanningTools(undefined, requireTodo);
 			if (!ctx.model) throw new Error("model-unavailable");
-			if (!hasRecognizedMutationPath(pi.getActiveTools()))
+			if (!hasRecognizedMutationPath(pi.getActiveTools(), commandOnPath("apply_patch")))
 				throw new Error(MUTATION_TOOLS_UNAVAILABLE_REASON);
 			const planner: PlannerProfile = {
 				provider: ctx.model.provider,
@@ -895,7 +910,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			childDiagnostic = policy === false ? "child-disabled" : "agent-not-opted-in";
 			return updateStatus(ctx);
 		}
-		if (!hasRecognizedMutationPath(pi.getActiveTools())) {
+		if (!hasRecognizedMutationPath(pi.getActiveTools(), commandOnPath("apply_patch"))) {
 			childDiagnostic = "read-only";
 			return updateStatus(ctx);
 		}
@@ -1368,6 +1383,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			return;
 		}
 		const failedRun = run.phase === "failed";
+		const neverHandedOff = run.phase === "planning" || run.phase === "ready";
 		await getRuntimeController(ctx).restore(runIdentity);
 		let finalized = false;
 		try {
@@ -1378,6 +1394,7 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 		}
 		if (!sameRunIdentity(runIdentity, application.run)) return;
 		if (!failedRun && finalized) audit("completed", ctx);
+		if (!failedRun && neverHandedOff && run.todoSeen) ctx.ui.notify(NO_HANDOFF_NOTICE, "warning");
 		application.reset();
 		lastOutcome = failedRun ? "failed" : "completed";
 		turnGate.resetMutationEvidence();

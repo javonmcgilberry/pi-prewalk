@@ -798,7 +798,7 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages).toEqual([]);
 		expect(harness.activeTools()).toEqual(["read", "grep"]);
 		expect(harness.notifications.at(-1)).toBe(
-			"Prewalk failed: no active mutation-capable tool can prove the first edit. Enable edit, write, apply_patch, bash, powershell, exec_command, or exec.",
+			"Prewalk failed: no active mutation-capable tool can prove the first edit. Enable edit, write, apply_patch, bash, powershell, exec_command, or exec. bash counts only when apply_patch is on PATH.",
 		);
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "failed",
@@ -809,17 +809,47 @@ describe("Prewalk extension harness", () => {
 	it.each(["edit", "write", "apply_patch", "bash", "exec_command", "exec"])(
 		"arms with the %s proving path available",
 		async (toolName) => {
-			const harness = createHarness({ activeTools: ["read", toolName] });
+			const binDirectory = await mkdtemp(path.join(tmpdir(), "prewalk-apply-patch-"));
+			await writeFile(path.join(binDirectory, "apply_patch"), "#!/bin/sh\n", { mode: 0o755 });
+			vi.stubEnv("PATH", binDirectory);
+			try {
+				const harness = createHarness({ activeTools: ["read", toolName] });
+				prewalkExtension(harness.pi);
+				await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+				await harness.commands.get("prewalk")?.("run", harness.context);
+
+				expect(harness.activeTools()).toEqual(["read", toolName, PREWALK_TODO_TOOL_NAME]);
+				expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
+				expect(harness.notifications).toEqual([]);
+			} finally {
+				vi.unstubAllEnvs();
+				await rm(binDirectory, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("fails before planning when bash is the only edit path and apply_patch is not on PATH", async () => {
+		const emptyDirectory = await mkdtemp(path.join(tmpdir(), "prewalk-no-apply-patch-"));
+		vi.stubEnv("PATH", emptyDirectory);
+		try {
+			const harness = createHarness({ activeTools: ["read", "bash"] });
 			prewalkExtension(harness.pi);
 			await harness.emit("session_start", { type: "session_start", reason: "startup" });
 
 			await harness.commands.get("prewalk")?.("run", harness.context);
 
-			expect(harness.activeTools()).toEqual(["read", toolName, PREWALK_TODO_TOOL_NAME]);
-			expect(harness.messages.at(-1)?.customType).toBe(PREWALK_PLAN_MESSAGE_TYPE);
-			expect(harness.notifications).toEqual([]);
-		},
-	);
+			expect(harness.messages).toEqual([]);
+			expect(harness.activeTools()).toEqual(["read", "bash"]);
+			expect(harness.entries.at(-1)?.data).toMatchObject({
+				event: "failed",
+				reasonCode: "mutation-tools-unavailable",
+			});
+		} finally {
+			vi.unstubAllEnvs();
+			await rm(emptyDirectory, { recursive: true, force: true });
+		}
+	});
 
 	it("refuses to arm manual Prewalk during an active agent turn", async () => {
 		const harness = createHarness({ idle: false });
@@ -2053,6 +2083,24 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toContain("succeeded; never switched");
 		expect(harness.notifications.at(-1)).toContain("This run never switched models");
 		expect(harness.notifications.at(-1)).not.toContain("Cannot compare");
+	});
+
+	it("warns when a planning-only run finishes its checklist without handing off", async () => {
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("prewalk")?.("run", harness.context);
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistant(harness.planner),
+		});
+
+		await completePlanningOnlyRun(harness, "warning");
+
+		expect(harness.entries.at(-1)?.data).toMatchObject({ event: "completed" });
+		expect(harness.notifications).toContain(
+			"Prewalk finished without handing off: no edit counted as the proving edit. Prewalk counts edit, write, and apply_patch, and shell commands only when they run apply_patch.",
+		);
 	});
 
 	it("does not restore an explicitly completed run on reload", async () => {

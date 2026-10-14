@@ -70,9 +70,19 @@ export const RECOGNIZED_MUTATION_TOOL_NAMES = [
 ] as const;
 const RECOGNIZED_MUTATION_TOOL_SET = new Set<string>(RECOGNIZED_MUTATION_TOOL_NAMES);
 
+// bash proves an edit only by running apply_patch, so it needs that command.
+const SHELL_APPLY_PATCH_TOOL_NAMES = new Set<string>(["bash"]);
+
 /** Returns whether the active tool slate can produce a recognized proving edit. */
-export function hasRecognizedMutationPath(toolNames: readonly string[]): boolean {
-	return toolNames.some((toolName) => RECOGNIZED_MUTATION_TOOL_SET.has(toolName));
+export function hasRecognizedMutationPath(
+	toolNames: readonly string[],
+	shellApplyPatchAvailable = true,
+): boolean {
+	return toolNames.some(
+		(toolName) =>
+			RECOGNIZED_MUTATION_TOOL_SET.has(toolName) &&
+			(shellApplyPatchAvailable || !SHELL_APPLY_PATCH_TOOL_NAMES.has(toolName)),
+	);
 }
 
 interface CodeModeTrace {
