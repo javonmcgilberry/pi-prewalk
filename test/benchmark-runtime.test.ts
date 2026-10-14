@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FROZEN_BENCHMARK_PROTOCOL } from "../scripts/benchmark-contract.mjs";
 import { createBenchmarkRuntime } from "../scripts/benchmark-runtime.mjs";
 
 let root: string | undefined;
@@ -54,11 +55,39 @@ describe("trusted Pi benchmark runtime", () => {
 			evaluate: vi.fn(),
 			cleanup: vi.fn(async () => {}),
 		};
+		// The development dependency tracks current Pi and conversion releases,
+		// while the benchmark protocol stays frozen. Preflight must reject that
+		// drift and accept an installation that matches its protocol exactly.
+		const installedConversion = JSON.parse(
+			await readFile(
+				path.join(
+					import.meta.dirname,
+					"..",
+					"node_modules",
+					"@howaboua",
+					"pi-codex-conversion",
+					"package.json",
+				),
+				"utf8",
+			),
+		).version;
+		if (installedConversion !== FROZEN_BENCHMARK_PROTOCOL.conversionVersion) {
+			await expect(
+				createBenchmarkRuntime({
+					authFile,
+					piExecutable,
+					sandbox,
+					temporaryParent: root,
+				}).preflight({ tasks: [task] }),
+			).rejects.toThrow("Benchmark runtime versions do not match the frozen protocol.");
+			expect(sandbox.assertImage).not.toHaveBeenCalled();
+		}
 		const runtime = createBenchmarkRuntime({
 			authFile,
 			piExecutable,
 			sandbox,
 			temporaryParent: root,
+			protocol: { ...FROZEN_BENCHMARK_PROTOCOL, conversionVersion: installedConversion },
 		});
 		await runtime.preflight({ tasks: [task] });
 		expect(sandbox.assertImage).toHaveBeenNthCalledWith(1, task.workerImage, {

@@ -1,6 +1,15 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { type ExecutorProbe, resolveExecutorChain } from "../../src/executor/selection.js";
+import {
+	configForPlanner,
+	parseConfig,
+	rememberPlannerExecutor,
+} from "../../src/config/prewalk-config.js";
+import {
+	type ExecutorProbe,
+	resolveConfiguredExecutor,
+	resolveExecutorChain,
+} from "../../src/executor/selection.js";
 import type { ExecutorConfig } from "../../src/orchestration/coordinator.js";
 
 function model(provider: string, id: string, contextWindow = 272_000): Model<Api> {
@@ -213,5 +222,75 @@ describe("executor chain resolution", () => {
 			{ candidate: candidate("anthropic", "claude-haiku-4-5"), reason: "not-registered" },
 			{ candidate: candidate("google", "gemini-3.5-flash"), reason: "not-registered" },
 		]);
+	});
+});
+
+describe("planner-specific executors", () => {
+	const opus = model("anthropic", "claude-opus-5-5");
+	const haiku = model("anthropic", "claude-haiku-4-5");
+	const luna = model("openai-codex", "gpt-5.6-luna");
+	const config = parseConfig({
+		executor: candidate("openai-codex", "gpt-5.6-luna"),
+		executorFallbacks: [],
+		plannerExecutors: {
+			"anthropic/claude-opus-5-5": candidate("anthropic", "claude-haiku-4-5"),
+		},
+	});
+	const registry = (available: Model<Api>[]) => ({
+		find: (provider: string, id: string) =>
+			available.find((entry) => entry.provider === provider && entry.id === id),
+		getAvailable: () => available,
+		getApiKeyAndHeaders: async () => ({ ok: true }),
+	});
+
+	it("routes each planner to the executor remembered for it", async () => {
+		const all = [opus, haiku, luna, planner];
+		const fromOpus = await resolveConfiguredExecutor(
+			{ provider: "anthropic", model: "claude-opus-5-5", reasoning: "high" },
+			config,
+			opus,
+			registry(all),
+		);
+		const fromSol = await resolveConfiguredExecutor(
+			{ provider: "openai-codex", model: "gpt-5.6-sol", reasoning: "high" },
+			config,
+			planner,
+			registry(all),
+		);
+
+		expect(fromOpus.ok && fromOpus.executor.model).toBe("claude-haiku-4-5");
+		expect(fromSol.ok && fromSol.executor.model).toBe("gpt-5.6-luna");
+	});
+
+	it("falls back to the default executor when the remembered one is unavailable", async () => {
+		const result = await resolveConfiguredExecutor(
+			{ provider: "anthropic", model: "claude-opus-5-5", reasoning: "high" },
+			config,
+			opus,
+			registry([opus, luna]),
+		);
+
+		expect(result.ok && result.executor.model).toBe("gpt-5.6-luna");
+	});
+
+	it("saves configuration edits for the selected planner only", () => {
+		const view = configForPlanner(config, opus);
+		expect(view.executor.model).toBe("claude-haiku-4-5");
+
+		const saved = rememberPlannerExecutor(
+			{ ...view, executor: candidate("anthropic", "claude-sonnet-5") },
+			config,
+			opus,
+		);
+		expect(saved.executor).toEqual(config.executor);
+		expect(saved.plannerExecutors).toEqual({
+			"anthropic/claude-opus-5-5": candidate("anthropic", "claude-sonnet-5"),
+		});
+	});
+
+	it("rejects a planner key that is not provider/model", () => {
+		expect(() =>
+			parseConfig({ ...config, plannerExecutors: { opus: candidate("anthropic", "x") } }),
+		).toThrow(/provider\/model/);
 	});
 });

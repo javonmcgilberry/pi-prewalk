@@ -76,6 +76,24 @@ describe("executor context watchdog", () => {
 		expect(estimateRequestTokens(context)).toBe(584);
 	});
 
+	it("counts Pi 1.2 system-message content, sections, and added tools", () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "system",
+					content: "s".repeat(400),
+					sections: { rules: "r".repeat(400), removed: null },
+					toolsAdded: [{ name: "t".repeat(4), description: "d".repeat(400), parameters: {} }],
+					timestamp: 1,
+				},
+				{ role: "user", content: "u".repeat(400), timestamp: 2 },
+			],
+		};
+
+		// 100 content + 100 section + (1 name + 100 description + 1 schema) + 100 user.
+		expect(estimateRequestTokens(context)).toBe(402 + CONTEXT_ESTIMATE_SAFETY_MARGIN);
+	});
+
 	it("does not trust stale usage when the current prompt or tools grew", () => {
 		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		const context = {

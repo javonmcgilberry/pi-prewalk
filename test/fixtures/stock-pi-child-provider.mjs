@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 
 const tracePath = process.env.PI_PREWALK_CHILD_TRACE;
 const workDir = process.env.PI_PREWALK_CHILD_WORKDIR;
@@ -74,8 +74,8 @@ function responseFor(agent, callNumber) {
 		return callNumber === 1
 			? [
 					toolCall("delegate-worker", "subagent", {
-						workflowScript:
-							"return runs.run('main', { agent: 'worker', task: 'Make the requested worker and nested changes.' })",
+						agent: "worker",
+						task: "Make the requested worker and nested changes.",
 						async: false,
 					}),
 				]
@@ -86,8 +86,8 @@ function responseFor(agent, callNumber) {
 		if (callNumber === 1) {
 			return [
 				toolCall("delegate-reviewer", "subagent", {
-					workflowScript:
-						"return runs.run('main', { agent: 'reviewer', task: 'Make the nested change without child Prewalk.' })",
+					agent: "reviewer",
+					task: "Make the nested change without child Prewalk.",
 					async: false,
 				}),
 			];
@@ -136,7 +136,10 @@ export default function registerFixtureProvider(pi) {
 		apiKey: "credential-free-fixture",
 		models: [model("planner"), model("executor")],
 		streamSimple(selected, context) {
-			const activeAgent = activeAgentFromSystemPrompt(context?.systemPrompt);
+			// Pi 1.2 carries the prompt in transcript system messages.
+			const activeAgent = activeAgentFromSystemPrompt(
+				getCurrentSystemPrompt(context?.messages ?? []),
+			);
 			const agent =
 				activeAgent ||
 				(process.env.PI_SUBAGENT_CHILD === "1"

@@ -5,9 +5,11 @@
       "**/*",
       "!node_modules/**/*",
       "!.pi-subagents/**/*",
+      "!evidence/**/*",
       "!tools/oxlint/anti-slop/**/*",
       "!!node_modules",
       "!!.pi-subagents",
+      "!!evidence",
       "!!tools/oxlint/anti-slop"
     ]
   },

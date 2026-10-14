@@ -4,6 +4,7 @@ import {
 	writeFile as writeFileAsync,
 } from "node:fs/promises";
 import path from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	ANALYTICS_SCHEMA_VERSION,
@@ -11,7 +12,11 @@ import {
 	DEFAULT_ANALYTICS_CONFIG,
 	parseAnalyticsConfig,
 } from "../analytics/index.js";
-import { isSameModelAtEffectiveReasoning } from "../executor/selection.js";
+import {
+	executorForPlanner,
+	isSameModelAtEffectiveReasoning,
+	plannerKey,
+} from "../executor/selection.js";
 import { type BoundaryValue, isBoolean, isRecord, isString } from "../guards.js";
 import type {
 	ChildPrewalkConfig,
@@ -76,6 +81,7 @@ const CONFIG_KEYS = new Set([
 	"blockPlannerDelegation",
 	"executor",
 	"executorFallbacks",
+	"plannerExecutors",
 	"handoff",
 	"plannerRecovery",
 	"analytics",
@@ -110,6 +116,7 @@ export function parseConfig(value: BoundaryValue): ParsedPrewalkConfig {
 		throw new Error("Prewalk config blockPlannerDelegation must be a boolean.");
 	}
 	const executorFallbacks = parseExecutorFallbacks(value.executorFallbacks);
+	const plannerExecutors = parsePlannerExecutors(value.plannerExecutors);
 	const handoff = parseHandoffConfig(value.handoff);
 	const plannerRecovery = parsePlannerRecoveryConfig(value.plannerRecovery);
 	const analytics =
@@ -135,6 +142,7 @@ export function parseConfig(value: BoundaryValue): ParsedPrewalkConfig {
 		analytics,
 	};
 	if (executorFallbacks !== undefined) config.executorFallbacks = executorFallbacks;
+	if (plannerExecutors !== undefined) config.plannerExecutors = plannerExecutors;
 	if (isBoolean(value.blockPlannerDelegation))
 		config.blockPlannerDelegation = value.blockPlannerDelegation;
 	if (children !== undefined) config.children = children;
@@ -191,6 +199,47 @@ function parseExecutorFallbacks(value: BoundaryValue): ExecutorConfig[] | undefi
 		throw new Error("Prewalk config executorFallbacks must be an array.");
 	}
 	return value.map((entry, index) => parseExecutorConfig(entry, `executorFallbacks[${index}]`));
+}
+
+function parsePlannerExecutors(value: BoundaryValue): Record<string, ExecutorConfig> | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw new Error("Prewalk config plannerExecutors must be a JSON object.");
+	}
+	const executors: Record<string, ExecutorConfig> = {};
+	for (const [planner, executor] of Object.entries(value)) {
+		if (!/^[^/\s]+\/\S+$/.test(planner)) {
+			throw new Error(
+				`Prewalk config plannerExecutors key ${planner} must be a provider/model planner name.`,
+			);
+		}
+		executors[planner] = parseExecutorConfig(executor, `plannerExecutors.${planner}`);
+	}
+	return executors;
+}
+
+/**
+ * Configuration screens edit the executor for the selected planner. These two
+ * helpers move between that view and the stored file, so saving remembers the
+ * choice for this planner without changing the default or other planners.
+ */
+export function configForPlanner<T extends PrewalkConfig>(config: T, planner: Model<Api>): T {
+	return { ...config, executor: executorForPlanner(config, planner.provider, planner.id) };
+}
+
+export function rememberPlannerExecutor(
+	edited: PrewalkConfig,
+	saved: PrewalkConfig | undefined,
+	planner: Model<Api>,
+): PrewalkConfig {
+	return {
+		...edited,
+		executor: structuredClone(saved?.executor ?? edited.executor),
+		plannerExecutors: {
+			...edited.plannerExecutors,
+			[plannerKey(planner.provider, planner.id)]: structuredClone(edited.executor),
+		},
+	};
 }
 
 function parseChildrenConfig(value: BoundaryValue): ChildPrewalkConfig {
@@ -318,16 +367,19 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 	if (ctx.mode === "tui") {
 		const result = await showPrewalkConfigureMenu({
 			ctx,
-			initial: savedConfig ?? {
-				enabled: false,
-				executor: { ...DEFAULT_EXECUTOR },
-				handoff: structuredClone(DEFAULT_HANDOFF_CONFIG),
-				plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
-				analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
-			},
+			initial: savedConfig
+				? configForPlanner(savedConfig, planner)
+				: {
+						enabled: false,
+						executor: { ...DEFAULT_EXECUTOR },
+						handoff: structuredClone(DEFAULT_HANDOFF_CONFIG),
+						plannerRecovery: structuredClone(DEFAULT_PLANNER_RECOVERY_CONFIG),
+						analytics: structuredClone(DEFAULT_ANALYTICS_CONFIG),
+					},
 			models: ctx.modelRegistry.getAvailable(),
 			planner,
-			onSave: writePrewalkConfig,
+			onSave: (edited) =>
+				writePrewalkConfig(rememberPlannerExecutor(edited, savedConfig, planner)),
 		});
 		ctx.ui.notify(
 			result === "saved"
@@ -367,10 +419,12 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		ctx.ui.notify("The selected executor is no longer available.", "error");
 		return;
 	}
+	const savedExecutor = savedConfig
+		? executorForPlanner(savedConfig, planner.provider, planner.id)
+		: undefined;
 	const savedReasoning =
-		savedConfig?.executor.provider === executor.provider &&
-		savedConfig.executor.model === executor.id
-			? savedConfig.executor.reasoning
+		savedExecutor?.provider === executor.provider && savedExecutor.model === executor.id
+			? savedExecutor.reasoning
 			: undefined;
 	const preferredReasoning = savedReasoning ?? DEFAULT_EXECUTOR.reasoning;
 	const reasoningChoices = [
@@ -438,11 +492,17 @@ export async function configurePrewalk(ctx: ExtensionContext): Promise<void> {
 		nextConfig.executorFallbacks = savedConfig.executorFallbacks;
 	}
 	if (savedConfig?.children !== undefined) nextConfig.children = savedConfig.children;
+	if (savedConfig?.plannerExecutors !== undefined) {
+		nextConfig.plannerExecutors = savedConfig.plannerExecutors;
+	}
 	const confirmed = await ctx.ui.confirm(
 		"Save Prewalk configuration?",
 		`${planner.provider}/${planner.id} plans, then ${executorChoice} executes at ${reasoningChoice} reasoning. Automatic startup: ${automaticChoice}.`,
 	);
 	if (!confirmed) return;
-	await writePrewalkConfig(nextConfig);
-	ctx.ui.notify("Prewalk configuration saved.", "info");
+	await writePrewalkConfig(rememberPlannerExecutor(nextConfig, savedConfig, planner));
+	ctx.ui.notify(
+		`Prewalk configuration saved. ${planner.provider}/${planner.id} will hand off to ${executorChoice}.`,
+		"info",
+	);
 }

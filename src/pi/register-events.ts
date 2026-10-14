@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type AgentMessage, convertToLlm } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+	convertToLlm,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
@@ -21,6 +22,7 @@ import {
 import {
 	type ExecutorChainResolution,
 	type ExecutorRejection,
+	executorForPlanner,
 	isSameModelAtEffectiveReasoning,
 	type RejectedExecutor,
 	resolveConfiguredExecutor,
@@ -899,7 +901,12 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 			childDiagnostic = "read-only";
 			return updateStatus(ctx);
 		}
-		const targetExecutor = policy === true ? config.executor : policy.executor;
+		const targetExecutor =
+			policy !== true
+				? policy.executor
+				: ctx.model
+					? executorForPlanner(config, ctx.model.provider, ctx.model.id)
+					: config.executor;
 		const targetModel = ctx.modelRegistry.find(targetExecutor.provider, targetExecutor.model);
 		if (
 			ctx.model &&
@@ -1140,7 +1147,11 @@ export function registerPrewalkEvents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		// Pi 1.2 also fires this for runs started by sendMessage(..., { triggerTurn }).
+		// Each start still pairs with one agent_start, so correlation records both kinds.
 		hostCorrelation.observe({ type: "before-agent" }, identityOf(application.run));
+		// Child tasks arrive as user prompts; a custom-message run must not arm a child.
+		if (event.messageType === "custom") return;
 		const childAgent = activeChildAgentFromSystemPrompt(event.systemPrompt);
 		if (childAgent && !application.run) await startChildPrewalkRun(ctx, childAgent);
 	});

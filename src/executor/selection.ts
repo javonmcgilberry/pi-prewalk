@@ -47,6 +47,19 @@ export interface ExecutorSelectionRegistry {
 	getApiKeyAndHeaders(model: Model<Api>): Promise<{ ok: boolean }>;
 }
 
+export function plannerKey(provider: string, model: string): string {
+	return `${provider}/${model}`;
+}
+
+/** Returns the executor remembered for this planner, or the default executor. */
+export function executorForPlanner(
+	config: PrewalkConfig,
+	provider: string,
+	model: string,
+): ExecutorConfig {
+	return config.plannerExecutors?.[plannerKey(provider, model)] ?? config.executor;
+}
+
 /**
  * Validates the selected planner and resolves the configured or inferred
  * executor chain. Keeping this sequence here prevents the Pi adapter from
@@ -71,22 +84,20 @@ export async function resolveConfiguredExecutor(
 	}
 	const plannerAuth = await registry.getApiKeyAndHeaders(planner);
 	if (!plannerAuth.ok) throw new Error("authorization-unavailable");
+	const primary = executorForPlanner(config, planner.provider, planner.id);
 	const fallbackChain =
 		config.executorFallbacks ??
-		inferDefaultExecutorChain(
-			planner.provider,
-			registry.getAvailable(),
-			config.executor.reasoning,
-		);
-	return resolveExecutorChain(
-		planner,
-		plannerProfile.reasoning,
-		[config.executor, ...fallbackChain],
-		{
-			find: (provider, model) => registry.find(provider, model),
-			hasAuth: async (target) => (await registry.getApiKeyAndHeaders(target)).ok,
-		},
-	);
+		inferDefaultExecutorChain(planner.provider, registry.getAvailable(), primary.reasoning);
+	// A planner-specific executor degrades to the default executor before the
+	// shared fallbacks, so an unavailable remembered model still hands off.
+	const candidates =
+		primary === config.executor
+			? [primary, ...fallbackChain]
+			: [primary, config.executor, ...fallbackChain];
+	return resolveExecutorChain(planner, plannerProfile.reasoning, candidates, {
+		find: (provider, model) => registry.find(provider, model),
+		hasAuth: async (target) => (await registry.getApiKeyAndHeaders(target)).ok,
+	});
 }
 
 /** Returns whether a target model/effort would be a no-op from the planner. */

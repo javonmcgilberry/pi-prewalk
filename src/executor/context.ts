@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Context, Message, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Message, Model, Tool } from "@earendil-works/pi-ai";
 import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
 import { type BoundaryValue, isString } from "../guards.js";
 
@@ -71,11 +71,16 @@ export function estimateRequestTokens(context: Context): number {
 function estimateWholeRequest(context: Context): number {
 	let tokens = ceilTokens((context.systemPrompt ?? "").length);
 	for (const message of context.messages) tokens += estimateMessage(message);
-	for (const tool of context.tools ?? []) {
-		tokens += ceilTokens(tool.name.length) + ceilTokens(tool.description.length);
-		tokens += ceilTokens((JSON.stringify(tool.parameters) ?? "").length);
-	}
+	for (const tool of context.tools ?? []) tokens += estimateTool(tool);
 	return tokens;
+}
+
+function estimateTool(tool: Tool): number {
+	return (
+		ceilTokens(tool.name.length) +
+		ceilTokens(tool.description.length) +
+		ceilTokens((JSON.stringify(tool.parameters) ?? "").length)
+	);
 }
 
 function lastApplicableAssistantUsageIndex(messages: readonly Message[]): number | null {
@@ -105,6 +110,14 @@ function usageTokens(message: AssistantMessage): number {
 function estimateMessage(message: Message): number {
 	if (message.role === "user" || message.role === "toolResult")
 		return estimateContent(message.content);
+	if (message.role === "system") {
+		// Pi 1.2 carries prompt sections and tool declarations on system messages.
+		let tokens = estimateContent(message.content);
+		for (const section of Object.values(message.sections ?? {}))
+			tokens += ceilTokens(section?.length ?? 0);
+		for (const tool of message.toolsAdded ?? []) tokens += estimateTool(tool);
+		return tokens;
+	}
 	let characters = 0;
 	for (const block of message.content) {
 		if (block.type === "text" || block.type === "thinking") {

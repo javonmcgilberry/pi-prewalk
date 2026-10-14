@@ -250,7 +250,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 			case "home":
 				return "Choose a section. Nothing is written until you review and save.";
 			case "main":
-				return "The planner stays unchanged. These settings apply after the handoff.";
+				return `Remembered for planner ${this.options.planner.provider}/${this.options.planner.id}. Other planners keep their own executor.`;
 			case "children":
 				return "Child names come from the launcher. Each policy is independent and off until enabled.";
 			case "child-agent":
@@ -314,7 +314,7 @@ export class PrewalkConfigureComponent implements Component, Focusable {
 					{
 						label: "Main handoff",
 						value: executorLabel(this.draft.executor),
-						description: "Choose the executor model and effort used after planning.",
+						description: `Choose the executor model and effort used after planning with ${this.options.planner.provider}/${this.options.planner.id}.`,
 					},
 					{
 						label: "Child agents",

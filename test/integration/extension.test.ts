@@ -7,10 +7,12 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	type Model,
+	normalizeContext,
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionToolContext,
 	ProviderConfig,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -383,7 +385,7 @@ function createHarness(
 		getRegisteredProviderConfig: vi.fn(() => providerConfig),
 	};
 	// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
-	const context = castTestType<ExtensionContext>({
+	const context = castTestType<ExtensionToolContext>({
 		cwd: process.cwd(),
 		mode: options.mode,
 		get model() {
@@ -1089,7 +1091,10 @@ describe("Prewalk extension harness", () => {
 			),
 		).toBe(true);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 	});
 
@@ -2102,7 +2107,10 @@ describe("Prewalk extension harness", () => {
 			message: assistant(harness.planner),
 		});
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		await harness.emit("message_end", {
 			type: "message_end",
 			message: assistant(harness.executor),
@@ -2143,7 +2151,10 @@ describe("Prewalk extension harness", () => {
 			message: assistant(harness.planner),
 		});
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		await harness.emit("message_end", {
 			type: "message_end",
 			message: assistant(harness.executor),
@@ -2384,7 +2395,13 @@ describe("Prewalk extension harness", () => {
 
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
 			{
-				executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
+				executor: DEFAULT_EXECUTOR,
+				plannerExecutors: {
+					[`${DEFAULT_EXECUTOR.provider}/${PLANNER_MODEL_ID}`]: {
+						...DEFAULT_EXECUTOR,
+						reasoning: "medium",
+					},
+				},
 				executorFallbacks: fallbacks,
 			},
 		);
@@ -2443,7 +2460,13 @@ describe("Prewalk extension harness", () => {
 
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toEqual({
 			enabled: false,
-			executor: { ...DEFAULT_EXECUTOR, reasoning: "medium" },
+			executor: DEFAULT_EXECUTOR,
+			plannerExecutors: {
+				[`${DEFAULT_EXECUTOR.provider}/${PLANNER_MODEL_ID}`]: {
+					...DEFAULT_EXECUTOR,
+					reasoning: "medium",
+				},
+			},
 			handoff: DEFAULT_HANDOFF_CONFIG,
 			plannerRecovery: DEFAULT_PLANNER_RECOVERY_CONFIG,
 			analytics: {
@@ -2487,7 +2510,13 @@ describe("Prewalk extension harness", () => {
 		expect(vi.mocked(harness.context.ui.select).mock.calls[1]?.[1]?.[0]).toBe("low");
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
 			{
-				executor: { model: "gpt-5.6-luna", reasoning: "low" },
+				executor: { model: "another-executor", reasoning: "medium" },
+				plannerExecutors: {
+					[`${DEFAULT_EXECUTOR.provider}/${PLANNER_MODEL_ID}`]: {
+						model: "gpt-5.6-luna",
+						reasoning: "low",
+					},
+				},
 			},
 		);
 	});
@@ -2731,7 +2760,7 @@ describe("Prewalk extension harness", () => {
 		const result = await harness
 			.providerConfig()
 			// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
-			?.streamSimple?.(harness.planner, filtered as { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext(filtered as { messages: [] }))
 			.result();
 
 		expect(harness.delegated).toEqual([harness.executor]);
@@ -3098,6 +3127,35 @@ describe("Prewalk extension harness", () => {
 		expect(schedule).toEqual(scheduleSnapshot);
 	});
 
+	it("arms an in-process child from its user prompt but not from a custom-message run", async () => {
+		// Pi 1.2 fires before_agent_start for sendMessage(..., { triggerTurn }) runs
+		// too. Child tasks arrive as user prompts, so only those may arm a child.
+		await writeChildConfig({ worker: { mode: "implementation", executor: DEFAULT_EXECUTOR } });
+		const harness = createHarness();
+		prewalkExtension(harness.pi);
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		const systemPrompt = '<active_agent name="worker"/>\n\nsystem';
+
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			messageType: "custom",
+			message: { role: "custom", customType: "other-extension", content: "wake" },
+			systemPrompt,
+			systemPromptOptions: {},
+		});
+		expect(harness.activeTools()).not.toContain(PREWALK_TODO_TOOL_NAME);
+		expect(harness.messages).toEqual([]);
+
+		await harness.emit("before_agent_start", {
+			type: "before_agent_start",
+			messageType: "user",
+			prompt: "Implement the task",
+			systemPrompt,
+			systemPromptOptions: {},
+		});
+		expect(harness.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
+	});
+
 	it("reports why a child stayed unarmed when its executor is unavailable", async () => {
 		// startRun leaves the child unarmed rather than failing the spawn, so the
 		// reason has to reach /prewalk status or it exists nowhere.
@@ -3423,7 +3481,10 @@ describe("Prewalk extension harness", () => {
 		expect(harness.messages.at(-1)?.customType).toBe(PREWALK_CHECKLIST_MESSAGE_TYPE);
 
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
 		expect(harness.delegatedOptions.at(-1)?.reasoning).toBe("minimal");
 	});
@@ -3433,7 +3494,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		expect(harness.terminalInput("\u001b[Z")).toEqual({ consume: true });
 		expect(harness.statuses.at(-1)).toBe(
@@ -3442,7 +3506,10 @@ describe("Prewalk extension harness", () => {
 		expect(harness.notifications.at(-1)).toBe("Luna reasoning: medium");
 
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegatedOptions.at(-1)?.reasoning).toBe("medium");
 		expect(JSON.parse(await readFile(path.join(agentDir, "prewalk.json"), "utf8"))).toMatchObject(
 			{
@@ -3481,7 +3548,7 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("agent_start", { type: "agent_start" });
 		const pending = harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
 			.result();
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 		const message = assistant(harness.executor);
@@ -3518,7 +3585,7 @@ describe("Prewalk extension harness", () => {
 		// Native routing does not replace a provider registration. A stream
 		// reference captured before cancellation therefore remains Pi-owned;
 		// stale lifecycle events are correlated by the run identity instead.
-		await staleStream?.(harness.planner, { messages: [] }).result();
+		await staleStream?.(harness.planner, normalizeContext({ messages: [] })).result();
 		expect(harness.entries.at(-1)?.data).toMatchObject({
 			event: "plan-injected",
 			runId: replacementRunId,
@@ -3642,7 +3709,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		let releasePromotion!: () => void;
 		let promotionStarted!: () => void;
@@ -3988,7 +4058,10 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 		await harness.emit("agent_settled", { type: "agent_settled" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		await harness.commands.get("prewalk")?.("status", harness.context);
 
 		expect(harness.notifications.at(-1)).toContain(`run=${replacementRunId}`);
@@ -4451,7 +4524,10 @@ describe("Prewalk extension harness", () => {
 		});
 		await harness.emit("agent_end", { type: "agent_end", messages: [] });
 
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(harness.executor.id);
 	});
 
@@ -4483,7 +4559,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const failed = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
 			.result();
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
@@ -4509,7 +4585,10 @@ describe("Prewalk extension harness", () => {
 		await reachHandoff(harness);
 
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		await harness.emit("agent_settled", { type: "agent_settled" });
 
 		expect(harness.statuses.at(-1)).toContain("last failed");
@@ -4546,7 +4625,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const first = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
 			.result();
 		expect(first?.errorMessage).toBe("provider failure");
 		expect(harness.providerConfig()?.streamSimple).toBe(harness.baseStream);
@@ -4554,7 +4633,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const second = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
 			.result();
 		expect(second?.stopReason).toBe("stop");
 		expect(harness.statuses.at(-1)).not.toContain("executor stream failed");
@@ -4633,7 +4712,10 @@ describe("Prewalk extension harness", () => {
 			toolResults: [],
 		});
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		await harness.commands.get("prewalk")?.("todos", harness.context);
 		expect(harness.notifications.at(-1)).toContain("Finish verification");
 
@@ -4641,7 +4723,10 @@ describe("Prewalk extension harness", () => {
 		await harness.emit("agent_settled", { type: "agent_settled" });
 		expect(harness.messages).toHaveLength(promptCount);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 		const firstReminderCount = harness.messages.filter(
 			(message) => message.customType === "prewalk-todo-reminder",
@@ -4662,7 +4747,10 @@ describe("Prewalk extension harness", () => {
 		const runId = (requiredEntry(harness.entries[0]).data as { runId: string }).runId;
 
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 
 		await harness.commands.get("prewalk")?.("release", harness.context);
@@ -4673,7 +4761,10 @@ describe("Prewalk extension harness", () => {
 			effectiveRoute: "planner",
 		});
 
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
 		await harness.emit("input", {
 			type: "input",
@@ -4691,12 +4782,18 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		await harness.commands.get("prewalk")?.("cancel", harness.context);
 		expect(harness.notifications.at(-1)).toContain("use /prewalk release");
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 	});
 
@@ -4713,7 +4810,10 @@ describe("Prewalk extension harness", () => {
 		await reopened.emit("session_start", { type: "session_start", reason: "resume" });
 
 		expect(reopened.providerConfig()?.streamSimple).toBe(reopened.baseStream);
-		await reopened.providerConfig()?.streamSimple?.(reopened.planner, { messages: [] }).result();
+		await reopened
+			.providerConfig()
+			?.streamSimple?.(reopened.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(reopened.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
 		await reopened.commands.get("prewalk")?.(`stats receipt ${runId}`, reopened.context);
 		expect(reopened.notifications.at(-1)).toContain("interrupted");
@@ -4736,7 +4836,7 @@ describe("Prewalk extension harness", () => {
 			expect(reopened.activeTools()).toContain(PREWALK_TODO_TOOL_NAME);
 			await reopened
 				.providerConfig()
-				?.streamSimple?.(reopened.planner, { messages: [] })
+				?.streamSimple?.(reopened.planner, normalizeContext({ messages: [] }))
 				.result();
 			expect(reopened.delegated.at(-1)?.id).toBe(PLANNER_MODEL_ID);
 		},
@@ -4794,7 +4894,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(first.pi);
 		await reachHandoff(first);
 		await first.emit("agent_start", { type: "agent_start" });
-		await first.providerConfig()?.streamSimple?.(first.planner, { messages: [] }).result();
+		await first
+			.providerConfig()
+			?.streamSimple?.(first.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		const restored = createHarness();
 		restored.setBranch(auditBranch(first));
@@ -4806,7 +4909,10 @@ describe("Prewalk extension harness", () => {
 			"prewalk: Executing · Executor: 5.6 Luna (low reasoning)",
 		);
 		await restored.emit("agent_start", { type: "agent_start" });
-		await restored.providerConfig()?.streamSimple?.(restored.planner, { messages: [] }).result();
+		await restored
+			.providerConfig()
+			?.streamSimple?.(restored.planner, normalizeContext({ messages: [] }))
+			.result();
 		expect(restored.delegated).toEqual([restored.executor]);
 		expect(restored.entries).toEqual([]);
 
@@ -4885,7 +4991,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(failed.pi);
 		await reachHandoff(failed);
 		await failed.emit("agent_start", { type: "agent_start" });
-		await failed.providerConfig()?.streamSimple?.(failed.planner, { messages: [] }).result();
+		await failed
+			.providerConfig()
+			?.streamSimple?.(failed.planner, normalizeContext({ messages: [] }))
+			.result();
 		await failed.emit("agent_settled", { type: "agent_settled" });
 
 		const restoredFailure = createHarness();
@@ -4901,7 +5010,7 @@ describe("Prewalk extension harness", () => {
 		await restoredFailure.emit("agent_start", { type: "agent_start" });
 		await restoredFailure
 			.providerConfig()
-			?.streamSimple?.(restoredFailure.planner, { messages: [] })
+			?.streamSimple?.(restoredFailure.planner, normalizeContext({ messages: [] }))
 			.result();
 		expect(restoredFailure.delegated).toEqual([restoredFailure.executor]);
 		expect(restoredFailure.entries).toEqual([]);
@@ -5035,7 +5144,7 @@ describe("Prewalk extension harness", () => {
 		await explicitSelection.emit("agent_start", { type: "agent_start" });
 		await explicitSelection
 			.providerConfig()
-			?.streamSimple?.(explicitSelection.planner, { messages: [] })
+			?.streamSimple?.(explicitSelection.planner, normalizeContext({ messages: [] }))
 			.result();
 		// SAFETY: This test constructs the value with the asserted shape before exercising the boundary.
 		(explicitSelection.context as { model: Model<"openai-codex-responses"> }).model =
@@ -5167,7 +5276,10 @@ describe("Prewalk extension harness", () => {
 				willRetry: reason === "overflow",
 			});
 			await harness.emit("agent_start", { type: "agent_start" });
-			await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+			await harness
+				.providerConfig()
+				?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+				.result();
 			expect(harness.delegated.at(-1)?.id).toBe(EXECUTOR_MODEL_ID);
 		},
 	);
@@ -5293,7 +5405,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5320,7 +5432,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5397,7 +5509,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5429,7 +5541,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5448,7 +5560,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
 		const before = harness.messages.length;
@@ -5480,7 +5595,10 @@ describe("Prewalk extension harness", () => {
 			JSON.stringify({ compaction: { enabled: true, reserveTokens: 32_768 } }),
 		);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		harness.setContextUsage({ tokens: 170_000, contextWindow: 200_000, percent: 85 });
 		await harness.emit("turn_end", {
@@ -5508,7 +5626,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
 		await harness.emit("turn_end", {
@@ -5533,7 +5654,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
 		const beforeMessages = harness.messages.length;
@@ -5590,7 +5714,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		harness.setContextUsage({ tokens: 190_000, contextWindow: 200_000, percent: 95 });
 		const beforeMessages = harness.messages.length;
@@ -5619,7 +5746,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		const delegatedBeforeTrace = harness.delegated.length;
 		await harness.emit("agent_start", { type: "agent_start" });
@@ -5639,7 +5769,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const response = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, codeModeTraceContext)
+			?.streamSimple?.(harness.planner, normalizeContext(codeModeTraceContext))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5660,7 +5790,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
@@ -5668,7 +5801,7 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const firstPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5684,14 +5817,14 @@ describe("Prewalk extension harness", () => {
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const successfulRetry = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, { messages: [] })
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
 			.result();
 		expect(successfulRetry?.stopReason).toBe("stop");
 
 		// SAFETY: The harness provider returns the context shape exercised by this test.
 		const secondPressure = await harness
 			.providerConfig()
-			?.streamSimple?.(harness.planner, oversized)
+			?.streamSimple?.(harness.planner, normalizeContext(oversized))
 			.result();
 		await harness.emit("turn_end", {
 			type: "turn_end",
@@ -5710,7 +5843,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		};
@@ -5764,7 +5900,10 @@ describe("Prewalk extension harness", () => {
 		prewalkExtension(harness.pi);
 		await reachHandoff(harness);
 		await harness.emit("agent_start", { type: "agent_start" });
-		await harness.providerConfig()?.streamSimple?.(harness.planner, { messages: [] }).result();
+		await harness
+			.providerConfig()
+			?.streamSimple?.(harness.planner, normalizeContext({ messages: [] }))
+			.result();
 		const oversized = {
 			messages: [{ role: "user", content: "x".repeat(750_000), timestamp: 1 }],
 		};

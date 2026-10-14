@@ -122,6 +122,13 @@ decide whether the observation can change anything.
 | `session_before_compact` | `before-compaction` | clear cycle suppression and queue current exact identity only |
 | `session_compact` | `compaction` | consume queued exact marker, otherwise suppression, otherwise unknown |
 
+Since Pi 1.2.0, `before_agent_start` fires for runs started by
+`pi.sendMessage(..., { triggerTurn: true })` as well as for user prompts, and
+`event.messageType` tells them apart. Both kinds still pair with one
+`agent_start`, so the adapter records `before-agent` for both. Only the child
+startup path, which is semantic policy outside this seam, ignores
+`messageType: "custom"` runs because child tasks arrive as user prompts.
+
 The two tool-claim adapters are intentionally identical and synchronous. A
 semantic `await` may happen only after the claim has captured the host fact.
 Callers keep their captured run identity and recheck it after each relevant

@@ -54,6 +54,12 @@ export interface PrewalkConfig {
 	 * planner change or a lapsed credential degrades instead of stranding the run.
 	 */
 	executorFallbacks?: ExecutorConfig[];
+	/**
+	 * Executors remembered per planner, keyed by `provider/model`. The planner
+	 * selected when a run starts picks its own executor; `executor` stays the
+	 * default for planners without an entry.
+	 */
+	plannerExecutors?: Record<string, ExecutorConfig>;
 	handoff?: HandoffConfig;
 	plannerRecovery?: PlannerRecoveryConfig;
 	analytics?: AnalyticsConfig;

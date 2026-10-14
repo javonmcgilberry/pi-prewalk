@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -12,7 +13,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import prewalkExtension from "../../extensions/prewalk.js";
-// @ts-expect-error The published extension artifact does not ship declarations.
 import codexConversion from "../../node_modules/@howaboua/pi-codex-conversion/dist/index.js";
 import { DEFAULT_EXECUTOR, PLANNER_MODEL_ID } from "../../src/orchestration/coordinator.js";
 
@@ -61,12 +61,11 @@ describe("installed Codex conversion composition", () => {
 		);
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 
-		let conversionApi: ProviderConfig["api"] | undefined;
 		let conversionStream: ProviderConfig["streamSimple"] | undefined;
 		const probe: ExtensionFactory = (pi) => {
 			pi.on("session_start", (_event, ctx) => {
-				const registered = ctx.modelRegistry.getRegisteredProviderConfig("openai-codex");
-				conversionApi = registered?.api;
+				// Conversion 3.0.52 registers a native provider object.
+				const registered = ctx.modelRegistry.getRegisteredNativeProvider("openai-codex");
 				conversionStream = registered?.streamSimple;
 				vi.spyOn(ctx.modelRegistry, "getApiKeyAndHeaders").mockResolvedValue({
 					ok: true,
@@ -126,8 +125,7 @@ describe("installed Codex conversion composition", () => {
 		expect(session.getActiveToolNames()).toContain("prewalk_todo");
 		expect(session.getActiveToolNames()).not.toContain("prewalk_assess");
 
-		const wrapped = runtime.getRegisteredProviderConfig("openai-codex");
-		expect(conversionApi).toBe("openai-codex-responses");
+		const wrapped = runtime.getRegisteredNativeProvider("openai-codex");
 		expect(conversionStream).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).toBeTypeOf("function");
 		expect(wrapped?.streamSimple).toBe(conversionStream);
@@ -156,7 +154,7 @@ describe("installed Codex conversion composition", () => {
 			},
 		};
 		const fetchMock = vi.fn(
-			async () =>
+			async (_input: RequestInfo | URL) =>
 				new Response(
 					`${[
 						{
@@ -178,15 +176,19 @@ describe("installed Codex conversion composition", () => {
 		const converted = await wrapped
 			?.streamSimple?.(
 				planner,
-				{
+				normalizeContext({
 					systemPrompt: "system",
 					messages: [{ role: "user", content: "Test conversion", timestamp: Date.now() }],
 					tools: [],
-				},
+				}),
 				{ apiKey: accessToken, transport: "sse" },
 			)
 			.result();
-		expect(fetchMock).toHaveBeenCalledOnce();
+		// Conversion 3.0.51+ may also fetch the Codex model catalog to verify
+		// context presets; only one inference request may reach the provider.
+		expect(
+			fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.endsWith("/codex/responses")),
+		).toHaveLength(1);
 		expect(converted?.content).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ type: "text", text: "Converted response." }),
