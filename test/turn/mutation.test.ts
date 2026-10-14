@@ -53,6 +53,12 @@ describe("mutation path availability", () => {
 		},
 	);
 
+	it("counts bash only when apply_patch is available to it", () => {
+		expect(hasRecognizedMutationPath(["read", "bash"], false)).toBe(false);
+		expect(hasRecognizedMutationPath(["read", "bash", "edit"], false)).toBe(true);
+		expect(hasRecognizedMutationPath(["read", "exec_command"], false)).toBe(true);
+	});
+
 	it.each(["read", "grep", "find", "ls", PREWALK_TODO_TOOL_NAME, "wait", "write_stdin"])(
 		"rejects %s without an initiating mutation tool",
 		(toolName) => {
